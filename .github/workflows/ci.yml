@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Format & lint
+        run: pnpm exec biome check .
+
+      # `build` runs tsc, which type-checks (vitest runs TS without type-checking).
+      - name: Build (typecheck)
+        run: pnpm run build
+
+      - name: Run tests
+        run: pnpm run test
+
+  cli-windows:
+    # The CLI must work on native Windows: it reads each agent's usage from the
+    # Windows home and schedules a Task Scheduler sync. Run the vitest suite on a
+    # real Windows runner so the Windows-only paths — the sql.js wasm reader (no
+    # `sqlite3.exe` there), the schtasks builders, and the backslash-path Codex
+    # date parsing — are exercised for real. Tests only (no build): the build
+    # script (`rm -rf` + `chmod`) is POSIX-only.
+    name: CLI (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Run tests
+        run: pnpm run test

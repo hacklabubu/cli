@@ -1,0 +1,86 @@
+# Publishes the `hacklab` CLI to npm when a version bump lands on main. Bump
+# package.json's version in a PR, merge to main, and this ships it — no manual
+# `npm publish`.
+#
+# Idempotent: it only publishes when package.json's version isn't already on
+# npm, so re-runs and code changes without a bump are clean no-ops (npm rejects a
+# same-version publish anyway). `npm publish` runs the package's `prepack`
+# (rm -rf dist && tsc), so it can never ship a stale build.
+#
+# Auth: npm Trusted Publishing (OIDC) — no token, no secret. npmjs.com is
+# configured with this repo + workflow as a trusted publisher for `hacklab`, and
+# the job's `id-token: write` permission lets npm mint a short-lived OIDC token
+# at publish time. Provenance is attested automatically (it needs the
+# `repository` field in package.json, which is present).
+name: publish-cli
+
+on:
+  push:
+    branches: [main]
+  # Manual trigger — publish a version whose auto-run failed (or was skipped)
+  # without needing a throwaway version bump. The idempotent check below still
+  # no-ops if the current version is already on npm.
+  workflow_dispatch:
+
+# Don't let two pushes publish concurrently.
+concurrency:
+  group: publish-cli
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC for npm Trusted Publishing (+ provenance)
+    steps:
+      # Actions are pinned to commit SHAs (not tags) because this workflow can
+      # publish to npm — a moved tag could run malicious code under the publish
+      # identity. Bump these via Dependabot/Renovate; the comment tracks the tag.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      # PINNED TO v6.4.0 — DO NOT bump to v7 until actions/setup-node#1551 is fixed.
+      # v6.x writes a job .npmrc whose registry+auth setup lets npm trigger the
+      # OIDC Trusted Publishing exchange. v7.0.0 changed that .npmrc handling so
+      # npm no longer attempts OIDC and publishing fails (E404 with a dummy token,
+      # ENEEDAUTH with none). Neither a dummy NODE_AUTH_TOKEN nor stripping the
+      # auth line restores it — only the v6 .npmrc does. Dependabot holds it at v6.
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org # point npm at the public registry
+
+      - run: pnpm install --frozen-lockfile
+
+      # Decide whether this version still needs publishing.
+      - id: check
+        run: |
+          LOCAL=$(node -p "require('./package.json').version")
+          echo "version=$LOCAL" >> "$GITHUB_OUTPUT"
+          if npm view "hacklab@$LOCAL" version >/dev/null 2>&1; then
+            echo "hacklab@$LOCAL is already on npm — nothing to publish."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "hacklab@$LOCAL is not on npm — will publish."
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Guard: never publish a CLI that doesn't build or pass tests. vitest runs
+      # TS without type-checking, so the build (tsc) is a separate gate.
+      - if: steps.check.outputs.publish == 'true'
+        run: pnpm run build
+      - if: steps.check.outputs.publish == 'true'
+        run: pnpm run test
+
+      # Trusted Publishing (OIDC) needs npm >= 11.5.1; Node 22 ships npm 10.
+      - if: steps.check.outputs.publish == 'true'
+        run: npm install -g npm@latest
+
+      - if: steps.check.outputs.publish == 'true'
+        run: npm publish --access public
+
+      - if: steps.check.outputs.publish == 'true'
+        run: echo "Published hacklab@${{ steps.check.outputs.version }} to npm."
