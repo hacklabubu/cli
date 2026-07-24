@@ -3,3 +3,7 @@ dist
 .env
 *.log
 .DS_Store
+
+# Local Claude Code state (worktrees, settings) — track only committed skills
+/.claude/*
+!/.claude/skills/
