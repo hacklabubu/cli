@@ -4,6 +4,7 @@ import { beltForTokens } from '../belt.js'
 import { loadConfig, resolveCursorAuth, saveConfig } from '../config.js'
 import { installDailySync } from '../daily-sync.js'
 import { captureEvent, identifyUser } from '../posthog.js'
+import { referralUrl } from '../referral.js'
 import {
   type AggregateScan,
   collectToolScans,
@@ -384,6 +385,17 @@ export async function join(opts: { browser?: boolean } = {}) {
   clack.note(
     'Your public profile can appear in vetted scout discovery. Email, DMs, and AI session content are never shared. Change "get discovered" anytime in profile settings.',
     'discovery'
+  )
+
+  // The viral loop's last beat: a personal referral link at the very end of the
+  // ritual, once the account is real and there's a handle to key it on. Purely
+  // informational — no prompt to answer — so it never stands between the user
+  // and their finished profile. `hacklab referral` reprints it any time.
+  clack.note(
+    `${bold(referralUrl(claimedHandle, base))}\n\n` +
+      'Send it to your smartest hacker friends. The more of your crew here,\n' +
+      'the better the network — they join, you both climb the ranks.',
+    'invite your crew'
   )
 
   clack.outro(dim('return to onboarding to add your bio and first drop.'))
