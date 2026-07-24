@@ -1,0 +1,165 @@
+import { describe, expect, it } from 'vitest'
+
+import {
+  displayValue,
+  normalizeFieldValue,
+  PROFILE_FIELDS,
+  type ProfileField,
+  parseProfileDocument,
+} from './profile.js'
+
+function field(name: string): ProfileField {
+  const found = PROFILE_FIELDS.find((f) => f.name === name)
+  if (!found) throw new Error(`no field named ${name}`)
+  return found
+}
+
+describe('normalizeFieldValue', () => {
+  it('clears on empty or whitespace input', () => {
+    expect(normalizeFieldValue(field('bio'), '')).toEqual({
+      ok: true,
+      value: null,
+    })
+    expect(normalizeFieldValue(field('website'), '   ')).toEqual({
+      ok: true,
+      value: null,
+    })
+  })
+
+  it('trims text fields', () => {
+    expect(normalizeFieldValue(field('name'), '  Matt B  ')).toEqual({
+      ok: true,
+      value: 'Matt B',
+    })
+  })
+
+  it('accepts multiline markdown for the profile readme', () => {
+    expect(
+      normalizeFieldValue(field('readme'), '  # Hello\n\nBuilt stuff.  ')
+    ).toEqual({
+      ok: true,
+      value: '# Hello\n\nBuilt stuff.',
+    })
+  })
+
+  it('prepends https:// to schemeless URLs', () => {
+    expect(normalizeFieldValue(field('website'), 'bratos.xyz')).toEqual({
+      ok: true,
+      value: 'https://bratos.xyz',
+    })
+    expect(normalizeFieldValue(field('website'), 'https://bratos.xyz')).toEqual(
+      { ok: true, value: 'https://bratos.xyz' }
+    )
+    expect(
+      normalizeFieldValue(field('youtube'), 'youtube.com/@error529')
+    ).toEqual({ ok: true, value: 'https://youtube.com/@error529' })
+  })
+
+  it('builds the canonical x link from a bare handle, @handle, or pasted URL', () => {
+    for (const input of [
+      'mattbratos',
+      '@mattbratos',
+      'x.com/mattbratos',
+      'https://x.com/mattbratos',
+      'https://twitter.com/mattbratos',
+      'www.twitter.com/mattbratos',
+    ]) {
+      expect(normalizeFieldValue(field('x'), input)).toEqual({
+        ok: true,
+        value: 'https://x.com/mattbratos',
+      })
+    }
+  })
+
+  it('keeps dots in instagram handles (dots alone are not a URL)', () => {
+    expect(normalizeFieldValue(field('instagram'), 'matt.bratos')).toEqual({
+      ok: true,
+      value: 'https://instagram.com/matt.bratos',
+    })
+  })
+
+  it('passes non-canonical URL-shaped input through as a URL', () => {
+    expect(normalizeFieldValue(field('x'), 'some.site/me')).toEqual({
+      ok: true,
+      value: 'https://some.site/me',
+    })
+  })
+
+  it('survives a pasted double prefix', () => {
+    expect(normalizeFieldValue(field('x'), 'x.com/x.com/mattbratos')).toEqual({
+      ok: true,
+      value: 'https://x.com/mattbratos',
+    })
+  })
+
+  it('parses boolean words and rejects the rest', () => {
+    const otw = field('open-to-work')
+    expect(normalizeFieldValue(otw, 'yes')).toEqual({ ok: true, value: true })
+    expect(normalizeFieldValue(otw, 'FALSE')).toEqual({
+      ok: true,
+      value: false,
+    })
+    expect(normalizeFieldValue(otw, 'maybe').ok).toBe(false)
+  })
+})
+
+describe('parseProfileDocument', () => {
+  it('accepts CLI names and API keys, normalizing values', () => {
+    const parsed = parseProfileDocument({
+      name: 'Matt',
+      readme: '# Builder',
+      websiteUrl: 'bratos.xyz',
+      x: '@mattbratos',
+      'open-to-work': true,
+    })
+    expect(parsed).toEqual({
+      ok: true,
+      fields: {
+        displayName: 'Matt',
+        profileReadme: '# Builder',
+        websiteUrl: 'https://bratos.xyz',
+        xUrl: 'https://x.com/mattbratos',
+        openToWork: true,
+      },
+    })
+  })
+
+  it('maps null and empty string to a cleared field', () => {
+    const parsed = parseProfileDocument({ bio: null, website: '' })
+    expect(parsed).toEqual({
+      ok: true,
+      fields: { bio: null, websiteUrl: null },
+    })
+  })
+
+  it('rejects unknown keys, naming the valid fields', () => {
+    const parsed = parseProfileDocument({ twitter: 'mattbratos' })
+    expect(parsed.ok).toBe(false)
+    if (!parsed.ok) {
+      expect(parsed.error).toContain('twitter')
+      expect(parsed.error).toContain('x')
+    }
+  })
+
+  it('rejects non-mapping documents and empty ones', () => {
+    expect(parseProfileDocument('just a string').ok).toBe(false)
+    expect(parseProfileDocument(['a']).ok).toBe(false)
+    expect(parseProfileDocument(null).ok).toBe(false)
+    expect(parseProfileDocument({}).ok).toBe(false)
+  })
+
+  it('rejects a boolean on a non-boolean field', () => {
+    expect(parseProfileDocument({ bio: true }).ok).toBe(false)
+  })
+})
+
+describe('displayValue', () => {
+  it('renders booleans as yes/no and null as empty', () => {
+    const otw = field('open-to-work')
+    expect(displayValue(otw, true)).toBe('yes')
+    expect(displayValue(otw, false)).toBe('no')
+    expect(displayValue(field('bio'), null)).toBe('')
+    expect(displayValue(field('bio'), 'hi')).toBe('hi')
+    expect(displayValue(field('readme'), '# Hello')).toBe('7 chars')
+  })
+})

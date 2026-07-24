@@ -1,0 +1,72 @@
+[
+  {
+    "event_name": "cli_login_completed",
+    "event_description": "A user successfully authenticated via device flow or browser callback and a session was saved.",
+    "file": "src/commands/login.ts"
+  },
+  {
+    "event_name": "cli_join_completed",
+    "event_description": "A new user completed the full join ritual — scanned tokens, claimed a handle, and uploaded usage.",
+    "file": "src/commands/join.ts"
+  },
+  {
+    "event_name": "cli_sync_completed",
+    "event_description": "A user ran an interactive sync and their AI token usage was successfully uploaded.",
+    "file": "src/commands/sync.ts"
+  },
+  {
+    "event_name": "cli_daily_sync_installed",
+    "event_description": "A user opted in and the OS-native daily background sync was successfully installed.",
+    "file": "src/commands/sync.ts"
+  },
+  {
+    "event_name": "cli_drop_posted",
+    "event_description": "A user successfully posted a drop (short status update) to their profile.",
+    "file": "src/commands/drop.ts"
+  },
+  {
+    "event_name": "cli_essay_published",
+    "event_description": "A user published a new essay from a local markdown file to their profile.",
+    "file": "src/commands/essay.ts"
+  },
+  {
+    "event_name": "cli_essay_updated",
+    "event_description": "A user updated an existing essay with new markdown content.",
+    "file": "src/commands/essay.ts"
+  },
+  {
+    "event_name": "cli_essay_deleted",
+    "event_description": "A user deleted an essay from their profile.",
+    "file": "src/commands/essay.ts"
+  },
+  {
+    "event_name": "cli_chat_message_posted",
+    "event_description": "A user posted a message to the main community channel.",
+    "file": "src/commands/chat.ts"
+  },
+  {
+    "event_name": "cli_dm_sent",
+    "event_description": "A user sent a direct message to another user.",
+    "file": "src/commands/chat.ts"
+  },
+  {
+    "event_name": "cli_project_added",
+    "event_description": "A user published or refreshed a project inferred from a local repo.",
+    "file": "src/commands/project.ts"
+  },
+  {
+    "event_name": "cli_project_deleted",
+    "event_description": "A user deleted a project from their profile via the CLI.",
+    "file": "src/commands/project.ts"
+  },
+  {
+    "event_name": "cli_logout",
+    "event_description": "A user logged out and their local session and daily sync were cleared.",
+    "file": "src/commands/logout.ts"
+  },
+  {
+    "event_name": "cli_profile_updated",
+    "event_description": "A user saved profile fields (bio, links, open-to-work) via profile set, edit, or apply.",
+    "file": "src/commands/profile.ts"
+  }
+]
