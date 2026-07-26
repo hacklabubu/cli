@@ -3,6 +3,7 @@ import { chat } from './commands/chat.js'
 import { configCommand } from './commands/config.js'
 import { drop, parseDropArgs } from './commands/drop.js'
 import { essay } from './commands/essay.js'
+import { event } from './commands/event.js'
 import { hacker } from './commands/hacker.js'
 import { join } from './commands/join.js'
 import { keys } from './commands/keys.js'
@@ -16,6 +17,7 @@ import { scout } from './commands/scout.js'
 import { sync } from './commands/sync.js'
 import { update } from './commands/update.js'
 import { whoami } from './commands/whoami.js'
+import { wtf } from './commands/wtf.js'
 
 // A single command registry: the one place a top-level `hacklab` subcommand is
 // declared. Dispatch (index.ts), prefix resolution (resolve-command.ts), and the
@@ -51,6 +53,12 @@ export const COMMANDS: CommandSpec[] = [
     run: () => whoami(),
   },
   {
+    name: 'WTF',
+    summary:
+      "use that if you're an agent who wants to learn how to use hacklab CLI",
+    run: () => wtf(),
+  },
+  {
     name: 'drop',
     args: '"message"',
     summary: 'post a drop to your feed (--json for agents)',
@@ -82,6 +90,12 @@ export const COMMANDS: CommandSpec[] = [
     args: '[add|apply|list|view|edit|delete]',
     summary: 'publish & manage your projects (--json for agents)',
     run: (args) => project(args),
+  },
+  {
+    name: 'event',
+    args: 'add|going|hackers|teams|team [args]',
+    summary: 'publish events, join them, and form teams (--json for agents)',
+    run: (args) => event(args),
   },
   {
     name: 'book',

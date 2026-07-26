@@ -9,6 +9,8 @@ describe('resolveCommand', () => {
       kind: 'match',
       name: 'org',
     })
+    expect(resolveCommand('WTF')).toEqual({ kind: 'match', name: 'WTF' })
+    expect(resolveCommand('wtf')).toEqual({ kind: 'match', name: 'WTF' })
   })
 
   it('lets an exact match win over a longer command it prefixes', () => {

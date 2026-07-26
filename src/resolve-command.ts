@@ -18,7 +18,10 @@ export function resolveCommand(
   token: string,
   commands: readonly string[] = COMMAND_NAMES
 ): ResolvedCommand {
-  if (commands.includes(token)) return { kind: 'match', name: token }
+  const exact = commands.find(
+    (command) => command.toLowerCase() === token.toLowerCase()
+  )
+  if (exact) return { kind: 'match', name: exact }
 
   const matches = commands.filter((c) => c.startsWith(token))
   if (matches.length === 1) return { kind: 'match', name: matches[0]! }

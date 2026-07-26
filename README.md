@@ -81,6 +81,10 @@ scan local AI usage → see your rank → sign in with GitHub → claim a userna
 
 ## Commands
 
+- `hacklab WTF` — use that if you're an agent who wants to learn how to use
+  Hacklab CLI. Prints a detailed, offline agent handbook covering authentication,
+  backend selection, JSON contracts, every command family, safe write patterns,
+  verification, and end-to-end examples. Lowercase `hacklab wtf` also works.
 - `hacklab join` — the join ritual above. Running bare `hacklab` does this for
   new users (and `sync` for returning ones). If you're already signed in with a
   finished profile it stops early and points you at `hacklab logout` +
@@ -124,6 +128,12 @@ scan local AI usage → see your rank → sign in with GitHub → claim a userna
     - url: https://my-project.dev/thumbnail.webp
       caption: Main screen
   ```
+- `hacklab event add` — publish or update an event from the terminal. Required:
+  `--title`, `--start`, `--end`, and an IANA `--timezone`. Add
+  `--description-file event.md`, `--location`, `--url`, or `--org <slug>` to
+  publish for a company you control. Add a large card cover with
+  `--image <https-url>`. Re-running the same owned slug updates it; `--json` returns a
+  stable agent-readable envelope.
 - `hacklab org` — hub for company management. If you already own a company, pick
   a field, type the new value, and it saves as you go. If you don't own one yet,
   it offers to claim or create. Subcommands: `hacklab org claim` (take ownership
