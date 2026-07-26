@@ -4,6 +4,9 @@ dist
 *.log
 .DS_Store
 
-# Local Claude Code state (worktrees, settings) — track only committed skills
+# Local Claude Code state — track committed skills, hooks, and settings; ignore
+# machine-local state (worktrees, per-path memory, settings.local.json).
 /.claude/*
 !/.claude/skills/
+!/.claude/hooks/
+!/.claude/settings.json
