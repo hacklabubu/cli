@@ -3,6 +3,7 @@ import { chat } from './commands/chat.js'
 import { configCommand } from './commands/config.js'
 import { drop, parseDropArgs } from './commands/drop.js'
 import { essay } from './commands/essay.js'
+import { hackathon } from './commands/hackathon.js'
 import { hacker } from './commands/hacker.js'
 import { join } from './commands/join.js'
 import { keys } from './commands/keys.js'
@@ -112,6 +113,12 @@ export const COMMANDS: CommandSpec[] = [
     args: '[view|list]',
     summary: 'view a hacker or list newest members (--json for agents)',
     run: (args) => hacker(args),
+  },
+  {
+    name: 'hackathon',
+    args: '[list|view|rsvp|invite|team|track|submit|export]',
+    summary: 'RSVP, team up, and submit for a hackathon (--json for agents)',
+    run: (args) => hackathon(args),
   },
   {
     name: 'scout',

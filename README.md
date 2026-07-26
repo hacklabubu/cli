@@ -140,6 +140,22 @@ scan local AI usage → see your rank → sign in with GitHub → claim a userna
 - `hacklab hacker view [handle] --json` — read the rich agent profile including
   links, counts, skills, recent projects, essays, and drops. Use
   `hacklab hacker list --newest --json` to discover recently activated members.
+- `hacklab hackathon` — RSVP, team up, and submit for a hacklab hackathon.
+  `hackathon list [--past]` shows upcoming (or past) events; `hackathon view
+  <slug>` shows one event's phase and highlights its next deadline (RSVP
+  closes / teams lock / tracks lock / submissions due); `hackathon rsvp <slug>
+  [--token <t>]` RSVPs (an invite link from the organizer also works if you're
+  not on the invite list); `hackathon invite <slug> --file <path>` or
+  `--emails a@b.com,c@d.com` sends invites and lists every rejected line;
+  `hackathon team create <slug> --name "X" [--summary S] [--max N]
+  [--closed]` starts a team, `team join <slug> <teamSlug>` requests to join
+  one, `team accept|reject <slug> <teamSlug> <handle>` decides a request, and
+  `team list <slug>` lists teams; `hackathon track <slug> <teamSlug>
+  <trackSlug>` sets a team's track; `hackathon submit <slug> <teamSlug>
+  --title T --description D [--repo/--video/--site/--track]` submits a
+  project; `hackathon export <slug> [--format csv|json] [--out <path>]`
+  downloads the participant list (this contains personal data — handle
+  exported files carefully). Every subcommand takes `--json` for agents.
 - `hacklab --version` / `hacklab --help`.
 
 ## Cursor usage
