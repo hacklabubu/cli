@@ -68,5 +68,10 @@
     "event_name": "cli_profile_updated",
     "event_description": "A user saved profile fields (bio, links, open-to-work) via profile set, edit, or apply.",
     "file": "src/commands/profile.ts"
+  },
+  {
+    "event_name": "cli_referral_shown",
+    "event_description": "A user's referral link was surfaced via `hacklab referral` (via: cli for humans, json for agents).",
+    "file": "src/commands/referral.ts"
   }
 ]
