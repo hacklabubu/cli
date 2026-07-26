@@ -286,7 +286,31 @@ describe('hackathon rsvp', () => {
     expect(output()).toContain(
       'ada@example.com is not on the invite list for summer'
     )
-    expect(output()).toContain('RSVP link from the organizer also works')
+    expect(output()).toContain('ask the organizer to add this address')
+  })
+
+  // A link is not a credential: holding one buys nothing if the address on the
+  // account is not the invited one. This is the forwarded-link case.
+  it('email_mismatch: relays the refusal and points at the organizer', async () => {
+    vi.mocked(fetchApi).mockResolvedValue(
+      jsonResponse(
+        {
+          schemaVersion: 1,
+          error: {
+            code: 'email_mismatch',
+            message:
+              'This invite was sent to a different email address than the one on your account.',
+          },
+        },
+        403
+      )
+    )
+    await expect(
+      hackathon(['rsvp', 'summer', '--token', 'forwarded-token'])
+    ).rejects.toThrow('__exit__')
+    expect(exitCode).toBe(1)
+    expect(output()).toContain('different email address')
+    expect(output()).toContain('ask the organizer to add that address')
   })
 
   it('not_invited in --json mode relays the envelope verbatim (no extra hint text)', async () => {

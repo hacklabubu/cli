@@ -146,7 +146,12 @@ async function handleApiError(
   process.exit(1)
 }
 
-/** rsvp gets its own error path: `not_invited` prints the server's message verbatim plus a hint. */
+/**
+ * rsvp gets its own error path. The two refusals a real person actually hits
+ * are "you are not on the list" and "your address does not match the one you
+ * were invited under", and both are resolved by the organizer rather than by
+ * retrying, so each gets a hint pointing there.
+ */
 async function handleRsvpError(
   res: Response,
   json: boolean,
@@ -166,7 +171,14 @@ async function handleRsvpError(
   }
   if (body?.error?.code === 'not_invited' && body.error.message) {
     error(body.error.message)
-    hint('an RSVP link from the organizer also works.')
+    hint('ask the organizer to add this address, or your @handle, to the list.')
+    process.exit(1)
+  }
+  // A link alone never admits anyone: the address has to match too.
+  if (body?.error?.code === 'email_mismatch' && body.error.message) {
+    error(body.error.message)
+    hint(`you are signed in as ${session.email}.`)
+    hint('ask the organizer to add that address, or your @handle, to the list.')
     process.exit(1)
   }
   error(apiErrorMessage(res.status, body ?? null, session))
