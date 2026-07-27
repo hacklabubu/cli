@@ -30,9 +30,13 @@ describe('resolveCommand', () => {
     expect(resolveCommand('con')).toEqual({ kind: 'match', name: 'config' })
     expect(resolveCommand('ch')).toEqual({ kind: 'match', name: 'chat' })
     expect(resolveCommand('sc')).toEqual({ kind: 'match', name: 'scout' })
-    // `ha` is unambiguous again: the scout feed became `scout search`, so
-    // `hacker` is the only `ha…` top-level command.
-    expect(resolveCommand('ha')).toEqual({ kind: 'match', name: 'hacker' })
+    // `hacker` and `hackathon` diverge at the 5th letter (`hacke…` vs
+    // `hackat…`), so a prefix needs at least 5 letters to pick one.
+    expect(resolveCommand('hacke')).toEqual({ kind: 'match', name: 'hacker' })
+    expect(resolveCommand('hackat')).toEqual({
+      kind: 'match',
+      name: 'hackathon',
+    })
     // `book` is the only `b…` command (brag became `project`), so bare `b`
     // resolves straight to it.
     expect(resolveCommand('b')).toEqual({ kind: 'match', name: 'book' })
@@ -48,6 +52,12 @@ describe('resolveCommand', () => {
     expect(resolveCommand('s')).toEqual({
       kind: 'ambiguous',
       matches: ['sync', 'scout'],
+    })
+    // `ha` now spans both `hacker` and `hackathon` — ambiguous is the honest
+    // answer here too, same as `s` above.
+    expect(resolveCommand('ha')).toEqual({
+      kind: 'ambiguous',
+      matches: ['hacker', 'hackathon'],
     })
   })
 
