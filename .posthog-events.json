@@ -71,7 +71,7 @@
   },
   {
     "event_name": "cli_referral_shown",
-    "event_description": "A user's referral link was surfaced via `hacklab referral` (via: cli for humans, json for agents).",
+    "event_description": "A user's referral link was surfaced via `hacklab referral` (via: cli for humans, json for agents; count = referrals joined, or null if the backend was unreachable).",
     "file": "src/commands/referral.ts"
   }
 ]
