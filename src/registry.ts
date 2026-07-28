@@ -92,8 +92,9 @@ export const COMMANDS: CommandSpec[] = [
   },
   {
     name: 'org',
-    args: '[list|view|set|apply|claim|create]',
-    summary: 'claim, create, or edit your organization (--json for agents)',
+    args: '[list|view|set|apply|claim|create|access]',
+    summary:
+      'claim, create, edit, or share your organization (--json for agents)',
     run: (args) => org(args),
   },
   {
