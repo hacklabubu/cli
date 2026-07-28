@@ -11,6 +11,17 @@ vi.mock('../session.js', () => ({
 
 import { referral } from './referral.js'
 
+/** Stub global fetch with a referral-stats response. */
+function stubStats(count: number, recent: unknown[] = []) {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ referral: { count, recent } }),
+    }))
+  )
+}
+
 describe('referral output', () => {
   beforeEach(() => {
     vi.mocked(loadSession).mockResolvedValue({
@@ -19,6 +30,7 @@ describe('referral output', () => {
       handle: 'bratos',
     } as never)
     vi.mocked(captureEvent).mockResolvedValue(undefined)
+    stubStats(3, [{ handle: 'grace', displayName: 'Grace' }])
   })
 
   afterEach(() => {
@@ -26,7 +38,7 @@ describe('referral output', () => {
     vi.unstubAllGlobals()
   })
 
-  it('returns the handle, url, and message in JSON mode', async () => {
+  it('returns handle, url, message, count, and recent in JSON mode', async () => {
     const output: string[] = []
     vi.spyOn(console, 'log').mockImplementation((value) => {
       output.push(String(value))
@@ -39,9 +51,13 @@ describe('referral output', () => {
     expect(parsed.referral.handle).toBe('bratos')
     expect(parsed.referral.url).toBe('https://hacklab.so/?ref=bratos')
     expect(parsed.referral.message).toContain('https://hacklab.so/?ref=bratos')
+    expect(parsed.referral.count).toBe(3)
+    expect(parsed.referral.recent).toEqual([
+      { handle: 'grace', displayName: 'Grace' },
+    ])
   })
 
-  it('tags the capture with the surface it was shown on', async () => {
+  it('tags the capture with the surface and the count', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {
       // swallow output; this test only asserts on captureEvent
     })
@@ -49,15 +65,17 @@ describe('referral output', () => {
     await referral(['--json'])
     expect(captureEvent).toHaveBeenCalledWith('bratos', 'cli_referral_shown', {
       via: 'json',
+      count: 3,
     })
 
     await referral([])
     expect(captureEvent).toHaveBeenCalledWith('bratos', 'cli_referral_shown', {
       via: 'cli',
+      count: 3,
     })
   })
 
-  it('prints the referral link for humans', async () => {
+  it('prints the link and the join count for humans', async () => {
     const output: string[] = []
     vi.spyOn(console, 'log').mockImplementation((value) => {
       output.push(String(value))
@@ -65,7 +83,34 @@ describe('referral output', () => {
 
     await referral([])
 
-    expect(output.join('\n')).toContain('https://hacklab.so/?ref=bratos')
+    const text = output.join('\n')
+    expect(text).toContain('https://hacklab.so/?ref=bratos')
+    expect(text).toContain('joined through you')
+    expect(text).toContain('@grace')
+  })
+
+  it('falls back to the offline link with null count when the backend is unreachable', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('offline')
+      })
+    )
+    const output: string[] = []
+    vi.spyOn(console, 'log').mockImplementation((value) => {
+      output.push(String(value))
+    })
+
+    await referral(['--json'])
+
+    const parsed = JSON.parse(output.join('\n'))
+    expect(parsed.referral.url).toBe('https://hacklab.so/?ref=bratos')
+    expect(parsed.referral.count).toBeNull()
+    expect(parsed.referral.recent).toEqual([])
+    expect(captureEvent).toHaveBeenCalledWith('bratos', 'cli_referral_shown', {
+      via: 'json',
+      count: null,
+    })
   })
 })
 
