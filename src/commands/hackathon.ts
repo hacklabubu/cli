@@ -24,6 +24,7 @@ const SUBCOMMANDS = [
   'invite',
   'team',
   'track',
+  'tracks',
   'submit',
   'export',
 ] as const
@@ -34,7 +35,7 @@ const BASE = '/api/hackathons'
 
 function usage(): never {
   error(
-    'usage: hacklab hackathon <list|view|rsvp|invite|team|track|submit|export>'
+    'usage: hacklab hackathon <list|view|rsvp|invite|team|track|tracks|submit|export>'
   )
   info(`  hacklab hackathon ${dim('list [--past] [--json]')}`)
   info(`  hacklab hackathon ${dim('view <slug> [--json]')}`)
@@ -53,6 +54,7 @@ function usage(): never {
   info(
     `  hacklab hackathon ${dim('track <slug> <teamSlug> <trackSlug> [--json]')}`
   )
+  info(`  hacklab hackathon ${dim('tracks <slug> [--json]')}`)
   info(
     `  hacklab hackathon ${dim('submit <slug> <teamSlug> --title T --description D [--repo/--video/--site/--track] [--json]')}`
   )
@@ -296,6 +298,38 @@ function renderHackathon(h: HackathonRecord): string[] {
   return lines
 }
 
+// ── challenge (theme/tracks) ─────────────────────────────────────────────
+// A hackathon's challengeMode is 'open' (build anything, no theme/tracks),
+// 'theme' (one subject, modeled server-side as a single track entry), or
+// 'tracks' (two or more, teams pick one). The theme/track list itself is
+// hidden from participants until the hackathon starts unless the organizer
+// opted out of that, signalled by `challengeVisible`.
+
+type ChallengeMode = 'open' | 'theme' | 'tracks'
+
+type TrackRecord = Record<string, unknown> & { slug?: string; name?: string }
+
+type TracksBody = {
+  schemaVersion?: number
+  challengeMode?: string
+  challengeVisible?: boolean
+  tracks?: TrackRecord[]
+}
+
+function challengeLabel(
+  mode: ChallengeMode | string | undefined
+): 'Theme' | 'Tracks' {
+  return mode === 'theme' ? 'Theme' : 'Tracks'
+}
+
+function renderTrackEntries(tracks: TrackRecord[]): string[] {
+  return tracks.map((t) => {
+    const name = str(t.name) ?? str(t.slug) ?? '(unnamed)'
+    const slug = str(t.slug)
+    return `  ${bold(name)}${slug && slug !== name ? ` ${dim(`(${slug})`)}` : ''}`
+  })
+}
+
 // ── list ──────────────────────────────────────────────────────────────────
 
 async function hackathonList(args: string[]): Promise<void> {
@@ -374,7 +408,49 @@ async function hackathonView(args: string[]): Promise<void> {
     printJson(body)
     return
   }
-  console.log(renderHackathon(body.hackathon).join('\n'))
+
+  const lines = renderHackathon(body.hackathon)
+  const mode = str(body.hackathon.challengeMode) as ChallengeMode | null
+  const visible = body.hackathon.challengeVisible === true
+
+  lines.push('')
+  if (!mode || mode === 'open') {
+    lines.push(
+      `  ${dim('challenge')}  open — no theme or tracks, build anything`
+    )
+    console.log(lines.join('\n'))
+    return
+  }
+
+  const label = challengeLabel(mode)
+  if (!visible) {
+    lines.push(`  ${dim(label)}  announced when the hackathon starts`)
+    console.log(lines.join('\n'))
+    return
+  }
+
+  let tracksRes: Response
+  try {
+    tracksRes = await apiGet(
+      session,
+      `${BASE}/${encodeURIComponent(slug)}/tracks`
+    )
+  } catch (err) {
+    return networkFail(err, json)
+  }
+  if (!tracksRes.ok) return handleApiError(tracksRes, json, session)
+
+  const tracksBody = (await tracksRes
+    .json()
+    .catch(() => null)) as TracksBody | null
+  const tracks = tracksBody?.tracks ?? []
+  lines.push(`  ${bold(label)}`)
+  lines.push(
+    ...(tracks.length > 0
+      ? renderTrackEntries(tracks)
+      : [`  ${dim('(none yet)')}`])
+  )
+  console.log(lines.join('\n'))
 }
 
 // ── rsvp ──────────────────────────────────────────────────────────────────
@@ -723,6 +799,60 @@ async function hackathonTeam(args: string[]): Promise<void> {
 
 // ── track ─────────────────────────────────────────────────────────────────
 
+/**
+ * track_locked means the server refused to set a track, for one of two
+ * reasons: this hackathon isn't in `tracks` mode (nothing to pick), or it is
+ * but the challenge hasn't been revealed yet. Best-effort look up the actual
+ * hackathon to tell the two apart; if that lookup fails or the fields aren't
+ * there, fall back to relaying the server's own message with no invented hint.
+ */
+async function handleTrackError(
+  res: Response,
+  json: boolean,
+  session: Session,
+  slug: string
+): Promise<never> {
+  const body = (await res.json().catch(() => null)) as JsonError | null
+  if (json) {
+    console.log(
+      JSON.stringify(
+        body ?? {
+          schemaVersion: 1,
+          error: { code: 'error', message: `failed (${res.status})` },
+        }
+      )
+    )
+    process.exit(1)
+  }
+  if (body?.error?.code === 'track_locked' && body.error.message) {
+    error(body.error.message)
+    try {
+      const hRes = await apiGet(session, `${BASE}/${encodeURIComponent(slug)}`)
+      if (hRes.ok) {
+        const hBody = (await hRes.json().catch(() => null)) as {
+          hackathon?: HackathonRecord
+        } | null
+        const mode = str(hBody?.hackathon?.challengeMode)
+        const visible = hBody?.hackathon?.challengeVisible === true
+        if (mode && mode !== 'tracks') {
+          hint(
+            `${slug} is running in "${mode}" mode — there are no tracks to pick.`
+          )
+        } else if (mode === 'tracks' && !visible) {
+          hint(
+            'tracks have not been revealed yet — check back once the hackathon starts.'
+          )
+        }
+      }
+    } catch {
+      // best-effort only: no hint beats an invented one.
+    }
+    process.exit(1)
+  }
+  error(apiErrorMessage(res.status, body ?? null, session))
+  process.exit(1)
+}
+
 async function hackathonTrack(args: string[]): Promise<void> {
   const json = args.includes('--json')
   const positional = args.filter((a) => !a.startsWith('-'))
@@ -746,7 +876,7 @@ async function hackathonTrack(args: string[]): Promise<void> {
   } catch (err) {
     return networkFail(err, json)
   }
-  if (!res.ok) return handleApiError(res, json, session)
+  if (!res.ok) return handleTrackError(res, json, session, slug)
 
   const body = (await res.json().catch(() => null)) as Record<
     string,
@@ -757,6 +887,60 @@ async function hackathonTrack(args: string[]): Promise<void> {
     return
   }
   success(`set ${bold(teamSlug)}'s track to ${bold(trackSlug)}`)
+}
+
+// ── tracks ────────────────────────────────────────────────────────────────
+
+async function hackathonTracks(args: string[]): Promise<void> {
+  const json = args.includes('--json')
+  const slug = args.find((a) => !a.startsWith('-'))
+  if (!slug) {
+    const message = 'usage: hacklab hackathon tracks <slug>'
+    if (json) return emitJsonError('usage', message)
+    error(message)
+    process.exit(1)
+  }
+
+  const session = await requireSession(json)
+  let res: Response
+  try {
+    res = await apiGet(session, `${BASE}/${encodeURIComponent(slug)}/tracks`)
+  } catch (err) {
+    return networkFail(err, json)
+  }
+  if (!res.ok) return handleApiError(res, json, session)
+
+  const body = (await res.json().catch(() => null)) as TracksBody | null
+  if (!body) {
+    if (json) return emitJsonError('bad_response', 'malformed response')
+    error('got a malformed response from hacklab')
+    process.exit(1)
+  }
+
+  if (json) {
+    printJson(body)
+    return
+  }
+
+  const mode = body.challengeMode as ChallengeMode | undefined
+  if (!mode || mode === 'open') {
+    info('open — no theme or tracks, build anything')
+    return
+  }
+
+  const label = challengeLabel(mode)
+  if (!body.challengeVisible) {
+    info(`${label.toLowerCase()} announced when the hackathon starts`)
+    return
+  }
+
+  const tracks = body.tracks ?? []
+  if (tracks.length === 0) {
+    info(`no ${label.toLowerCase()} yet`)
+    return
+  }
+  console.log(`  ${bold(label)}`)
+  for (const line of renderTrackEntries(tracks)) console.log(line)
 }
 
 // ── submit ────────────────────────────────────────────────────────────────
@@ -900,6 +1084,7 @@ export async function hackathon(args: string[] = []): Promise<void> {
   if (resolved.name === 'invite') return hackathonInvite(rest)
   if (resolved.name === 'team') return hackathonTeam(rest)
   if (resolved.name === 'track') return hackathonTrack(rest)
+  if (resolved.name === 'tracks') return hackathonTracks(rest)
   if (resolved.name === 'submit') return hackathonSubmit(rest)
   if (resolved.name === 'export') return hackathonExport(rest)
 }

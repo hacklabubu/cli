@@ -116,7 +116,7 @@ export const COMMANDS: CommandSpec[] = [
   },
   {
     name: 'hackathon',
-    args: '[list|view|rsvp|invite|team|track|submit|export]',
+    args: '[list|view|rsvp|invite|team|track|tracks|submit|export]',
     summary: 'RSVP, team up, and submit for a hackathon (--json for agents)',
     run: (args) => hackathon(args),
   },
