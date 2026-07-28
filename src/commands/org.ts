@@ -15,7 +15,17 @@ import {
 } from '../org-fields.js'
 import { resolveCommand } from '../resolve-command.js'
 import { resolveAppUrl, type Session, unauthorizedHint } from '../session.js'
-import { bold, dim, error, info, success } from '../ui.js'
+import {
+  bold,
+  dim,
+  displayWidth,
+  error,
+  hint,
+  info,
+  padEndTo,
+  stripControl,
+  success,
+} from '../ui.js'
 
 // `hacklab org` is a small hub with two audiences. Humans: the bare command
 // edits (autosave editor), `claim` / `create` run interactive flows, and the
@@ -32,7 +42,14 @@ const SUBCOMMANDS = [
   'claim',
   'create',
   'edit',
+  'access',
 ] as const
+
+// `hacklab org access <list|grant|revoke>` — who controls the org. Nested like
+// `hackathon team <verb>` because "grant"/"revoke" mean nothing on their own at
+// the `org` level. Note `org a` is now ambiguous (access/apply); `org ap` and
+// `org ac` still resolve.
+const ACCESS_SUBCOMMANDS = ['list', 'grant', 'revoke'] as const
 
 // Must match ORG_SLUG_PATTERN on the server (apps/web/lib/org-payload.ts).
 const SLUG_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/
@@ -185,12 +202,124 @@ async function postCreate(
   throw new Error(data?.error ?? `create failed (${res.status})`)
 }
 
+// One person who controls an org. `handle`/`displayName` come from a left join,
+// so an account that never finished a hacker profile has neither — `email` is
+// the only field guaranteed to identify someone.
+type Claimant = {
+  handle: string | null
+  displayName: string | null
+  email: string
+  // The user id of whoever granted this claim, or null for the original
+  // claimer. An id, not a handle — see accessRows() for why it prints as-is.
+  grantedBy: string | null
+  since: string
+  isYou: boolean
+}
+
+type AccessList = {
+  organization: { id: string; name: string; slug: string }
+  claimants: Claimant[]
+}
+
+/** Outcome of a grant/revoke, echoed by the server. */
+type AccessChange = { status: string; handle: string }
+
+type AccessResult<T> =
+  | { ok: true; data: T }
+  | { ok: false; code: string; message: string }
+
+/**
+ * Map an access-route refusal to a stable code.
+ *
+ * The route answers with a bare `{ error: "<sentence>" }` — no machine code —
+ * and it reuses 404 for three different refusals. Classifying on the message is
+ * the only way to tell them apart, and telling them apart is the point: "there
+ * is no such account" and "that account doesn't control this org" send the
+ * caller to completely different next steps. Unrecognized text falls back to a
+ * generic code rather than guessing.
+ */
+export function accessErrorCode(status: number, message: string): string {
+  if (status === 401) return 'unauthorized'
+  if (status === 403) return 'forbidden'
+  if (status === 409) return 'last_claimant'
+  if (status === 400) return 'invalid_args'
+  if (status === 404) {
+    if (/^no hacklab account/i.test(message)) return 'no_such_account'
+    if (/does not control/i.test(message)) return 'not_a_claimant'
+    return 'org_not_found'
+  }
+  return 'error'
+}
+
+/** What the caller can do about a refusal. Printed to stderr, never stdout. */
+export function accessErrorHint(code: string): string | null {
+  if (code === 'last_claimant') {
+    return 'grant control to someone else first: `hacklab org access grant <handle>`'
+  }
+  if (code === 'no_such_account') {
+    return 'handles are hacklab usernames — check one with `hacklab hacker view <handle>`'
+  }
+  if (code === 'not_a_claimant') {
+    return 'see who controls it with `hacklab org access list`'
+  }
+  if (code === 'forbidden' || code === 'org_not_found') {
+    return 'you no longer control this company — `hacklab org list` shows the ones you do'
+  }
+  return null
+}
+
+/**
+ * Call the access route. Returns the parsed body, or the classified refusal —
+ * refusals are values here (not throws) because every caller maps them to a
+ * code and a hint rather than to one generic message.
+ */
+async function accessRequest<T>(
+  session: Session,
+  method: 'GET' | 'POST' | 'DELETE',
+  query: Record<string, string>,
+  body?: unknown
+): Promise<AccessResult<T>> {
+  const url = new URL(`${resolveAppUrl(session)}/api/cli/org/access`)
+  for (const [key, value] of Object.entries(query)) {
+    url.searchParams.set(key, value)
+  }
+
+  let res: Response
+  try {
+    res = await fetch(url, {
+      method,
+      headers: {
+        Authorization: `Bearer ${session.token}`,
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    })
+  } catch (err) {
+    return {
+      ok: false,
+      code: 'error',
+      message: err instanceof Error ? err.message : String(err),
+    }
+  }
+
+  const data = (await res.json().catch(() => null)) as
+    | (T & { error?: string })
+    | null
+  if (res.ok) return { ok: true, data: data as T }
+
+  const message =
+    res.status === 401
+      ? unauthorizedHint(session)
+      : (data?.error ?? `request failed (${res.status})`)
+  return { ok: false, code: accessErrorCode(res.status, message), message }
+}
+
 // ---------------------------------------------------------------------------
 // Agent verbs: list / view / set / apply / claim <slug> / create --name.
 // Non-interactive, all take --json; one envelope shape with profile/hacker.
 
 function usage(): never {
-  error('usage: hacklab org [list|view|set|apply|claim|create]')
+  error('usage: hacklab org [list|view|set|apply|claim|create|access]')
   info(
     `  hacklab org                          ${dim('interactive editor (claim/create hub)')}`
   )
@@ -205,6 +334,12 @@ function usage(): never {
   info(`  hacklab org ${dim('claim <slug> [--json]')}`)
   info(
     `  hacklab org ${dim('create --name <name> [--slug <slug>] [--website <url>] [--description <text>] [--json]')}`
+  )
+  info(
+    `  hacklab org ${dim('access [list] [--org <slug>] [--json]')}     who controls it`
+  )
+  info(
+    `  hacklab org ${dim('access grant|revoke <handle> [--org <slug>] [--json]')}`
   )
   info(`  fields: ${dim(ORG_FIELD_NAMES.join(', '))}`)
   process.exit(1)
@@ -590,6 +725,216 @@ async function orgCreateDirect(args: string[]): Promise<void> {
     )
   }
   process.exit(1)
+}
+
+// ---------------------------------------------------------------------------
+// access: who controls this org. list / grant <handle> / revoke <handle>.
+// People are named by hacklab handle — the identifier an organizer actually
+// knows about a colleague — matching how the server takes them.
+
+function accessUsage(): never {
+  error('usage: hacklab org access [list|grant|revoke]')
+  info(
+    `  hacklab org access ${dim('[list] [--org <slug>] [--json]')}      who controls it`
+  )
+  info(`  hacklab org access ${dim('grant <handle> [--org <slug>] [--json]')}`)
+  info(`  hacklab org access ${dim('revoke <handle> [--org <slug>] [--json]')}`)
+  hint('revoking yourself is allowed — the last controller is not')
+  process.exit(1)
+}
+
+/** Like fail(), plus the "what to do instead" line on stderr. */
+function accessFail(json: boolean, code: string, message: string): never {
+  if (json) emitJsonError(code, message)
+  error(message)
+  const tip = accessErrorHint(code)
+  if (tip) hint(tip)
+  process.exit(1)
+}
+
+/** Trim and drop a leading @, so `@marin` and `marin` both work. */
+export function normalizeHandle(raw: string): string {
+  return raw.trim().replace(/^@+/, '').trim()
+}
+
+/** Session + the org these verbs act on, resolved exactly like the other verbs. */
+async function accessTarget(
+  orgSlug: string | undefined,
+  json: boolean
+): Promise<{ session: Session; org: Org }> {
+  const session = await requireSession(json)
+  const state = await loadState(session, json)
+  const target = resolveTargetOrg(state.organizations, orgSlug)
+  if (!target.ok) fail(json, target.code, target.error)
+  return { session, org: target.org }
+}
+
+/** `@handle`, falling back to the email when there's no hacker profile yet. */
+export function claimantLabel(
+  claimant: Pick<Claimant, 'handle' | 'email'>
+): string {
+  const handle = claimant.handle?.trim()
+  return handle ? `@${stripControl(handle)}` : stripControl(claimant.email)
+}
+
+/**
+ * The "granted by" column.
+ *
+ * `grantedBy` is a raw user id — the route has no handle for it — so there is
+ * nothing here to turn it into a name. It prints truncated: long enough to tell
+ * two granters apart at a glance, short enough not to swamp the row. The full
+ * value is in `--json`.
+ */
+export function grantedByLabel(grantedBy: string | null): string {
+  if (!grantedBy) return 'original claim'
+  const id = stripControl(grantedBy)
+  return `granted by ${id.length > 12 ? `${id.slice(0, 12)}…` : id}`
+}
+
+function accessRows(claimants: Claimant[]): string[] {
+  const rows = claimants.map((c) => ({
+    who: claimantLabel(c),
+    name: stripControl(c.displayName?.trim() || ''),
+    meta: [
+      c.isYou ? 'you' : null,
+      grantedByLabel(c.grantedBy),
+      `since ${new Date(c.since).toLocaleDateString()}`,
+    ]
+      .filter(Boolean)
+      .join(' · '),
+  }))
+  const whoWidth = Math.max(...rows.map((r) => displayWidth(r.who)))
+  const nameWidth = Math.max(...rows.map((r) => displayWidth(r.name)))
+  return rows.map(
+    (r) =>
+      `  ${bold(padEndTo(r.who, whoWidth))}  ${padEndTo(r.name, nameWidth)}  ${dim(r.meta)}`
+  )
+}
+
+async function accessList(args: string[]): Promise<void> {
+  const json = args.includes('--json')
+  const { value: orgSlug } = extractOption(
+    args.filter((a) => a !== '--json'),
+    '--org'
+  )
+  const { session, org } = await accessTarget(orgSlug, json)
+
+  const result = await accessRequest<AccessList>(session, 'GET', {
+    orgSlug: org.slug,
+  })
+  if (!result.ok) accessFail(json, result.code, result.message)
+
+  const { organization, claimants } = result.data
+  if (json) {
+    printJson({ organization, claimants })
+    return
+  }
+
+  console.log(`  ${bold(organization.name)} ${dim(`/o/${organization.slug}`)}`)
+  console.log('')
+  // The route only answers for an org you control, so you are always in here —
+  // an empty list would mean the org lost its last controller, which revoke
+  // refuses to allow. Handled anyway rather than crashing on Math.max of [].
+  if (claimants.length === 0) {
+    info('nobody controls this company')
+  } else {
+    console.log(accessRows(claimants).join('\n'))
+  }
+  console.log('')
+  info(`grant control with ${dim('hacklab org access grant <handle>')}`)
+}
+
+async function accessGrant(args: string[]): Promise<void> {
+  const json = args.includes('--json')
+  const { value: orgSlug, rest } = extractOption(
+    args.filter((a) => a !== '--json'),
+    '--org'
+  )
+  const raw = rest.find((a) => !a.startsWith('-'))
+  const handle = raw ? normalizeHandle(raw) : ''
+  if (!handle) {
+    fail(json, 'invalid_args', 'pass the handle to grant control to')
+  }
+
+  const { session, org } = await accessTarget(orgSlug, json)
+  const result = await accessRequest<AccessChange>(
+    session,
+    'POST',
+    {},
+    { orgSlug: org.slug, handle }
+  )
+  if (!result.ok) accessFail(json, result.code, result.message)
+
+  const already = result.data.status === 'already_claimed'
+  if (json) {
+    printJson({
+      organization: { id: org.id, name: org.name, slug: org.slug },
+      handle,
+      status: result.data.status,
+    })
+    return
+  }
+  if (already) {
+    success(`@${handle} already controls ${bold(org.name)}`)
+    return
+  }
+  success(`@${handle} now controls ${bold(org.name)}`)
+  info(`they can edit it with ${dim('hacklab org')}`)
+}
+
+async function accessRevoke(args: string[]): Promise<void> {
+  const json = args.includes('--json')
+  const { value: orgSlug, rest } = extractOption(
+    args.filter((a) => a !== '--json'),
+    '--org'
+  )
+  const raw = rest.find((a) => !a.startsWith('-'))
+  const handle = raw ? normalizeHandle(raw) : ''
+  if (!handle) {
+    fail(json, 'invalid_args', 'pass the handle to revoke control from')
+  }
+
+  const { session, org } = await accessTarget(orgSlug, json)
+  const result = await accessRequest<AccessChange>(session, 'DELETE', {
+    orgSlug: org.slug,
+    handle,
+  })
+  if (!result.ok) accessFail(json, result.code, result.message)
+
+  if (json) {
+    printJson({
+      organization: { id: org.id, name: org.name, slug: org.slug },
+      handle,
+      status: result.data.status,
+    })
+    return
+  }
+  // Removing yourself is a supported move, and it reads very differently.
+  if (session.handle && normalizeHandle(session.handle) === handle) {
+    success(`you no longer control ${bold(org.name)}`)
+    return
+  }
+  success(`@${handle} no longer controls ${bold(org.name)}`)
+}
+
+async function orgAccess(args: string[]): Promise<void> {
+  const [subToken, ...rest] = args
+  // Bare `org access` (and `org access --json`) is the list — the cheapest read.
+  if (!subToken || subToken.startsWith('-')) return accessList(args)
+
+  const resolved = resolveCommand(subToken, ACCESS_SUBCOMMANDS)
+  if (resolved.kind === 'ambiguous') {
+    error(`ambiguous: org access ${subToken} (${resolved.matches.join(', ')})`)
+    process.exit(1)
+  }
+  if (resolved.kind === 'unknown') {
+    error(`unknown subcommand: org access ${subToken}`)
+    accessUsage()
+  }
+
+  if (resolved.name === 'list') return accessList(rest)
+  if (resolved.name === 'grant') return accessGrant(rest)
+  if (resolved.name === 'revoke') return accessRevoke(rest)
 }
 
 // ---------------------------------------------------------------------------
@@ -1036,6 +1381,7 @@ export async function org(args: string[] = []): Promise<void> {
   if (resolved.name === 'set') return orgSet(rest)
   if (resolved.name === 'apply') return orgApply(rest)
   if (resolved.name === 'edit') return orgInteractive('edit')
+  if (resolved.name === 'access') return orgAccess(rest)
   if (resolved.name === 'claim') {
     // A slug (or --json) makes it non-interactive; bare `claim` keeps the picker.
     const direct =

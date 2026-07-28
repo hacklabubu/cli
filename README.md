@@ -129,6 +129,13 @@ scan local AI usage → see your rank → sign in with GitHub → claim a userna
   it offers to claim or create. Subcommands: `hacklab org claim` (take ownership
   of a YC-seeded company you're a member of, or whose domain matches your login
   email) and `hacklab org create` (register a brand-new company from the CLI).
+- `hacklab org access` — manage who controls a company. Several people can
+  control one company, and any of them can add or remove others. Bare `org
+  access` (or `org access list`) shows everyone who controls it and who granted
+  them; `org access grant <handle>` hands control to another hacklab account;
+  `org access revoke <handle>` takes it away — including your own, though the
+  last remaining controller can't be removed. Use `--org <slug>` when you
+  control more than one, and `--json` on any of them for agents.
 - `hacklab profile` — view and edit your own profile. Bare `profile` (or
   `profile view`) shows it; `profile edit` is an org-style autosave editor;
   `profile set <field> <value>` writes one field (`--clear` unsets, handles like
