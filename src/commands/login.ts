@@ -5,6 +5,7 @@ import { captureEvent, identifyUser } from '../posthog.js'
 import { getAppUrl, saveSession } from '../session.js'
 import { bold, dim, info, linkBlue, success, white } from '../ui.js'
 import { openBrowser } from '../utils/openBrowser.js'
+import { waitForEnter } from '../utils/waitForEnter.js'
 
 // What every login path resolves to before we persist a session.
 type Credentials = {
@@ -117,17 +118,26 @@ async function loginViaDevice(
 
   // GitHub's device flow: the user authorizes on github.com, signed into GitHub
   // (not Hacklab). We map the resulting GitHub identity to their linked account.
-  // `format` overrides clack's default dim styling: body text white, URL blue.
-  clack.note(
-    `open GitHub and authorize Hacklab:\n  ${start.verificationUri}\n\nthen enter this code:\n  ${bold(start.userCode)}`,
-    'sign in with github',
-    {
-      format: (line) =>
-        line.includes(start.verificationUri) ? linkBlue(line) : white(line),
-    }
+  //
+  // Order matters here. Show the CODE first and hold the browser until the user
+  // presses Enter — they need to have read the code *before* a new window steals
+  // their attention. Opening immediately meant the code scrolled past unread and
+  // people came back to a GitHub prompt with nothing to type.
+  // `format` overrides clack's default dim styling: body text white, code bold.
+  clack.note(`  ${bold(start.userCode)}`, 'your github device code', {
+    format: (line) => white(line),
+  })
+
+  await waitForEnter(
+    `  ${white('press Enter to open')} ${linkBlue(start.verificationUri)} ${white('in your browser')} `
   )
-  info(dim('opening your browser to GitHub (or open the link above yourself).'))
+
   void openBrowser(start.verificationUriComplete ?? start.verificationUri)
+  info(
+    dim(
+      `if your browser didn't open, go to ${start.verificationUri} and enter the code above.`
+    )
+  )
 
   const intervalMs = Math.max(1000, (Number(start.interval) || 5) * 1000)
   const deadline = Date.now() + (Number(start.expiresIn) || 900) * 1000
