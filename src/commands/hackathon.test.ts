@@ -236,6 +236,109 @@ describe('hackathon view', () => {
       error: { code: 'not_found', message: 'nope' },
     })
   })
+
+  it('open mode: says there is no theme or tracks', async () => {
+    vi.mocked(fetchApi).mockResolvedValue(
+      jsonResponse({
+        schemaVersion: 1,
+        hackathon: {
+          slug: 'summer',
+          title: 'Summer Jam',
+          challengeMode: 'open',
+          challengeVisible: true,
+        },
+      })
+    )
+    await hackathon(['view', 'summer'])
+    expect(output()).toContain('no theme or tracks')
+    // open mode never needs the tracks endpoint.
+    expect(fetchApi).toHaveBeenCalledTimes(1)
+  })
+
+  it('hidden before reveal: says it is announced when the hackathon starts, not empty', async () => {
+    vi.mocked(fetchApi).mockResolvedValue(
+      jsonResponse({
+        schemaVersion: 1,
+        hackathon: {
+          slug: 'summer',
+          title: 'Summer Jam',
+          challengeMode: 'tracks',
+          challengeVisible: false,
+        },
+      })
+    )
+    await hackathon(['view', 'summer'])
+    expect(output()).toContain('Tracks')
+    expect(output()).toContain('announced when the hackathon starts')
+    expect(fetchApi).toHaveBeenCalledTimes(1)
+  })
+
+  it('visible theme: labels it Theme and lists it', async () => {
+    vi.mocked(fetchApi).mockImplementation((_session, path) => {
+      if (path === '/api/hackathons/summer') {
+        return Promise.resolve(
+          jsonResponse({
+            schemaVersion: 1,
+            hackathon: {
+              slug: 'summer',
+              title: 'Summer Jam',
+              challengeMode: 'theme',
+              challengeVisible: true,
+            },
+          })
+        )
+      }
+      return Promise.resolve(
+        jsonResponse({
+          schemaVersion: 1,
+          challengeMode: 'theme',
+          challengeVisible: true,
+          tracks: [{ slug: 'ai-for-good', name: 'AI for good' }],
+        })
+      )
+    })
+    await hackathon(['view', 'summer'])
+    expect(output()).toContain('Theme')
+    expect(output()).toContain('AI for good')
+    expect(fetchApi).toHaveBeenCalledWith(
+      expect.anything(),
+      '/api/hackathons/summer/tracks',
+      expect.anything()
+    )
+  })
+
+  it('visible tracks: labels it Tracks and lists every entry', async () => {
+    vi.mocked(fetchApi).mockImplementation((_session, path) => {
+      if (path === '/api/hackathons/summer') {
+        return Promise.resolve(
+          jsonResponse({
+            schemaVersion: 1,
+            hackathon: {
+              slug: 'summer',
+              title: 'Summer Jam',
+              challengeMode: 'tracks',
+              challengeVisible: true,
+            },
+          })
+        )
+      }
+      return Promise.resolve(
+        jsonResponse({
+          schemaVersion: 1,
+          challengeMode: 'tracks',
+          challengeVisible: true,
+          tracks: [
+            { slug: 'ai', name: 'AI' },
+            { slug: 'climate', name: 'Climate' },
+          ],
+        })
+      )
+    })
+    await hackathon(['view', 'summer'])
+    expect(output()).toContain('Tracks')
+    expect(output()).toContain('AI')
+    expect(output()).toContain('Climate')
+  })
 })
 
 describe('hackathon rsvp', () => {
@@ -517,6 +620,154 @@ describe('hackathon track', () => {
         body: JSON.stringify({ trackSlug: 'ai' }),
       })
     )
+  })
+
+  it('track_locked: hints that this hackathon has no tracks (mode is not "tracks")', async () => {
+    vi.mocked(fetchApi).mockImplementation((_session, path) => {
+      if (path === '/api/hackathons/summer/teams/rocket/track') {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              schemaVersion: 1,
+              error: { code: 'track_locked', message: 'tracks are locked' },
+            },
+            409
+          )
+        )
+      }
+      return Promise.resolve(
+        jsonResponse({
+          schemaVersion: 1,
+          hackathon: {
+            slug: 'summer',
+            title: 'Summer Jam',
+            challengeMode: 'open',
+            challengeVisible: true,
+          },
+        })
+      )
+    })
+    await expect(
+      hackathon(['track', 'summer', 'rocket', 'ai'])
+    ).rejects.toThrow('__exit__')
+    expect(exitCode).toBe(1)
+    expect(output()).toContain('tracks are locked')
+    expect(output()).toContain('there are no tracks to pick')
+  })
+
+  it('track_locked: hints that tracks are not revealed yet (mode is "tracks" but hidden)', async () => {
+    vi.mocked(fetchApi).mockImplementation((_session, path) => {
+      if (path === '/api/hackathons/summer/teams/rocket/track') {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              schemaVersion: 1,
+              error: { code: 'track_locked', message: 'tracks are locked' },
+            },
+            409
+          )
+        )
+      }
+      return Promise.resolve(
+        jsonResponse({
+          schemaVersion: 1,
+          hackathon: {
+            slug: 'summer',
+            title: 'Summer Jam',
+            challengeMode: 'tracks',
+            challengeVisible: false,
+          },
+        })
+      )
+    })
+    await expect(
+      hackathon(['track', 'summer', 'rocket', 'ai'])
+    ).rejects.toThrow('__exit__')
+    expect(exitCode).toBe(1)
+    expect(output()).toContain('tracks are locked')
+    expect(output()).toContain('not been revealed yet')
+  })
+
+  it('track_locked in --json mode relays the envelope verbatim (no extra hint text)', async () => {
+    vi.mocked(fetchApi).mockResolvedValue(
+      jsonResponse(
+        {
+          schemaVersion: 1,
+          error: { code: 'track_locked', message: 'tracks are locked' },
+        },
+        409
+      )
+    )
+    await expect(
+      hackathon(['track', 'summer', 'rocket', 'ai', '--json'])
+    ).rejects.toThrow('__exit__')
+    expect(JSON.parse(output())).toEqual({
+      schemaVersion: 1,
+      error: { code: 'track_locked', message: 'tracks are locked' },
+    })
+  })
+})
+
+describe('hackathon tracks', () => {
+  it('requires a slug', async () => {
+    await expect(hackathon(['tracks'])).rejects.toThrow('__exit__')
+    expect(exitCode).toBe(1)
+    expect(output()).toContain('usage: hacklab hackathon tracks <slug>')
+  })
+
+  it('open mode: says there is no theme or tracks', async () => {
+    vi.mocked(fetchApi).mockResolvedValue(
+      jsonResponse({
+        schemaVersion: 1,
+        challengeMode: 'open',
+        challengeVisible: true,
+        tracks: [],
+      })
+    )
+    await hackathon(['tracks', 'summer'])
+    expect(output()).toContain('no theme or tracks')
+  })
+
+  it('hidden before reveal: says it is announced when the hackathon starts', async () => {
+    vi.mocked(fetchApi).mockResolvedValue(
+      jsonResponse({
+        schemaVersion: 1,
+        challengeMode: 'tracks',
+        challengeVisible: false,
+        tracks: [],
+      })
+    )
+    await hackathon(['tracks', 'summer'])
+    expect(output()).toContain('announced when the hackathon starts')
+  })
+
+  it('visible theme: labels it Theme and lists it', async () => {
+    vi.mocked(fetchApi).mockResolvedValue(
+      jsonResponse({
+        schemaVersion: 1,
+        challengeMode: 'theme',
+        challengeVisible: true,
+        tracks: [{ slug: 'ai-for-good', name: 'AI for good' }],
+      })
+    )
+    await hackathon(['tracks', 'summer'])
+    expect(output()).toContain('Theme')
+    expect(output()).toContain('AI for good')
+  })
+
+  it('visible tracks: labels it Tracks and lists every entry, and supports --json', async () => {
+    const body = {
+      schemaVersion: 1,
+      challengeMode: 'tracks',
+      challengeVisible: true,
+      tracks: [
+        { slug: 'ai', name: 'AI' },
+        { slug: 'climate', name: 'Climate' },
+      ],
+    }
+    vi.mocked(fetchApi).mockResolvedValue(jsonResponse(body))
+    await hackathon(['tracks', 'summer', '--json'])
+    expect(JSON.parse(output())).toEqual(body)
   })
 })
 
