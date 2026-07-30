@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// `demon` is the onboarding step that arms the daily background sync, so the
+// `daemon` is the onboarding step that arms the daily background sync, so the
 // contract under test is: never touch the real OS scheduler without a session,
 // never claim success when nothing got scheduled, and always be able to tear
 // the schedule down (session or not).
@@ -31,7 +31,7 @@ vi.mock('../ui.js', () => ({
   info: m.info,
 }))
 
-import { demon } from './demon.js'
+import { daemon } from './daemon.js'
 
 class ExitError extends Error {}
 
@@ -65,9 +65,9 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-describe('hacklab demon', () => {
+describe('hacklab daemon', () => {
   it('installs the daily sync and reports the mechanism', async () => {
-    await demon([])
+    await daemon([])
 
     expect(m.installDailySync).toHaveBeenCalledOnce()
     expect(said(m.success, 'systemd')).toBe(true)
@@ -84,7 +84,7 @@ describe('hacklab demon', () => {
   it('refuses to schedule anything when not logged in', async () => {
     m.loadSession.mockResolvedValue(null)
 
-    await expect(demon([])).rejects.toBeInstanceOf(ExitError)
+    await expect(daemon([])).rejects.toBeInstanceOf(ExitError)
 
     expect(m.installDailySync).not.toHaveBeenCalled()
     expect(said(m.error, 'not logged in')).toBe(true)
@@ -100,7 +100,7 @@ describe('hacklab demon', () => {
       instructions: 'schedule this with cron: node cli sync --quiet',
     })
 
-    await demon([])
+    await daemon([])
 
     expect(m.success).not.toHaveBeenCalled()
     expect(said(m.error, "couldn't schedule")).toBe(true)
@@ -110,7 +110,7 @@ describe('hacklab demon', () => {
   it('tears the schedule down with `off`, no session required', async () => {
     m.loadSession.mockResolvedValue(null)
 
-    await demon(['off'])
+    await daemon(['off'])
 
     expect(m.uninstallDailySync).toHaveBeenCalledOnce()
     expect(m.clearSyncPaused).toHaveBeenCalledOnce()
@@ -119,7 +119,7 @@ describe('hacklab demon', () => {
   })
 
   it('accepts the --off spelling too', async () => {
-    await demon(['--off'])
+    await daemon(['--off'])
 
     expect(m.uninstallDailySync).toHaveBeenCalledOnce()
     expect(m.installDailySync).not.toHaveBeenCalled()

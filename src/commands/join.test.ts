@@ -345,7 +345,7 @@ describe('join — existing GitHub account', () => {
     )
   })
 
-  it('hands the user off to `hacklab demon` instead of scheduling it', async () => {
+  it('hands the user off to `hacklab daemon` instead of scheduling it', async () => {
     // Onboarding step 4 is "summon the daemon", so the last thing join does is
     // name that command — both in the note and in the outro line.
     m.loadSession.mockResolvedValueOnce(null).mockResolvedValue({
@@ -363,9 +363,9 @@ describe('join — existing GitHub account', () => {
     const daemonNote = m.note.mock.calls.find((c) =>
       String(c[1]).includes('daemon')
     )
-    expect(String(daemonNote?.[0])).toContain('hacklab demon')
+    expect(String(daemonNote?.[0])).toContain('hacklab daemon')
     expect(
-      m.outro.mock.calls.some((c) => String(c[0]).includes('hacklab demon'))
+      m.outro.mock.calls.some((c) => String(c[0]).includes('hacklab daemon'))
     ).toBe(true)
   })
 

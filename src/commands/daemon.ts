@@ -9,10 +9,10 @@ import { loadSession } from '../session.js'
 import { dim, error, info, success } from '../ui.js'
 
 /**
- * `hacklab demon` — arm the daily background sync, as its own explicit step.
+ * `hacklab daemon` — arm the daily background sync, as its own explicit step.
  *
- *   hacklab demon        summon it (install/refresh the OS-native daily job)
- *   hacklab demon off    dismiss it (tear the schedule down)
+ *   hacklab daemon        summon it (install/refresh the OS-native daily job)
+ *   hacklab daemon off    dismiss it (tear the schedule down)
  *
  * This used to be a side effect of `join` (and a flag on `sync`), which made it
  * invisible: users couldn't tell whether anything was scheduled, and the web
@@ -21,7 +21,7 @@ import { dim, error, info, success } from '../ui.js'
  * that happened to you. Re-running is idempotent — the installers overwrite the
  * existing schedule rather than stacking a second one.
  */
-export async function demon(args: string[] = []): Promise<void> {
+export async function daemon(args: string[] = []): Promise<void> {
   if (args.includes('off') || args.includes('--off')) return dismiss()
   return summon()
 }
@@ -43,10 +43,10 @@ async function summon(): Promise<void> {
     success(`daemon summoned — daily background sync via ${result.mechanism}`)
     info(dim(`  ${result.detail}`))
     info(dim(`  log: ${syncLogPath()}`))
-    info(dim('  dismiss it with `hacklab demon off` (logout removes it too)'))
+    info(dim('  dismiss it with `hacklab daemon off` (logout removes it too)'))
     await captureEvent(session.handle, 'cli_daily_sync_installed', {
       mechanism: result.mechanism,
-      source: 'demon',
+      source: 'daemon',
     })
     return
   }
@@ -68,6 +68,6 @@ async function dismiss(): Promise<void> {
   await uninstallDailySync()
   await clearSyncPaused()
   success('daemon dismissed — no more daily background sync')
-  info(dim('run `hacklab demon` to summon it again'))
+  info(dim('run `hacklab daemon` to summon it again'))
   await captureEvent(session?.handle, 'cli_daily_sync_removed')
 }
