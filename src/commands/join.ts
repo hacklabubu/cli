@@ -2,7 +2,6 @@ import * as clack from '@clack/prompts'
 
 import { beltForTokens } from '../belt.js'
 import { loadConfig, resolveCursorAuth, saveConfig } from '../config.js'
-import { installDailySync } from '../daily-sync.js'
 import { captureEvent, identifyUser } from '../posthog.js'
 import { referralUrl } from '../referral.js'
 import {
@@ -319,25 +318,6 @@ export async function join(opts: { browser?: boolean } = {}) {
 
   clack.log.success(`${bold('claimed.')} ${base}/${claimedHandle}`)
 
-  // Set up the OS-native daily background sync so usage, streaks, and the
-  // retention signal stay fresh without the user remembering to run
-  // `hacklab sync`. Best-effort: installDailySync never throws (it falls back
-  // to printable instructions), and a non-ok result stays quiet here — the join
-  // ritual shouldn't dump scheduler config; `hacklab sync --install-daily`
-  // prints it on demand. Torn down again by `hacklab logout`.
-  const daily = await installDailySync()
-  if (daily.ok) {
-    info(dim(`daily sync scheduled (${daily.mechanism})`))
-    await captureEvent(claimedHandle, 'cli_daily_sync_installed', {
-      mechanism: daily.mechanism,
-    })
-  } else if (daily.instructions) {
-    // Platform we don't auto-schedule on (e.g. BSD) or a failed scheduler
-    // write: surface the copy-paste cron command instead of silently shipping
-    // no daily sync at all.
-    info(dim(daily.instructions))
-  }
-
   if (claimedSession.email) {
     await identifyUser(claimedHandle, {
       $set: {
@@ -398,7 +378,20 @@ export async function join(opts: { browser?: boolean } = {}) {
     'invite your crew'
   )
 
-  clack.outro(dim('return to onboarding to add your bio and first drop.'))
+  // Point at the daemon instead of scheduling it here. Onboarding makes it its
+  // own step, and a background job installed on someone's machine as a silent
+  // side effect of joining is exactly the kind of thing that should be a
+  // deliberate command they ran.
+  clack.note(
+    `${bold('hacklab demon')}\n\n` +
+      'Schedules a daily background re-scan so your tokens, rank, and streak\n' +
+      'stay current without you running anything. No daemon, no streak.',
+    'next: summon the daemon'
+  )
+
+  clack.outro(
+    dim('run `hacklab demon`, then return to onboarding for your bio and drop.')
+  )
 }
 
 /** The per-tool token lines + grand total shown after a scan. */

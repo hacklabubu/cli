@@ -1,6 +1,7 @@
 import { book, parseBookArgs } from './commands/book.js'
 import { chat } from './commands/chat.js'
 import { configCommand } from './commands/config.js'
+import { demon } from './commands/demon.js'
 import { drop, parseDropArgs } from './commands/drop.js'
 import { essay } from './commands/essay.js'
 import { hackathon } from './commands/hackathon.js'
@@ -29,6 +30,9 @@ export type CommandSpec = {
   args?: string
   /** One-line description shown in `hacklab --help`. */
   summary: string
+  /** Extra names that resolve to this command but aren't listed in help. For
+   * spellings people's fingers reach for that aren't the command's own name. */
+  aliases?: string[]
   /** Run the command with the per-command args (the global `--env` is already stripped). */
   run: (args: string[]) => Promise<void> | void
 }
@@ -42,9 +46,16 @@ export const COMMANDS: CommandSpec[] = [
   },
   {
     name: 'sync',
-    args: '[--install-daily]',
     summary: 'sync AI token usage to your profile',
     run: (args) => sync(args),
+  },
+  {
+    name: 'demon',
+    args: '[off]',
+    summary: 'summon the daily background sync (off tears it down)',
+    // The pun is the command; the correct spelling still has to work.
+    aliases: ['daemon'],
+    run: (args) => demon(args),
   },
   {
     name: 'whoami',
@@ -156,6 +167,12 @@ export const COMMANDS: CommandSpec[] = [
 
 /** Every command name, in registry order — the source of truth for resolution. */
 export const COMMAND_NAMES = COMMANDS.map((c) => c.name)
+
+/** Alias → the canonical command it stands for. Kept out of `COMMAND_NAMES` so
+ * aliases never show up in `--help` or as their own ambiguity candidate. */
+export const COMMAND_ALIASES: Record<string, string> = Object.fromEntries(
+  COMMANDS.flatMap((c) => (c.aliases ?? []).map((alias) => [alias, c.name]))
+)
 
 export function findCommand(name: string): CommandSpec | undefined {
   return COMMANDS.find((c) => c.name === name)
