@@ -40,6 +40,19 @@ describe('resolveCommand', () => {
     // `book` is the only `b…` command (brag became `project`), so bare `b`
     // resolves straight to it.
     expect(resolveCommand('b')).toEqual({ kind: 'match', name: 'book' })
+    // `demon` and `drop` share `d`, so they need two letters apiece.
+    expect(resolveCommand('de')).toEqual({ kind: 'match', name: 'demon' })
+    expect(resolveCommand('dr')).toEqual({ kind: 'match', name: 'drop' })
+  })
+
+  it('resolves an alias, and a prefix of one, to the canonical command', () => {
+    // `daemon` is the spelling fingers reach for; `demon` is the command.
+    expect(resolveCommand('daemon')).toEqual({ kind: 'match', name: 'demon' })
+    expect(resolveCommand('da')).toEqual({ kind: 'match', name: 'demon' })
+    // A command and its own alias are one candidate, not an ambiguity.
+    expect(resolveCommand('d', ['demon', 'sync'], { daemon: 'demon' })).toEqual(
+      { kind: 'match', name: 'demon' }
+    )
   })
 
   it('reports every match for an ambiguous prefix', () => {
@@ -58,6 +71,11 @@ describe('resolveCommand', () => {
     expect(resolveCommand('ha')).toEqual({
       kind: 'ambiguous',
       matches: ['hacker', 'hackathon'],
+    })
+    // `d` stopped being drop shorthand when demon landed.
+    expect(resolveCommand('d')).toEqual({
+      kind: 'ambiguous',
+      matches: ['demon', 'drop'],
     })
   })
 

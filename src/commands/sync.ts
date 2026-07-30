@@ -3,12 +3,11 @@ import * as clack from '@clack/prompts'
 import {
   appendSyncLog,
   clearSyncPaused,
-  installDailySync,
   markSyncPaused,
 } from '../daily-sync.js'
 import { captureEvent } from '../posthog.js'
 import { scanAllTools } from '../scanners/index.js'
-import { loadSession, loadSessionState, type Session } from '../session.js'
+import { loadSessionState, type Session } from '../session.js'
 import {
   checkSession,
   ensureFreshSession,
@@ -20,6 +19,7 @@ import {
   uploadTokenScan,
 } from '../sync.js'
 import { bold, dim, error, info, success } from '../ui.js'
+import { demon } from './demon.js'
 
 const SESSION_EXPIRED_REASON =
   'your hacklab session expired — run `hacklab login`'
@@ -27,39 +27,19 @@ const SESSION_EXPIRED_REASON =
 /**
  * `hacklab sync` — dispatch on flags:
  *   (none)            interactive sync (scan, upload, show stats)
- *   --install-daily   set up the OS-native daily background sync
+ *   --install-daily   deprecated alias for `hacklab demon`
  *   --quiet           the unattended daily run (logs to a file, no output)
  */
 export async function sync(args: string[] = []): Promise<void> {
-  if (args.includes('--install-daily')) return installDailyCommand()
+  if (args.includes('--install-daily')) {
+    // Kept working (it shipped, and installed CLIs / old docs still say it) but
+    // no longer advertised: scheduling the daemon is `hacklab demon` now, which
+    // is what the web onboarding flow tells people to run.
+    info(dim('`sync --install-daily` is now `hacklab demon` — running that.'))
+    return demon()
+  }
   if (args.includes('--quiet')) return quietSync()
   return interactiveSync()
-}
-
-/** Set up the daily background sync for `hacklab sync --install-daily`.
- * `hacklab join` calls installDailySync() directly after a claim; this wrapper
- * is the explicit, standalone entry point. Requires a session — the scheduled
- * job runs as this user. */
-async function installDailyCommand(): Promise<void> {
-  const session = await loadSession()
-  if (!session) {
-    error('not logged in')
-    info(
-      `run ${dim('hacklab login')} first, then ${dim('hacklab sync --install-daily')}`
-    )
-    process.exit(1)
-  }
-  const result = await installDailySync()
-  if (result.ok) {
-    success(`daily background sync set up (${result.mechanism})`)
-    info(dim(`  ${result.detail}`))
-    info(dim('  turn it off anytime with `hacklab logout`'))
-    await captureEvent(session.handle, 'cli_daily_sync_installed', {
-      mechanism: result.mechanism,
-    })
-  } else {
-    info(result.instructions)
-  }
 }
 
 /**

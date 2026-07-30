@@ -6,36 +6,39 @@ your profile with GitHub.
 
 ## Install & join
 
-Install, then join:
+Install, join, then summon the daemon:
 
 ```bash
 curl -fsSL https://hacklab.so/install | sh
 hacklab join
+hacklab demon
 ```
 
-The script checks for Node 20+ and installs the CLI globally. After that
-`hacklab` is a real command on your PATH. If you already have Node (including
-through a version manager), you can skip the script:
+The script checks for Node 20+ and installs the CLI globally — that's all it
+does. After it, `hacklab` is a real command on your PATH; `join` claims your
+handle and `demon` schedules the daily background sync. If you already have Node
+(including through a version manager), you can skip the script:
 
 ```bash
 npm i -g hacklab@latest
 hacklab join
+hacklab demon
 ```
 
 ### Windows
 
 On native Windows (PowerShell), use the `.ps1` installer instead — it checks
-for Node 20+, installs the CLI globally, and (unlike the sh installer) also
-runs `hacklab join` for you:
+for Node 20+ and installs the CLI globally, then points you at `hacklab join`:
 
 ```powershell
 irm https://hacklab.so/install.ps1 | iex
 ```
 
-It reads your agents' usage from your Windows home (`%USERPROFILE%\.claude`,
-`.codex`, and Cursor's native tracking DB) and registers a daily background sync
-as a Task Scheduler task. If you run Claude Code or Codex **inside WSL**, install
-there instead with the `curl … | sh` command above, run from your WSL shell.
+The CLI reads your agents' usage from your Windows home (`%USERPROFILE%\.claude`,
+`.codex`, and Cursor's native tracking DB), and `hacklab demon` registers the
+daily background sync as a Task Scheduler task. If you run Claude Code or Codex
+**inside WSL**, install there instead with the `curl … | sh` command above, run
+from your WSL shell.
 
 The installer also enables local PowerShell scripts for your user
 (`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`) so the `hacklab` command
@@ -73,7 +76,8 @@ scan local AI usage → see your rank → sign in with GitHub → claim a userna
 5. **Username** — pick your Hacklab handle (checked for availability live).
 6. **Claim** — saves your usage, syncs pinned GitHub projects, and claims
    `hacklab.so/<username>`. Bio and the first drop finish activation in the web
-   onboarding flow.
+   onboarding flow. Join never schedules anything behind your back — it points
+   you at `hacklab demon` for the daily sync.
 7. **Card** — renders the belt, level, rank, and token breakdown directly in the
    terminal. Terminals without inline images get a text version.
 8. **Share** — one optional X prompt. Saying yes saves the image to
@@ -86,6 +90,14 @@ scan local AI usage → see your rank → sign in with GitHub → claim a userna
   finished profile it stops early and points you at `hacklab logout` +
   `hacklab login` to switch accounts.
 - `hacklab sync` — re-scan local AI usage and sync it to your profile.
+- `hacklab demon` — summon the daemon: an OS-native daily job (launchd on macOS,
+  a systemd user timer on Linux, a Task Scheduler task on Windows) that re-scans
+  and syncs once a day, so your tokens, rank, and streak stay current without
+  you running anything. No daemon, no streak. Re-running it is idempotent;
+  `hacklab demon off` tears it down, and `hacklab logout` removes it too. On a
+  platform we can't schedule (BSD, a locked-down box) it prints the one-line
+  cron command instead of pretending it worked. `hacklab daemon` works as well,
+  and `hacklab sync --install-daily` still forwards here.
 - `hacklab whoami` — show who you're logged in as.
 - `hacklab drop "message"` — post a drop to your feed (`-u <url>` to attach a
   link). Human output prints its profile URL; `--json` returns a stable envelope

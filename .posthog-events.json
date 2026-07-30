@@ -16,8 +16,18 @@
   },
   {
     "event_name": "cli_daily_sync_installed",
-    "event_description": "A user opted in and the OS-native daily background sync was successfully installed.",
-    "file": "src/commands/sync.ts"
+    "event_description": "A user ran `hacklab demon` and the OS-native daily background sync was successfully installed.",
+    "file": "src/commands/demon.ts"
+  },
+  {
+    "event_name": "cli_daily_sync_manual",
+    "event_description": "A user ran `hacklab demon` on a platform we can't auto-schedule (or the scheduler write failed), so the manual cron instructions were printed instead.",
+    "file": "src/commands/demon.ts"
+  },
+  {
+    "event_name": "cli_daily_sync_removed",
+    "event_description": "A user ran `hacklab demon off` and the OS-native daily background sync was torn down.",
+    "file": "src/commands/demon.ts"
   },
   {
     "event_name": "cli_drop_posted",

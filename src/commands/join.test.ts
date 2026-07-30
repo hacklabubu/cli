@@ -330,9 +330,9 @@ describe('join — existing GitHub account', () => {
 
     expect(calledClaim()).toBe(true)
     expect(m.uploadTokenScan).toHaveBeenCalled()
-    // A successful claim sets up the daily background sync automatically, so
-    // usage/streaks and the retention signal stay fresh without a manual step.
-    expect(m.installDailySync).toHaveBeenCalled()
+    // The daemon is its own onboarding step now: join must never schedule a
+    // background job behind the user's back, only tell them to run it.
+    expect(m.installDailySync).not.toHaveBeenCalled()
     // No "welcome back" short-circuit for an unclaimed profile.
     expect(
       m.note.mock.calls.some((c) =>
@@ -345,29 +345,28 @@ describe('join — existing GitHub account', () => {
     )
   })
 
-  it('surfaces the manual daily-sync command on an unschedulable platform (BSD)', async () => {
+  it('hands the user off to `hacklab demon` instead of scheduling it', async () => {
+    // Onboarding step 4 is "summon the daemon", so the last thing join does is
+    // name that command — both in the note and in the outro line.
     m.loadSession.mockResolvedValueOnce(null).mockResolvedValue({
       token: 't',
-      email: 'bsd@example.com',
-      handle: 'github-derived',
-      usernameClaimed: false,
+      email: 'new@example.com',
+      handle: undefined,
       appUrl: 'https://hacklab.so',
       savedAt: '2026-06-20T00:00:00.000Z',
-    })
-    // installDailySync returns unsupported on BSD (no launchd/systemd/schtasks).
-    m.installDailySync.mockResolvedValue({
-      ok: false,
-      mechanism: 'unsupported',
-      instructions: 'schedule this with cron: node cli sync --quiet',
     })
 
     await join({})
 
-    // The claim still succeeds, and the cron fallback is printed, not swallowed.
     expect(calledClaim()).toBe(true)
-    expect(m.info.mock.calls.some((c) => String(c[0]).includes('cron'))).toBe(
-      true
+    expect(m.installDailySync).not.toHaveBeenCalled()
+    const daemonNote = m.note.mock.calls.find((c) =>
+      String(c[1]).includes('daemon')
     )
+    expect(String(daemonNote?.[0])).toContain('hacklab demon')
+    expect(
+      m.outro.mock.calls.some((c) => String(c[0]).includes('hacklab demon'))
+    ).toBe(true)
   })
 
   it('reuses a half-finished authenticated signup without logging in again', async () => {
