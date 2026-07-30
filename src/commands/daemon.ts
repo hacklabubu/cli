@@ -20,8 +20,6 @@ import { dim, error, info, success } from '../ui.js'
  * tells people to run, so arming the daemon is a thing you *did*, not a thing
  * that happened to you. Re-running is idempotent — the installers overwrite the
  * existing schedule rather than stacking a second one.
- *
- * `demon` (0.10.3 shipped it as the command name) still resolves here.
  */
 export async function daemon(args: string[] = []): Promise<void> {
   if (args.includes('off') || args.includes('--off')) return dismiss()

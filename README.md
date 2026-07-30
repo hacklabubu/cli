@@ -96,8 +96,8 @@ scan local AI usage → see your rank → sign in with GitHub → claim a userna
   you running anything. No daemon, no streak. Re-running it is idempotent;
   `hacklab daemon off` tears it down, and `hacklab logout` removes it too. On a
   platform we can't schedule (BSD, a locked-down box) it prints the one-line
-  cron command instead of pretending it worked. `hacklab demon` (the spelling
-  0.10.3 shipped) and `hacklab sync --install-daily` both still forward here.
+  cron command instead of pretending it worked. `hacklab sync --install-daily`
+  still forwards here.
 - `hacklab whoami` — show who you're logged in as.
 - `hacklab drop "message"` — post a drop to your feed (`-u <url>` to attach a
   link). Human output prints its profile URL; `--json` returns a stable envelope

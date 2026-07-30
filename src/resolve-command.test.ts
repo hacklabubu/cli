@@ -45,17 +45,6 @@ describe('resolveCommand', () => {
     expect(resolveCommand('dr')).toEqual({ kind: 'match', name: 'drop' })
   })
 
-  it('resolves an alias, and a prefix of one, to the canonical command', () => {
-    // 0.10.3 shipped the command as `demon`; it stays a working alias so anyone
-    // following the old onboarding copy isn't stranded.
-    expect(resolveCommand('demon')).toEqual({ kind: 'match', name: 'daemon' })
-    expect(resolveCommand('de')).toEqual({ kind: 'match', name: 'daemon' })
-    // A command and its own alias are one candidate, not an ambiguity.
-    expect(
-      resolveCommand('d', ['daemon', 'sync'], { demon: 'daemon' })
-    ).toEqual({ kind: 'match', name: 'daemon' })
-  })
-
   it('reports every match for an ambiguous prefix', () => {
     expect(resolveCommand('c')).toEqual({
       kind: 'ambiguous',
