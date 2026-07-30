@@ -383,14 +383,16 @@ export async function join(opts: { browser?: boolean } = {}) {
   // side effect of joining is exactly the kind of thing that should be a
   // deliberate command they ran.
   clack.note(
-    `${bold('hacklab demon')}\n\n` +
+    `${bold('hacklab daemon')}\n\n` +
       'Schedules a daily background re-scan so your tokens, rank, and streak\n' +
       'stay current without you running anything. No daemon, no streak.',
     'next: summon the daemon'
   )
 
   clack.outro(
-    dim('run `hacklab demon`, then return to onboarding for your bio and drop.')
+    dim(
+      'run `hacklab daemon`, then return to onboarding for your bio and drop.'
+    )
   )
 }
 

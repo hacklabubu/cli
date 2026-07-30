@@ -1,7 +1,7 @@
 import { book, parseBookArgs } from './commands/book.js'
 import { chat } from './commands/chat.js'
 import { configCommand } from './commands/config.js'
-import { demon } from './commands/demon.js'
+import { daemon } from './commands/daemon.js'
 import { drop, parseDropArgs } from './commands/drop.js'
 import { essay } from './commands/essay.js'
 import { hackathon } from './commands/hackathon.js'
@@ -50,12 +50,13 @@ export const COMMANDS: CommandSpec[] = [
     run: (args) => sync(args),
   },
   {
-    name: 'demon',
+    name: 'daemon',
     args: '[off]',
     summary: 'summon the daily background sync (off tears it down)',
-    // The pun is the command; the correct spelling still has to work.
-    aliases: ['daemon'],
-    run: (args) => demon(args),
+    // 0.10.3 shipped this as `demon`, and onboarding told people to run that —
+    // keep the misspelling working rather than stranding anyone mid-flow.
+    aliases: ['demon'],
+    run: (args) => daemon(args),
   },
   {
     name: 'whoami',

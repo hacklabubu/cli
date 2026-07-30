@@ -19,7 +19,7 @@ import {
   uploadTokenScan,
 } from '../sync.js'
 import { bold, dim, error, info, success } from '../ui.js'
-import { demon } from './demon.js'
+import { daemon } from './daemon.js'
 
 const SESSION_EXPIRED_REASON =
   'your hacklab session expired — run `hacklab login`'
@@ -27,16 +27,16 @@ const SESSION_EXPIRED_REASON =
 /**
  * `hacklab sync` — dispatch on flags:
  *   (none)            interactive sync (scan, upload, show stats)
- *   --install-daily   deprecated alias for `hacklab demon`
+ *   --install-daily   deprecated alias for `hacklab daemon`
  *   --quiet           the unattended daily run (logs to a file, no output)
  */
 export async function sync(args: string[] = []): Promise<void> {
   if (args.includes('--install-daily')) {
     // Kept working (it shipped, and installed CLIs / old docs still say it) but
-    // no longer advertised: scheduling the daemon is `hacklab demon` now, which
+    // no longer advertised: scheduling the daemon is `hacklab daemon` now, which
     // is what the web onboarding flow tells people to run.
-    info(dim('`sync --install-daily` is now `hacklab demon` — running that.'))
-    return demon()
+    info(dim('`sync --install-daily` is now `hacklab daemon` — running that.'))
+    return daemon()
   }
   if (args.includes('--quiet')) return quietSync()
   return interactiveSync()

@@ -14,7 +14,7 @@ export type ResolvedCommand =
  * - a prefix matching several is ambiguous (`s` -> sync | scan);
  * - a token matching none is unknown (a typo like `ogr` does not resolve).
  *
- * Aliases (`daemon` -> `demon`) resolve the same way and to the canonical name,
+ * Aliases (`demon` -> `daemon`) resolve the same way and to the canonical name,
  * but they collapse into that name for ambiguity purposes: a prefix shared by a
  * command and its own alias is not ambiguous, it just resolves.
  */
@@ -27,8 +27,8 @@ export function resolveCommand(
   const exactAlias = aliases[token]
   if (exactAlias) return { kind: 'match', name: exactAlias }
 
-  // Dedupe by canonical name and keep registry order, so `dae` (alias-only) and
-  // `de` (command) both land on `demon` without reporting it twice.
+  // Dedupe by canonical name and keep registry order, so `de` (alias-only) and
+  // `dae` (command) both land on `daemon` without reporting it twice.
   const matches = [
     ...new Set([
       ...commands.filter((c) => c.startsWith(token)),
