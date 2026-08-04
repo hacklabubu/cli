@@ -91,7 +91,9 @@ describe('promptStats payload matches the server schema', () => {
 
   it('stays under the histogram entry cap even at the widest axis', () => {
     // bucketMax maxes out at 100, so there can never be more than 100 buckets.
-    const stats = statsFrom(Array.from({ length: 400 }, (_, i) => (i % 200) + 1))
+    const stats = statsFrom(
+      Array.from({ length: 400 }, (_, i) => (i % 200) + 1)
+    )
     expect(stats.histogram.length).toBeLessThanOrEqual(200)
     expect(serverPromptStatsSchema.safeParse(stats).success).toBe(true)
   })
@@ -111,10 +113,9 @@ describe('promptStats payload matches the server schema', () => {
 
   it('truncates the sample to the server cap', () => {
     const stats = statsFrom([3], {
-      conversationSample: 'x'.repeat(CONVERSATION_SAMPLE_MAX_CHARS + 500).slice(
-        0,
-        CONVERSATION_SAMPLE_MAX_CHARS
-      ),
+      conversationSample: 'x'
+        .repeat(CONVERSATION_SAMPLE_MAX_CHARS + 500)
+        .slice(0, CONVERSATION_SAMPLE_MAX_CHARS),
     })
     expect(serverPromptStatsSchema.safeParse(stats).success).toBe(true)
   })

@@ -227,7 +227,10 @@ export async function scanPromptStats(
         }
       }
 
-      if (options.includeSample && sampleChars < CONVERSATION_SAMPLE_MAX_CHARS) {
+      if (
+        options.includeSample &&
+        sampleChars < CONVERSATION_SAMPLE_MAX_CHARS
+      ) {
         sampleParts.push(text)
         sampleChars += text.length + 2
       }
@@ -264,7 +267,10 @@ export async function scanPromptStats(
 async function resolveProjects(
   byProjectDir: Map<string, ProjectAccumulator>
 ): Promise<PromptStatsProject[]> {
-  const byRepo = new Map<string, { promptCount: number; lastActiveAt: number }>()
+  const byRepo = new Map<
+    string,
+    { promptCount: number; lastActiveAt: number }
+  >()
 
   for (const project of byProjectDir.values()) {
     if (project.promptCount === 0 || !project.cwd) continue

@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   isPromptConsentTier,
-  parsePromptStatsFlag,
   PROMPT_CONSENT_TIERS,
+  parsePromptStatsFlag,
 } from './prompt-consent.js'
 
 describe('isPromptConsentTier', () => {
@@ -35,8 +35,12 @@ describe('parsePromptStatsFlag', () => {
   })
 
   it('accepts an explicit tier', () => {
-    expect(parsePromptStatsFlag(['--share-prompt-stats=full']).tier).toBe('full')
-    expect(parsePromptStatsFlag(['--share-prompt-stats=none']).tier).toBe('none')
+    expect(parsePromptStatsFlag(['--share-prompt-stats=full']).tier).toBe(
+      'full'
+    )
+    expect(parsePromptStatsFlag(['--share-prompt-stats=none']).tier).toBe(
+      'none'
+    )
   })
 
   it('falls back to the safe tier on an unknown value', () => {
@@ -59,8 +63,10 @@ describe('parsePromptStatsFlag', () => {
 
   it('lets the last flag win when repeated', () => {
     expect(
-      parsePromptStatsFlag(['--share-prompt-stats=full', '--no-share-prompt-stats'])
-        .tier
+      parsePromptStatsFlag([
+        '--share-prompt-stats=full',
+        '--no-share-prompt-stats',
+      ]).tier
     ).toBe('none')
   })
 })
@@ -72,7 +78,9 @@ describe('resolvePromptConsent', () => {
     vi.resetModules()
     vi.doMock('./config.js', () => ({
       loadConfig: async () => ({}),
-      saveConfig: async () => {},
+      saveConfig: async () => {
+        // These cases assert the read path; the write is irrelevant.
+      },
     }))
     const { resolvePromptConsent } = await import('./prompt-consent.js')
 
@@ -82,7 +90,9 @@ describe('resolvePromptConsent', () => {
       configurable: true,
     })
     try {
-      expect(await resolvePromptConsent(null, { interactive: true })).toBe('none')
+      expect(await resolvePromptConsent(null, { interactive: true })).toBe(
+        'none'
+      )
     } finally {
       Object.defineProperty(process.stdin, 'isTTY', {
         value: isTTY,
@@ -97,11 +107,15 @@ describe('resolvePromptConsent', () => {
     vi.resetModules()
     vi.doMock('./config.js', () => ({
       loadConfig: async () => ({ promptStatsConsent: 'full' }),
-      saveConfig: async () => {},
+      saveConfig: async () => {
+        // These cases assert the read path; the write is irrelevant.
+      },
     }))
     const { resolvePromptConsent } = await import('./prompt-consent.js')
     try {
-      expect(await resolvePromptConsent(null, { interactive: true })).toBe('full')
+      expect(await resolvePromptConsent(null, { interactive: true })).toBe(
+        'full'
+      )
     } finally {
       vi.doUnmock('./config.js')
       vi.resetModules()

@@ -139,9 +139,13 @@ function printDisclosure(): void {
   info('    anything from a project without a git remote')
   console.log('')
   info(
-    dim('  hacklab stores the numbers on your profile. you can change or revoke')
+    dim(
+      '  hacklab stores the numbers on your profile. you can change or revoke'
+    )
   )
-  info(dim('  this later with `hacklab config prompt-stats <none|stats|full>`.'))
+  info(
+    dim('  this later with `hacklab config prompt-stats <none|stats|full>`.')
+  )
   console.log('')
 }
 
@@ -178,9 +182,7 @@ export async function resolvePromptConsent(
   }
 
   console.log('')
-  info(
-    '  optional: a sample of your prompt text (up to 20k characters) can be'
-  )
+  info('  optional: a sample of your prompt text (up to 20k characters) can be')
   info('  sent so an LLM can score how technical your prompting is. hacklab')
   info(`  scores it and ${bold('discards it')} — the text is never stored.`)
   console.log('')

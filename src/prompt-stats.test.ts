@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -21,7 +21,9 @@ const userLine = (content: unknown, extra: Record<string, unknown> = {}) => ({
 
 describe('promptTextFrom', () => {
   it('reads a plain string prompt', () => {
-    expect(promptTextFrom(userLine('fix the auth bug'))).toBe('fix the auth bug')
+    expect(promptTextFrom(userLine('fix the auth bug'))).toBe(
+      'fix the auth bug'
+    )
   })
 
   it('joins an all-text content array', () => {
@@ -59,7 +61,9 @@ describe('promptTextFrom', () => {
   })
 
   it('rejects assistant turns and malformed lines', () => {
-    expect(promptTextFrom({ type: 'assistant', message: { content: 'hi' } })).toBeNull()
+    expect(
+      promptTextFrom({ type: 'assistant', message: { content: 'hi' } })
+    ).toBeNull()
     expect(promptTextFrom({ type: 'user' })).toBeNull()
     expect(promptTextFrom(null)).toBeNull()
     expect(promptTextFrom('nonsense')).toBeNull()
@@ -152,7 +156,9 @@ describe('gitOriginUrl', () => {
   })
 
   it('returns null for a path that does not exist', async () => {
-    expect(await gitOriginUrl(join(tmpdir(), 'hacklab-does-not-exist'))).toBeNull()
+    expect(
+      await gitOriginUrl(join(tmpdir(), 'hacklab-does-not-exist'))
+    ).toBeNull()
   })
 })
 
