@@ -9,6 +9,11 @@ Commit, push, and open (or update) a GitHub PR to `main` for this repo (the `hac
 
 **Shipping a code change means bumping the version.** Publishing is automatic: when a commit lands on `main` with a `package.json` version that isn't on npm yet, `.github/workflows/publish-cli.yml` publishes it (OIDC Trusted Publishing, no token). npm rejects a same-version publish, so a real bump is required to ship CLI code. See Step 2.
 
+CI enforces this: the **Version bump** job fails any PR that touches `src/`
+without moving the version. If you see it red, you skipped Step 2 — the merge
+would have published nothing and the change would never have reached
+`npm install hacklab`, with every other check still green.
+
 ## Input
 
 - Optional PR title/summary. Otherwise derive from the branch and commits.
@@ -63,7 +68,7 @@ gh pr list --head "$BRANCH" --state open --json number,url,title
 
   ```bash
   gh pr create --base main --head "$BRANCH" \
-    --title "<type>(<scope>): <short summary>" \
+    --title "vX.Y.Z — <type>(<scope>): <short summary>" \
     --body "$(cat <<'EOF'
 ## What
 <what changed, user-facing>
@@ -74,7 +79,12 @@ EOF
 )"
   ```
 
-Title convention: a plain conventional-commit subject. If Step 2 bumped the version, note the new version in the body (`publishes vX.Y.Z on merge`) so reviewers know a release rides along.
+**Title convention: lead with the version this PR publishes**, then a plain
+conventional-commit subject — `v0.10.5 — feat(sync): upload prompt stats`. The
+version is the release this merge puts on npm, so it belongs where reviewers
+read it first. Drop the `vX.Y.Z —` prefix only when Step 2 skipped the bump
+(docs/CI-only PRs, which publish nothing). Repeat it in the body as
+`publishes vX.Y.Z on merge`.
 
 If the user asks for a draft PR, add `--draft`.
 

@@ -36,3 +36,7 @@ build and test freely. Full policy in `docs/offload.md`.
   - any non-`main` push / manual dispatch → a throwaway `-staging.<run>`
     prerelease to the **`staging`** tag, so `latest` is never touched.
   - So: **bump `package.json` `version`** when shipping a user-facing change.
+    CI's **Version bump** job fails any PR touching `src/` that doesn't, because
+    the alternative is a silent no-op: everything green, merged, and never
+    published. Name the version in the PR title (`v0.10.5 — feat(...): ...`).
+  - `/ship-lite` does all of this for you — prefer it over hand-rolling a PR.

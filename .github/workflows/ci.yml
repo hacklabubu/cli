@@ -11,6 +11,42 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # A src/ change that lands on main without a version bump is published by
+  # nobody: publish-cli.yml only publishes a version npm doesn't already have,
+  # so it silently no-ops and the change never reaches `npm install hacklab`.
+  # That failure is invisible — CI is green, the PR merges, and the feature just
+  # isn't there. Hence a gate rather than a line in a doc.
+  version-bump:
+    name: Version bump
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Require a version bump when src/ changed
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- src/; then
+            echo "No src/ changes — no publish needed, no bump required."
+            exit 0
+          fi
+
+          base_version=$(git show "$BASE_SHA":package.json | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).version")
+          head_version=$(node -p "require('./package.json').version")
+
+          if [ "$base_version" = "$head_version" ]; then
+            echo "::error::src/ changed but package.json version is still $head_version."
+            echo "npm rejects a same-version publish, so merging this would ship nothing."
+            echo "Bump the version (patch by default) so the change reaches npm."
+            exit 1
+          fi
+
+          echo "src/ changed and version moved $base_version -> $head_version. Publishes on merge."
+
   check:
     name: Check & Test
     runs-on: ubuntu-latest
