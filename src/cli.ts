@@ -105,6 +105,9 @@ function printHelp() {
   console.log(
     `  ${dim('--cursor-email')} ${dim('<email>')}                  scope a Cursor team key to you (or ${dim('CURSOR_EMAIL')})`
   )
+  console.log(
+    `  ${dim('--share-prompt-stats')}${dim('[=stats|full]')}          answer the prompt-stats consent up front`
+  )
   console.log('')
 }
 

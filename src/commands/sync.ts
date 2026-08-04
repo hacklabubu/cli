@@ -6,6 +6,12 @@ import {
   markSyncPaused,
 } from '../daily-sync.js'
 import { captureEvent } from '../posthog.js'
+import {
+  loadPromptConsent,
+  parsePromptStatsFlag,
+  resolvePromptConsent,
+  savePromptConsent,
+} from '../prompt-consent.js'
 import { scanAllTools } from '../scanners/index.js'
 import { loadSessionState, type Session } from '../session.js'
 import {
@@ -15,6 +21,7 @@ import {
   LOGIN_EXPIRED_MESSAGE,
   refreshSession,
   runSync,
+  scanConsentedPromptStats,
   syncGithubRepos,
   uploadTokenScan,
 } from '../sync.js'
@@ -31,6 +38,12 @@ const SESSION_EXPIRED_REASON =
  *   --quiet           the unattended daily run (logs to a file, no output)
  */
 export async function sync(args: string[] = []): Promise<void> {
+  // Pull --share-prompt-stats out first so it works alongside every mode
+  // below (an agent can set consent on the same run that installs the daemon).
+  const { tier: flagTier, rest } = parsePromptStatsFlag(args)
+  if (flagTier) await savePromptConsent(flagTier)
+  args = rest
+
   if (args.includes('--install-daily')) {
     // Kept working (it shipped, and installed CLIs / old docs still say it) but
     // no longer advertised: scheduling the daemon is `hacklab daemon` now, which
@@ -67,12 +80,17 @@ async function quietSync(): Promise<void> {
 
   const session = await ensureFreshSession(state.session)
   const scan = await scanAllTools()
+  // Whatever the user already consented to. The unattended run never asks, so
+  // a machine that has never answered uploads token counts only.
+  const promptStats = await scanConsentedPromptStats(
+    (await loadPromptConsent()) ?? 'none'
+  )
 
   // Upload tokens AND mirror pinned repos together, so the after-refresh retry
   // below does the exact same work as the happy path (no silently-skipped repo
   // sync on a day the session had to be refreshed mid-run).
   const push = async (s: Session) => {
-    await uploadTokenScan(s, scan)
+    await uploadTokenScan(s, scan, { promptStats })
     await syncGithubRepos(s)
   }
 
@@ -128,6 +146,10 @@ async function interactiveSync() {
   // job, so expiry management doesn't differ by entry point.
   const session = await ensureFreshSession(sessionState.session)
 
+  // Ask before scanning anything conversational. Asked once, then remembered;
+  // an unanswered or non-TTY run resolves to 'none'.
+  const promptConsent = await resolvePromptConsent(null, { interactive: true })
+
   console.log('')
   console.log(bold('  hacklab sync'))
   console.log(dim('  scanning local AI tool usage...'))
@@ -137,7 +159,7 @@ async function interactiveSync() {
   try {
     // Manual `hacklab sync` — tag the upload as interactive so the backend counts
     // it as user activity (the daily background job and join's upload don't).
-    result = await runSync(session, { interactive: true })
+    result = await runSync(session, { interactive: true, promptConsent })
   } catch (e) {
     error(e instanceof Error ? e.message : 'sync failed')
     process.exit(1)
@@ -184,6 +206,32 @@ async function interactiveSync() {
   )
   if (Number(r.tokensDelta) > 0) {
     info(`  +${formatTokens(Number(r.tokensDelta))} since last sync`)
+  }
+
+  if (result.promptStats) {
+    const { totalPrompts } = result.promptStats
+    info(
+      `  prompts      ${formatTokens(totalPrompts)} scanned${
+        promptConsent === 'full' ? dim(' (+ text sample)') : ''
+      }`
+    )
+    // The backend can only attach a project's count if the repo matches one of
+    // this user's own projects. Reporting the match rate keeps a scan that
+    // matched nothing from reading as a success.
+    const summary = result.result.promptStats as
+      | { projectsMatched?: number; projectsReported?: number }
+      | undefined
+    const reported = summary?.projectsReported ?? 0
+    const matched = summary?.projectsMatched ?? 0
+    if (reported > 0 && matched === 0) {
+      info(
+        dim(
+          `  none of your ${reported} local repos matched a hacklab project — run \`hacklab brag\` in one`
+        )
+      )
+    } else if (matched > 0) {
+      info(dim(`  matched ${matched} of ${reported} local repos to projects`))
+    }
   }
 
   // Mirror pinned GitHub repos into projects (best-effort; never fails sync).

@@ -1,4 +1,6 @@
 import { getMachineIdentity } from './machine.js'
+import type { PromptConsentTier } from './prompt-consent.js'
+import { type PromptStats, scanPromptStats } from './prompt-stats.js'
 import {
   type AggregateScan,
   type CursorScanStatus,
@@ -36,6 +38,8 @@ export type SyncResult = {
   result: Record<string, unknown>
   models: Array<{ name: string; tokens: number }>
   cursorScanStatus: CursorScanStatus
+  /** What was uploaded under the consent tier, or null when opted out. */
+  promptStats: PromptStats | null
 }
 
 export const LOGIN_EXPIRED_MESSAGE = 'login expired. run hacklab login again'
@@ -182,7 +186,12 @@ function toolTotalsRecord(scan: AggregateScan) {
 export async function uploadTokenScan(
   session: Session,
   scan: AggregateScan,
-  opts: { timeoutMs?: number; interactive?: boolean } = {}
+  opts: {
+    timeoutMs?: number
+    interactive?: boolean
+    /** Consented prompt statistics. Omitted entirely unless the user opted in. */
+    promptStats?: PromptStats | null
+  } = {}
 ): Promise<Record<string, unknown>> {
   const { machineId, machineName } = await getMachineIdentity()
   const res = await fetchApi(session, '/api/claim/sync', {
@@ -203,6 +212,9 @@ export async function uploadTokenScan(
       toolTotals: toolTotalsRecord(scan),
       modelTotals: scan.modelTotals,
       hourlyTotals: scan.hourlyTotals,
+      // Absent unless consented — the backend's field is optional, so an
+      // opted-out sync is byte-identical to the pre-prompt-stats payload.
+      ...(opts.promptStats ? { promptStats: opts.promptStats } : {}),
     }),
     ...(opts.timeoutMs ? { signal: AbortSignal.timeout(opts.timeoutMs) } : {}),
   })
@@ -272,11 +284,15 @@ export async function ensureFreshSession(session: Session): Promise<Session> {
 
 export async function runSync(
   session: Session,
-  opts: { interactive?: boolean } = {}
+  opts: { interactive?: boolean; promptConsent?: PromptConsentTier } = {}
 ): Promise<SyncResult> {
   const scan = await scanAllTools()
+  // Scanning transcripts is skipped entirely at the 'none' tier — an opted-out
+  // user's conversations are never even read.
+  const promptStats = await scanConsentedPromptStats(opts.promptConsent)
   const result = await uploadTokenScan(session, scan, {
     interactive: opts.interactive,
+    promptStats,
   })
 
   const totals = toolTotalsRecord(scan)
@@ -299,5 +315,23 @@ export async function runSync(
     result,
     models,
     cursorScanStatus: scan.cursorScanStatus,
+    promptStats,
+  }
+}
+
+/**
+ * Scan the local transcripts for the given consent tier, or return null when
+ * there's no consent (or nothing to find). Never throws: prompt stats are an
+ * extra on top of the token sync, so a scan failure must not cost the user
+ * their token upload.
+ */
+export async function scanConsentedPromptStats(
+  tier: PromptConsentTier | undefined
+): Promise<PromptStats | null> {
+  if (!tier || tier === 'none') return null
+  try {
+    return await scanPromptStats({ includeSample: tier === 'full' })
+  } catch {
+    return null
   }
 }

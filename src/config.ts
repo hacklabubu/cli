@@ -5,6 +5,12 @@ import { dirname, join } from 'node:path'
 export type HacklabConfig = {
   cursorApiKey?: string
   cursorEmail?: string
+  /**
+   * Consent for uploading Claude Code conversation data: 'none' | 'stats' |
+   * 'full'. Absent means never asked — see prompt-consent.ts, which owns the
+   * tiers and treats an unset value as "ask", never as a yes.
+   */
+  promptStatsConsent?: string
 }
 
 const CONFIG_PATH = join(homedir(), '.hacklab', 'config.json')

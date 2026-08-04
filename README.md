@@ -109,7 +109,8 @@ scan local AI usage → see your rank → sign in with GitHub → claim a userna
   machine-readable output an agent can drive.
 - `hacklab login` — re-authenticate with GitHub.
 - `hacklab logout` — clear your saved session on this machine.
-- `hacklab config <key> <value>` — set config (`cursor-api-key`, `cursor-email`).
+- `hacklab config <key> <value>` — set config (`cursor-api-key`, `cursor-email`,
+  `prompt-stats`).
   Bare `hacklab config` prints the effective values and where each came from.
 - `hacklab project` — publish the repo you're standing in as a project. It reads
   the git remote, README, and package.json, shows a preview, and publishes on
@@ -208,6 +209,45 @@ otherwise, and all of it would land on your profile as your own.
 
 If a key is set but Cursor rejects it, the scan says so and falls back to the
 local estimate — it won't quietly hand you an estimate you think is exact.
+
+## Prompt stats
+
+`sync` can also chart *how* you prompt, not just how many tokens you burned:
+a histogram of your prompt lengths and a prompt count per project, shown on the
+AI Usage tab of your profile. It reads your local Claude Code transcripts
+(`~/.claude/projects`) on this machine.
+
+Nothing conversation-derived is uploaded until you say so. The first
+interactive `sync` asks, remembers the answer, and never asks again. There are
+three tiers:
+
+| Tier    | What leaves your machine |
+| ------- | ------------------------ |
+| `none`  | token counts only — exactly what the CLI did before this existed |
+| `stats` | + prompt-length histogram and per-project counts. Numbers only; no prompt text |
+| `full`  | + a sample of your prompt text (≤20k chars), scored for how technical it is and then discarded server-side |
+
+Projects are matched by their git `origin` remote, so a prompt count only lands
+on a project you've already added to hacklab (`hacklab brag`). Directories
+without a git remote are skipped entirely.
+
+Answer up front, without the prompt — the agent-friendly path:
+
+```sh
+hacklab sync --share-prompt-stats         # numbers only
+hacklab sync --share-prompt-stats=full    # numbers + text sample
+hacklab sync --no-share-prompt-stats      # refuse
+```
+
+Change or revoke it any time:
+
+```sh
+hacklab config prompt-stats none    # stop sharing; nothing further is uploaded
+hacklab config                      # show the current tier
+```
+
+The unattended daily sync never asks. A machine that has never answered
+uploads token counts only.
 
 ## Choosing a backend
 
