@@ -20,7 +20,9 @@ describe('resolveCommand', () => {
   })
 
   it('resolves a unique prefix to its full command', () => {
-    expect(resolveCommand('jo')).toEqual({ kind: 'match', name: 'join' })
+    // `join` and `jobs` diverge at the 3rd letter, so `jo` no longer picks one.
+    expect(resolveCommand('joi')).toEqual({ kind: 'match', name: 'join' })
+    expect(resolveCommand('job')).toEqual({ kind: 'match', name: 'jobs' })
     expect(resolveCommand('w')).toEqual({ kind: 'match', name: 'whoami' })
     expect(resolveCommand('sy')).toEqual({ kind: 'match', name: 'sync' })
     expect(resolveCommand('o')).toEqual({ kind: 'match', name: 'org' })
@@ -66,6 +68,11 @@ describe('resolveCommand', () => {
     expect(resolveCommand('d')).toEqual({
       kind: 'ambiguous',
       matches: ['daemon', 'drop'],
+    })
+    // `jo` stopped being join shorthand when the job shop landed.
+    expect(resolveCommand('jo')).toEqual({
+      kind: 'ambiguous',
+      matches: ['join', 'jobs'],
     })
   })
 

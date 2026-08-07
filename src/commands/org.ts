@@ -26,6 +26,7 @@ import {
   stripControl,
   success,
 } from '../ui.js'
+import { orgJobs } from './org-jobs.js'
 
 // `hacklab org` is a small hub with two audiences. Humans: the bare command
 // edits (autosave editor), `claim` / `create` run interactive flows, and the
@@ -43,6 +44,7 @@ const SUBCOMMANDS = [
   'create',
   'edit',
   'access',
+  'jobs',
 ] as const
 
 // `hacklab org access <list|grant|revoke>` — who controls the org. Nested like
@@ -50,6 +52,12 @@ const SUBCOMMANDS = [
 // the `org` level. Note `org a` is now ambiguous (access/apply); `org ap` and
 // `org ac` still resolve.
 const ACCESS_SUBCOMMANDS = ['list', 'grant', 'revoke'] as const
+
+// The two things a claim on an org can be. `admin` is everything; `recruiter`
+// reaches `org jobs` and nothing else. Kept in step with ORG_CLAIM_ROLES on the
+// server (packages/db/src/schema/orgs.ts).
+const ORG_ROLES = ['admin', 'recruiter'] as const
+type OrgRole = (typeof ORG_ROLES)[number]
 
 // Must match ORG_SLUG_PATTERN on the server (apps/web/lib/org-payload.ts).
 const SLUG_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/
@@ -70,7 +78,18 @@ type ClaimableOrg = {
   via?: 'member' | 'email' | 'both'
 }
 
-type OrgState = { organizations: Org[]; claimable: ClaimableOrg[] }
+/** An org you may post jobs for, and at which role. Superset of `organizations`. */
+type PostableOrg = Org & { yourRole: OrgRole }
+
+// `organizations` is what you may *edit* (an admin claim). `postable` is what
+// you may post jobs for, which also includes the companies where you are only
+// a recruiter. Keeping them apart is the whole point: `org set` must never
+// reach a company `org jobs` can.
+type OrgState = {
+  organizations: Org[]
+  postable: PostableOrg[]
+  claimable: ClaimableOrg[]
+}
 
 // Human hint for why a company is claimable.
 export function claimReason(via: ClaimableOrg['via']): string {
@@ -133,6 +152,7 @@ async function fetchOrgState(session: Session): Promise<OrgState> {
   }
   return {
     organizations: (data?.organizations ?? []) as Org[],
+    postable: (data?.postable ?? []) as PostableOrg[],
     claimable: (data?.claimable ?? []) as ClaimableOrg[],
   }
 }
@@ -209,6 +229,7 @@ type Claimant = {
   handle: string | null
   displayName: string | null
   email: string
+  role: OrgRole
   // The user id of whoever granted this claim, or null for the original
   // claimer. An id, not a handle — see accessRows() for why it prints as-is.
   grantedBy: string | null
@@ -218,11 +239,12 @@ type Claimant = {
 
 type AccessList = {
   organization: { id: string; name: string; slug: string }
+  yourRole: OrgRole
   claimants: Claimant[]
 }
 
 /** Outcome of a grant/revoke, echoed by the server. */
-type AccessChange = { status: string; handle: string }
+type AccessChange = { status: string; handle: string; role?: OrgRole }
 
 type AccessResult<T> =
   | { ok: true; data: T }
@@ -240,8 +262,10 @@ type AccessResult<T> =
  */
 export function accessErrorCode(status: number, message: string): string {
   if (status === 401) return 'unauthorized'
-  if (status === 403) return 'forbidden'
-  if (status === 409) return 'last_claimant'
+  if (status === 403) {
+    return /only admins/i.test(message) ? 'not_admin' : 'forbidden'
+  }
+  if (status === 409) return 'last_admin'
   if (status === 400) return 'invalid_args'
   if (status === 404) {
     if (/^no hacklab account/i.test(message)) return 'no_such_account'
@@ -253,14 +277,17 @@ export function accessErrorCode(status: number, message: string): string {
 
 /** What the caller can do about a refusal. Printed to stderr, never stdout. */
 export function accessErrorHint(code: string): string | null {
-  if (code === 'last_claimant') {
-    return 'grant control to someone else first: `hacklab org access grant <handle>`'
+  if (code === 'last_admin') {
+    return 'make someone else an admin first: `hacklab org access grant <handle> --role admin`'
   }
   if (code === 'no_such_account') {
     return 'handles are hacklab usernames — check one with `hacklab hacker view <handle>`'
   }
   if (code === 'not_a_claimant') {
     return 'see who controls it with `hacklab org access list`'
+  }
+  if (code === 'not_admin') {
+    return 'only admins change access — a recruiter can post jobs and stand down, nothing else'
   }
   if (code === 'forbidden' || code === 'org_not_found') {
     return 'you no longer control this company — `hacklab org list` shows the ones you do'
@@ -319,7 +346,7 @@ async function accessRequest<T>(
 // Non-interactive, all take --json; one envelope shape with profile/hacker.
 
 function usage(): never {
-  error('usage: hacklab org [list|view|set|apply|claim|create|access]')
+  error('usage: hacklab org [list|view|set|apply|claim|create|access|jobs]')
   info(
     `  hacklab org                          ${dim('interactive editor (claim/create hub)')}`
   )
@@ -339,7 +366,11 @@ function usage(): never {
     `  hacklab org ${dim('access [list] [--org <slug>] [--json]')}     who controls it`
   )
   info(
-    `  hacklab org ${dim('access grant|revoke <handle> [--org <slug>] [--json]')}`
+    `  hacklab org ${dim('access grant <handle> [--role admin|recruiter] [--org <slug>] [--json]')}`
+  )
+  info(`  hacklab org ${dim('access revoke <handle> [--org <slug>] [--json]')}`)
+  info(
+    `  hacklab org ${dim('jobs [list|view|post|close]')}              its Job Shop listings`
   )
   info(`  fields: ${dim(ORG_FIELD_NAMES.join(', '))}`)
   process.exit(1)
@@ -436,6 +467,20 @@ async function orgList(args: string[]): Promise<void> {
       console.log(`  ${bold(o.name)}  ${dim(`${appUrl}/o/${o.slug}`)}`)
     }
   }
+
+  // Recruiter-only companies would be invisible otherwise: they are absent
+  // from `organizations` by design, and someone who cannot find the company
+  // cannot find its job shop either.
+  const recruiterOnly = state.postable.filter((o) => o.yourRole === 'recruiter')
+  if (recruiterOnly.length > 0) {
+    info(`you post jobs for (run ${dim('hacklab org jobs --org <slug>')}):`)
+    for (const o of recruiterOnly) {
+      console.log(
+        `  ${bold(o.name)}  ${dim(`/o/${o.slug}`)}  ${dim('(recruiter)')}`
+      )
+    }
+  }
+
   if (state.claimable.length > 0) {
     info(`claimable (run ${dim('hacklab org claim <slug>')}):`)
     for (const o of state.claimable) {
@@ -737,9 +782,12 @@ function accessUsage(): never {
   info(
     `  hacklab org access ${dim('[list] [--org <slug>] [--json]')}      who controls it`
   )
-  info(`  hacklab org access ${dim('grant <handle> [--org <slug>] [--json]')}`)
+  info(
+    `  hacklab org access ${dim('grant <handle> [--role admin|recruiter] [--org <slug>] [--json]')}`
+  )
   info(`  hacklab org access ${dim('revoke <handle> [--org <slug>] [--json]')}`)
-  hint('revoking yourself is allowed — the last controller is not')
+  hint('admin runs the company · recruiter only reaches `hacklab org jobs`')
+  hint('revoking yourself is allowed — the last admin is not')
   process.exit(1)
 }
 
@@ -795,6 +843,9 @@ function accessRows(claimants: Claimant[]): string[] {
   const rows = claimants.map((c) => ({
     who: claimantLabel(c),
     name: stripControl(c.displayName?.trim() || ''),
+    // Its own column, not buried in the meta tail: what someone may do here is
+    // the first thing you scan this list for.
+    role: c.role,
     meta: [
       c.isYou ? 'you' : null,
       grantedByLabel(c.grantedBy),
@@ -805,9 +856,10 @@ function accessRows(claimants: Claimant[]): string[] {
   }))
   const whoWidth = Math.max(...rows.map((r) => displayWidth(r.who)))
   const nameWidth = Math.max(...rows.map((r) => displayWidth(r.name)))
+  const roleWidth = Math.max(...rows.map((r) => displayWidth(r.role)))
   return rows.map(
     (r) =>
-      `  ${bold(padEndTo(r.who, whoWidth))}  ${padEndTo(r.name, nameWidth)}  ${dim(r.meta)}`
+      `  ${bold(padEndTo(r.who, whoWidth))}  ${padEndTo(r.name, nameWidth)}  ${padEndTo(r.role, roleWidth)}  ${dim(r.meta)}`
   )
 }
 
@@ -824,9 +876,9 @@ async function accessList(args: string[]): Promise<void> {
   })
   if (!result.ok) accessFail(json, result.code, result.message)
 
-  const { organization, claimants } = result.data
+  const { organization, claimants, yourRole } = result.data
   if (json) {
-    printJson({ organization, claimants })
+    printJson({ organization, yourRole, claimants })
     return
   }
 
@@ -844,12 +896,32 @@ async function accessList(args: string[]): Promise<void> {
   info(`grant control with ${dim('hacklab org access grant <handle>')}`)
 }
 
+/** Read `--role`, defaulting to admin — the historical meaning of a grant. */
+export function parseRoleFlag(
+  args: string[]
+): { ok: true; role: OrgRole; rest: string[] } | { ok: false; error: string } {
+  const { value, rest } = extractOption(args, '--role')
+  if (value === undefined) return { ok: true, role: 'admin', rest }
+  const role = value.trim().toLowerCase()
+  if (!ORG_ROLES.includes(role as OrgRole)) {
+    return {
+      ok: false,
+      error: `--role must be one of: ${ORG_ROLES.join(', ')}`,
+    }
+  }
+  return { ok: true, role: role as OrgRole, rest }
+}
+
 async function accessGrant(args: string[]): Promise<void> {
   const json = args.includes('--json')
-  const { value: orgSlug, rest } = extractOption(
+  const { value: orgSlug, rest: afterOrg } = extractOption(
     args.filter((a) => a !== '--json'),
     '--org'
   )
+  const parsedRole = parseRoleFlag(afterOrg)
+  if (!parsedRole.ok) fail(json, 'invalid_args', parsedRole.error)
+  const { role, rest } = parsedRole
+
   const raw = rest.find((a) => !a.startsWith('-'))
   const handle = raw ? normalizeHandle(raw) : ''
   if (!handle) {
@@ -861,25 +933,39 @@ async function accessGrant(args: string[]): Promise<void> {
     session,
     'POST',
     {},
-    { orgSlug: org.slug, handle }
+    { orgSlug: org.slug, handle, role }
   )
   if (!result.ok) accessFail(json, result.code, result.message)
 
-  const already = result.data.status === 'already_claimed'
+  const { status } = result.data
   if (json) {
     printJson({
       organization: { id: org.id, name: org.name, slug: org.slug },
       handle,
-      status: result.data.status,
+      role,
+      status,
     })
     return
   }
-  if (already) {
-    success(`@${handle} already controls ${bold(org.name)}`)
+  if (status === 'already_claimed') {
+    success(`@${handle} is already ${roleArticle(role)} on ${bold(org.name)}`)
     return
   }
-  success(`@${handle} now controls ${bold(org.name)}`)
-  info(`they can edit it with ${dim('hacklab org')}`)
+  if (status === 'role_changed') {
+    success(`@${handle} is now ${roleArticle(role)} on ${bold(org.name)}`)
+  } else {
+    success(`@${handle} can now act for ${bold(org.name)} as ${role}`)
+  }
+  info(
+    role === 'admin'
+      ? `they can edit it with ${dim('hacklab org')}`
+      : `they can post listings with ${dim('hacklab org jobs post')}`
+  )
+}
+
+/** "an admin" / "a recruiter" — the grammar differs, so it lives in one place. */
+export function roleArticle(role: OrgRole): string {
+  return role === 'admin' ? 'an admin' : 'a recruiter'
 }
 
 async function accessRevoke(args: string[]): Promise<void> {
@@ -935,6 +1021,26 @@ async function orgAccess(args: string[]): Promise<void> {
   if (resolved.name === 'list') return accessList(rest)
   if (resolved.name === 'grant') return accessGrant(rest)
   if (resolved.name === 'revoke') return accessRevoke(rest)
+}
+
+/**
+ * Hand `org jobs` its target company.
+ *
+ * Resolved against `postable`, not `organizations`, so a recruiter — who has
+ * no editable org at all — still lands on the company they were given the job
+ * shop for. Everything else about the resolution (an explicit `--org`, the
+ * single-company default, the ambiguity error) is the shared one.
+ */
+async function orgJobsCommand(args: string[]): Promise<void> {
+  const json = args.includes('--json')
+  const { value: orgSlug, rest } = extractOption(args, '--org')
+
+  const session = await requireSession(json)
+  const state = await loadState(session, json)
+  const target = resolveTargetOrg(state.postable, orgSlug)
+  if (!target.ok) fail(json, target.code, target.error)
+
+  return orgJobs({ session, org: target.org }, rest)
 }
 
 // ---------------------------------------------------------------------------
@@ -1382,6 +1488,7 @@ export async function org(args: string[] = []): Promise<void> {
   if (resolved.name === 'apply') return orgApply(rest)
   if (resolved.name === 'edit') return orgInteractive('edit')
   if (resolved.name === 'access') return orgAccess(rest)
+  if (resolved.name === 'jobs') return orgJobsCommand(rest)
   if (resolved.name === 'claim') {
     // A slug (or --json) makes it non-interactive; bare `claim` keeps the picker.
     const direct =
