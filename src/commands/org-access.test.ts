@@ -39,6 +39,7 @@ const YOU = {
   handle: 'marin',
   displayName: 'Marin Belec',
   email: 'marin@hacklab.so',
+  role: 'admin' as const,
   grantedBy: null,
   since: '2026-06-12T10:00:00.000Z',
   isYou: true,
@@ -47,6 +48,7 @@ const COLLEAGUE = {
   handle: 'kasia',
   displayName: 'Kasia Nowak',
   email: 'kasia@hacklab.so',
+  role: 'recruiter' as const,
   grantedBy: 'user_3f9c1a2b4d5e6f70',
   since: '2026-07-14T10:00:00.000Z',
   isYou: false,
@@ -85,13 +87,21 @@ beforeEach(() => {
   } as never)
 
   accessHandler = () =>
-    jsonResponse({ organization: ORG_SUMMARY, claimants: [YOU, COLLEAGUE] })
+    jsonResponse({
+      organization: ORG_SUMMARY,
+      yourRole: 'admin',
+      claimants: [YOU, COLLEAGUE],
+    })
 
   fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
     const method = init?.method ?? 'GET'
     const href = String(input)
     if (href.endsWith('/api/cli/org') && method === 'GET') {
-      return jsonResponse({ organizations: [ACME], claimable: [] })
+      return jsonResponse({
+        organizations: [ACME],
+        postable: [{ ...ACME, yourRole: 'admin' }],
+        claimable: [],
+      })
     }
     if (href.includes('/api/cli/org/access')) {
       const body = init?.body ? JSON.parse(String(init.body)) : undefined
@@ -141,8 +151,10 @@ describe('accessErrorCode', () => {
     expect(accessErrorCode(403, 'You do not control this organization.')).toBe(
       'forbidden'
     )
-    expect(accessErrorCode(409, 'That is the only account…')).toBe(
-      'last_claimant'
+    expect(accessErrorCode(409, 'That is the only admin…')).toBe('last_admin')
+    // 403 splits two ways now: no standing at all vs standing that isn't admin.
+    expect(accessErrorCode(403, 'Only admins can change who has access.')).toBe(
+      'not_admin'
     )
     expect(accessErrorCode(400, 'orgSlug is required.')).toBe('invalid_args')
     expect(accessErrorCode(500, 'boom')).toBe('error')
@@ -150,10 +162,12 @@ describe('accessErrorCode', () => {
 })
 
 describe('accessErrorHint', () => {
-  it('tells the last controller what to do instead', () => {
-    expect(accessErrorHint('last_claimant')).toContain(
-      'hacklab org access grant'
-    )
+  it('tells the last admin what to do instead', () => {
+    expect(accessErrorHint('last_admin')).toContain('hacklab org access grant')
+  })
+
+  it('explains what a recruiter may not do', () => {
+    expect(accessErrorHint('not_admin')).toContain('only admins')
   })
 
   it('has nothing to add for a generic failure', () => {
@@ -278,9 +292,11 @@ describe('org access grant', () => {
     await org(['access', 'grant', 'kasia', '--json'])
     const call = accessCall()
     expect(call?.[1]?.method).toBe('POST')
+    // Role defaults to admin — the historical meaning of a bare grant.
     expect(JSON.parse(String(call?.[1]?.body))).toEqual({
       orgSlug: 'acme',
       handle: 'kasia',
+      role: 'admin',
     })
     const data = parsed()
     expect(data.status).toBe('granted')
@@ -302,7 +318,7 @@ describe('org access grant', () => {
 
   it('confirms the grant in human mode', async () => {
     await org(['access', 'grant', 'kasia'])
-    expect(out()).toContain('@kasia now controls')
+    expect(out()).toContain('@kasia can now act for Acme as admin')
   })
 
   it('a handle with no hacklab account → no_such_account', async () => {
@@ -363,12 +379,12 @@ describe('org access revoke', () => {
     expect(out()).toContain('you no longer control')
   })
 
-  it('the only controller → last_claimant, explaining what to do instead', async () => {
+  it('the only admin → last_admin, explaining what to do instead', async () => {
     accessHandler = () =>
       jsonResponse(
         {
           error:
-            'That is the only account controlling this organization. Grant access to someone else first.',
+            'That is the only admin on this organization. Grant admin to someone else first.',
         },
         409
       )
@@ -376,13 +392,13 @@ describe('org access revoke', () => {
       '__exit__'
     )
     const error = parsed().error as { code: string; message: string }
-    expect(error.code).toBe('last_claimant')
-    expect(error.message).toContain('only account controlling')
+    expect(error.code).toBe('last_admin')
+    expect(error.message).toContain('only admin on this organization')
   })
 
-  it('the last_claimant hint goes to stderr, keeping stdout pure', async () => {
+  it('the last_admin hint goes to stderr, keeping stdout pure', async () => {
     accessHandler = () =>
-      jsonResponse({ error: 'That is the only account…' }, 409)
+      jsonResponse({ error: 'That is the only admin…' }, 409)
     await expect(org(['access', 'revoke', 'marin'])).rejects.toThrow('__exit__')
     expect(err()).toContain('hacklab org access grant')
     expect(out()).toBe('')
