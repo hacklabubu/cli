@@ -9,10 +9,14 @@ import { loadSession } from '../session.js'
 import { dim, error, info, success } from '../ui.js'
 
 /**
- * `hacklab daemon` — arm the daily background sync, as its own explicit step.
+ * `hacklab daemon` — arm the background sync, as its own explicit step.
  *
- *   hacklab daemon        summon it (install/refresh the OS-native daily job)
+ *   hacklab daemon        summon it (install/refresh the OS-native jobs)
  *   hacklab daemon off    dismiss it (tear the schedule down)
+ *
+ * Two cadences, one command: a token tick every minute (incremental — it reads
+ * only what your tools appended since the last run) and a full sync once a day
+ * that re-scans everything and repairs whatever the tick got wrong.
  *
  * This used to be a side effect of `join` (and a flag on `sync`), which made it
  * invisible: users couldn't tell whether anything was scheduled, and the web
@@ -26,8 +30,8 @@ export async function daemon(args: string[] = []): Promise<void> {
   return summon()
 }
 
-/** Install (or refresh) the daily background sync. Requires a session — the job
- * runs as this user and uploads to their profile. */
+/** Install (or refresh) the background sync jobs. Requires a session — they run
+ * as this user and upload to their profile. */
 async function summon(): Promise<void> {
   const session = await loadSession()
   if (!session) {
@@ -40,7 +44,9 @@ async function summon(): Promise<void> {
 
   const result = await installDailySync()
   if (result.ok) {
-    success(`daemon summoned — daily background sync via ${result.mechanism}`)
+    success(
+      `daemon summoned — token tick every minute, full sync daily, via ${result.mechanism}`
+    )
     info(dim(`  ${result.detail}`))
     info(dim(`  log: ${syncLogPath()}`))
     info(dim('  dismiss it with `hacklab daemon off` (logout removes it too)'))
@@ -53,8 +59,8 @@ async function summon(): Promise<void> {
 
   // Nothing was scheduled: a platform we don't auto-schedule on (e.g. BSD) or a
   // failed scheduler write. Say so plainly and print the copy-paste cron
-  // command — silently reporting success here would cost the user their streak.
-  error("couldn't schedule the daily sync on this system")
+  // commands — silently reporting success here would cost the user their streak.
+  error("couldn't schedule the background sync on this system")
   info(result.instructions)
   await captureEvent(session.handle, 'cli_daily_sync_manual', {
     mechanism: result.mechanism,
@@ -67,7 +73,7 @@ async function dismiss(): Promise<void> {
   const session = await loadSession()
   await uninstallDailySync()
   await clearSyncPaused()
-  success('daemon dismissed — no more daily background sync')
+  success('daemon dismissed — no more background sync')
   info(dim('run `hacklab daemon` to summon it again'))
   await captureEvent(session?.handle, 'cli_daily_sync_removed')
 }

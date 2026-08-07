@@ -1,14 +1,16 @@
 import { getMachineIdentity } from './machine.js'
 import type { PromptConsentTier } from './prompt-consent.js'
 import { type PromptStats, scanPromptStats } from './prompt-stats.js'
+import { rebuildScanState } from './scanners/incremental.js'
 import {
   type AggregateScan,
   type CursorScanStatus,
   type CursorStats,
+  collectToolScans,
   type DailyToolEntry,
   formatBytes,
   formatTokens,
-  scanAllTools,
+  mergeToolScans,
 } from './scanners/index.js'
 import {
   getSessionExpiresAt,
@@ -43,6 +45,23 @@ export type SyncResult = {
 }
 
 export const LOGIN_EXPIRED_MESSAGE = 'login expired. run hacklab login again'
+
+/**
+ * A rejected upload, carrying the HTTP status and Retry-After. The minutely
+ * tick needs to tell a 429 (back off, the server said so) from a 500 (retry
+ * next minute); every other caller only ever reads `.message`, which is
+ * unchanged from the plain Error this replaced.
+ */
+export class SyncUploadError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly retryAfter: string | null = null
+  ) {
+    super(message)
+    this.name = 'SyncUploadError'
+  }
+}
 
 type SessionCheck =
   | { status: 'ok' }
@@ -220,13 +239,15 @@ export async function uploadTokenScan(
   })
 
   if (res.status === 401) {
-    throw new Error(LOGIN_EXPIRED_MESSAGE)
+    throw new SyncUploadError(LOGIN_EXPIRED_MESSAGE, 401)
   }
   if (!res.ok) {
     const data = await res.json().catch(() => null)
-    throw new Error(
+    throw new SyncUploadError(
       (data as { error?: string } | null)?.error ??
-        `sync failed (${res.status})`
+        `sync failed (${res.status})`,
+      res.status,
+      res.headers.get('retry-after')
     )
   }
   return (await res.json()) as Record<string, unknown>
@@ -286,7 +307,8 @@ export async function runSync(
   session: Session,
   opts: { interactive?: boolean; promptConsent?: PromptConsentTier } = {}
 ): Promise<SyncResult> {
-  const scan = await scanAllTools()
+  const results = await collectToolScans()
+  const scan = mergeToolScans(results)
   // Scanning transcripts is skipped entirely at the 'none' tier — an opted-out
   // user's conversations are never even read.
   const promptStats = await scanConsentedPromptStats(opts.promptConsent)
@@ -294,6 +316,10 @@ export async function runSync(
     interactive: opts.interactive,
     promptStats,
   })
+  // A full scan just went out, so re-base the tick's incremental state on it —
+  // same repair the daily job does, so a manual `hacklab sync` also clears any
+  // drift (and refreshes the Cursor totals the tick can only carry over).
+  await rebuildScanState(results)
 
   const totals = toolTotalsRecord(scan)
   const allEntries = scan.dailyTotals

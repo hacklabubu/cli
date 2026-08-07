@@ -2,11 +2,16 @@ import { describe, expect, it } from 'vitest'
 
 import {
   launchdPlist,
+  launchdTickPlist,
   manualInstructions,
   resolveSyncCommand,
   schtasksCreateArgs,
+  schtasksTickCreateArgs,
+  schtasksTickWrapper,
   schtasksWrapper,
   systemdService,
+  systemdTickService,
+  systemdTickTimer,
   systemdTimer,
 } from './daily-sync.js'
 
@@ -58,8 +63,9 @@ describe('daily-sync content builders', () => {
     expect(timer).toContain('WantedBy=timers.target')
   })
 
-  it('manual instructions include the exact runnable command', () => {
+  it('manual instructions include both runnable commands', () => {
     const text = manualInstructions(cmd)
+    expect(text).toContain(`"${cmd.node}" "${cmd.script}" sync --tick`)
     expect(text).toContain(`"${cmd.node}" "${cmd.script}" sync --quiet`)
     expect(text.toLowerCase()).toContain('systemd')
   })
@@ -96,6 +102,64 @@ describe('daily-sync content builders', () => {
       '"C:\\Users\\a b\\.hacklab\\hacklab-sync.cmd"',
       '/ST',
       '09:05',
+      '/F',
+    ])
+  })
+
+  // The tick is the same command with a different flag and a different cadence,
+  // so what these guard is that the two jobs stay distinct: separate labels and
+  // task names (or `daemon off` would leave one behind), and a schedule the OS
+  // reads as "every minute" rather than "once a day".
+  it('launchd tick plist re-runs `sync --tick` every 60s under its own label', () => {
+    const plist = launchdTickPlist(cmd, '/home/u/.hacklab/sync.log')
+    expect(plist).toContain('<string>so.hacklab.tick</string>')
+    expect(plist).toContain('<string>--tick</string>')
+    expect(plist).toContain('<key>StartInterval</key>')
+    expect(plist).toContain('<integer>60</integer>')
+    expect(plist).not.toContain('StartCalendarInterval')
+    expect(plist).toContain('<string>/home/u/.hacklab/sync.log</string>')
+  })
+
+  it('systemd tick service ExecStarts the tick flag', () => {
+    expect(systemdTickService(cmd)).toContain(
+      `ExecStart="${cmd.node}" "${cmd.script}" sync --tick`
+    )
+  })
+
+  it('systemd tick timer re-arms every minute, after boot settles', () => {
+    const timer = systemdTickTimer()
+    expect(timer).toContain('OnUnitActiveSec=1min')
+    expect(timer).toContain('OnBootSec=2min')
+    // Lets systemd batch the wakeup instead of waking a laptop on the second.
+    expect(timer).toContain('AccuracySec=30s')
+    expect(timer).toContain('WantedBy=timers.target')
+  })
+
+  it('schtasks tick wrapper runs the tick flag into the same sync log', () => {
+    const win = {
+      node: 'C:\\Program Files\\nodejs\\node.exe',
+      script: 'C:\\Users\\a b\\AppData\\Roaming\\npm\\hacklab\\dist\\index.js',
+    }
+    const bat = schtasksTickWrapper(win, 'C:\\Users\\a b\\.hacklab\\sync.log')
+    expect(bat).toContain(
+      `"${win.node}" "${win.script}" sync --tick >> "C:\\Users\\a b\\.hacklab\\sync.log" 2>&1`
+    )
+    expect(bat).toContain('\r\n')
+  })
+
+  it('schtasks /Create args schedule the tick task every minute', () => {
+    expect(
+      schtasksTickCreateArgs('C:\\Users\\a b\\.hacklab\\hacklab-tick.cmd')
+    ).toEqual([
+      '/Create',
+      '/SC',
+      'MINUTE',
+      '/MO',
+      '1',
+      '/TN',
+      'hacklab-tick',
+      '/TR',
+      '"C:\\Users\\a b\\.hacklab\\hacklab-tick.cmd"',
       '/F',
     ])
   })
