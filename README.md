@@ -16,7 +16,7 @@ hacklab daemon
 
 The script checks for Node 20+ and installs the CLI globally — that's all it
 does. After it, `hacklab` is a real command on your PATH; `join` claims your
-handle and `daemon` schedules the daily background sync. If you already have Node
+handle and `daemon` schedules the background sync. If you already have Node
 (including through a version manager), you can skip the script:
 
 ```bash
@@ -36,7 +36,7 @@ irm https://hacklab.so/install.ps1 | iex
 
 The CLI reads your agents' usage from your Windows home (`%USERPROFILE%\.claude`,
 `.codex`, and Cursor's native tracking DB), and `hacklab daemon` registers the
-daily background sync as a Task Scheduler task. If you run Claude Code or Codex
+background sync as two Task Scheduler tasks. If you run Claude Code or Codex
 **inside WSL**, install there instead with the `curl … | sh` command above, run
 from your WSL shell.
 
@@ -77,7 +77,7 @@ scan local AI usage → see your rank → sign in with GitHub → claim a userna
 6. **Claim** — saves your usage, syncs pinned GitHub projects, and claims
    `hacklab.so/<username>`. Bio and the first drop finish activation in the web
    onboarding flow. Join never schedules anything behind your back — it points
-   you at `hacklab daemon` for the daily sync.
+   you at `hacklab daemon` for the background sync.
 7. **Card** — renders the belt, level, rank, and token breakdown directly in the
    terminal. Terminals without inline images get a text version.
 8. **Share** — one optional X prompt. Saying yes saves the image to
@@ -90,14 +90,16 @@ scan local AI usage → see your rank → sign in with GitHub → claim a userna
   finished profile it stops early and points you at `hacklab logout` +
   `hacklab login` to switch accounts.
 - `hacklab sync` — re-scan local AI usage and sync it to your profile.
-- `hacklab daemon` — summon the daemon: an OS-native daily job (launchd on macOS,
-  a systemd user timer on Linux, a Task Scheduler task on Windows) that re-scans
-  and syncs once a day, so your tokens, rank, and streak stay current without
-  you running anything. No daemon, no streak. Re-running it is idempotent;
-  `hacklab daemon off` tears it down, and `hacklab logout` removes it too. On a
-  platform we can't schedule (BSD, a locked-down box) it prints the one-line
-  cron command instead of pretending it worked. `hacklab sync --install-daily`
-  still forwards here.
+- `hacklab daemon` — summon the daemon: two OS-native background jobs (launchd on
+  macOS, systemd user timers on Linux, Task Scheduler tasks on Windows) so your
+  tokens, rank, and streak stay current without you running anything. A **tick
+  every minute** reads only what your tools appended since the last run — no
+  network call at all on a minute where nothing happened — and a **full sync once
+  a day** re-scans everything and repairs whatever the tick missed. No daemon, no
+  streak. Re-running it is idempotent; `hacklab daemon off` tears both down, and
+  `hacklab logout` removes them too. On a platform we can't schedule (BSD, a
+  locked-down box) it prints the commands to schedule yourself instead of
+  pretending it worked. `hacklab sync --install-daily` still forwards here.
 - `hacklab whoami` — show who you're logged in as.
 - `hacklab drop "message"` — post a drop to your feed (`-u <url>` to attach a
   link). Human output prints its profile URL; `--json` returns a stable envelope

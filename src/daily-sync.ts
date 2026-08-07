@@ -1,19 +1,33 @@
 import { spawn } from 'node:child_process'
 import { realpathSync } from 'node:fs'
-import { appendFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import {
+  appendFile,
+  mkdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises'
 import { homedir, platform } from 'node:os'
 import { dirname, join } from 'node:path'
 import { getSessionPath } from './session.js'
 
-// Sets up (and tears down) an OS-native daily run of `hacklab sync --quiet`:
-// launchd on macOS, a systemd user timer on Linux, and printed instructions
-// when neither fits. The scheduled command is resolved to an absolute
-// `node <entry>` pair so a scheduler running with a bare PATH (cron/launchd/
-// systemd often have almost none) can launch it without a `hacklab` shim.
+// Sets up (and tears down) the two OS-native background jobs: a `hacklab sync
+// --tick` every minute (the incremental one — reads only what the AI tools
+// appended since the last run) and the full `hacklab sync --quiet` once a day
+// (the repair pass, which also re-bases the tick's state). launchd on macOS, a
+// systemd user timer on Linux, Task Scheduler on Windows, and printed
+// instructions when none of those fit. The scheduled command is resolved to an
+// absolute `node <entry>` pair so a scheduler running with a bare PATH
+// (cron/launchd/systemd often have almost none) can launch it without a
+// `hacklab` shim.
 
 const LAUNCHD_LABEL = 'so.hacklab.sync'
+const LAUNCHD_TICK_LABEL = 'so.hacklab.tick'
 const SYSTEMD_UNIT = 'hacklab-sync'
+const SYSTEMD_TICK_UNIT = 'hacklab-tick'
 const SCHTASKS_TASK = 'hacklab-sync'
+const SCHTASKS_TICK_TASK = 'hacklab-tick'
 
 export type SyncCommand = { node: string; script: string }
 
@@ -43,6 +57,28 @@ export function syncLogPath(): string {
 
 function pausedMarkerPath(): string {
   return join(dirname(getSessionPath()), 'sync-paused')
+}
+
+// The tick runs 1440 times a day, so the log has to be bounded even if every
+// one of those runs has something to say.
+export const SYNC_LOG_MAX_BYTES = 1_000_000
+export const SYNC_LOG_KEEP_LINES = 200
+
+/** Cut an oversized sync.log down to its last few hundred lines. Best-effort,
+ * and a no-op while the log is small — which is the normal case. */
+export async function trimSyncLog(
+  maxBytes = SYNC_LOG_MAX_BYTES,
+  keepLines = SYNC_LOG_KEEP_LINES
+): Promise<void> {
+  try {
+    const path = syncLogPath()
+    if ((await stat(path)).size <= maxBytes) return
+    const lines = (await readFile(path, 'utf8')).split('\n')
+    const kept = lines.slice(-keepLines).join('\n')
+    await writeFile(path, kept.endsWith('\n') ? kept : `${kept}\n`, 'utf8')
+  } catch {
+    // no log yet, or we can't rewrite it — either way, nothing to do
+  }
 }
 
 /** Append a timestamped line to the background-sync log (best-effort). */
@@ -103,12 +139,15 @@ function xmlEscape(s: string): string {
 
 const pad2 = (n: number) => String(n).padStart(2, '0')
 
-export function launchdPlist(
+/** The plist skeleton both jobs share — same command shape, different schedule. */
+function launchdDoc(
+  label: string,
   cmd: SyncCommand,
-  time: { hour: number; minute: number },
+  mode: string,
+  schedule: string,
   logPath: string
 ): string {
-  const args = [cmd.node, cmd.script, 'sync', '--quiet']
+  const args = [cmd.node, cmd.script, 'sync', mode]
     .map((a) => `    <string>${xmlEscape(a)}</string>`)
     .join('\n')
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -116,18 +155,12 @@ export function launchdPlist(
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>${LAUNCHD_LABEL}</string>
+  <string>${label}</string>
   <key>ProgramArguments</key>
   <array>
 ${args}
   </array>
-  <key>StartCalendarInterval</key>
-  <dict>
-    <key>Hour</key>
-    <integer>${time.hour}</integer>
-    <key>Minute</key>
-    <integer>${time.minute}</integer>
-  </dict>
+${schedule}
   <key>StandardOutPath</key>
   <string>${xmlEscape(logPath)}</string>
   <key>StandardErrorPath</key>
@@ -137,6 +170,39 @@ ${args}
 </dict>
 </plist>
 `
+}
+
+export function launchdPlist(
+  cmd: SyncCommand,
+  time: { hour: number; minute: number },
+  logPath: string
+): string {
+  return launchdDoc(
+    LAUNCHD_LABEL,
+    cmd,
+    '--quiet',
+    `  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>${time.hour}</integer>
+    <key>Minute</key>
+    <integer>${time.minute}</integer>
+  </dict>`,
+    logPath
+  )
+}
+
+/** The minutely tick. StartInterval (not a calendar interval) so launchd just
+ * re-runs it every 60s; a tick with nothing to report exits without a request. */
+export function launchdTickPlist(cmd: SyncCommand, logPath: string): string {
+  return launchdDoc(
+    LAUNCHD_TICK_LABEL,
+    cmd,
+    '--tick',
+    `  <key>StartInterval</key>
+  <integer>60</integer>`,
+    logPath
+  )
 }
 
 export function systemdService(cmd: SyncCommand): string {
@@ -166,10 +232,44 @@ WantedBy=timers.target
 `
 }
 
+export function systemdTickService(cmd: SyncCommand): string {
+  return `[Unit]
+Description=hacklab token tick
+
+[Service]
+Type=oneshot
+ExecStart="${cmd.node}" "${cmd.script}" sync --tick
+`
+}
+
+export function systemdTickTimer(): string {
+  // OnUnitActiveSec re-arms a minute after each run finishes (so a slow tick
+  // can't stack up), OnBootSec gives the desktop a moment to settle first, and
+  // AccuracySec lets systemd batch the wakeup with others — a minutely timer is
+  // otherwise a needless drain on a laptop.
+  return `[Unit]
+Description=hacklab token tick
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
+`
+}
+
 /** Where the Windows scheduled task's wrapper batch file lives. Next to the
  * session file so it honors HACKLAB_SESSION_PATH, mirroring syncLogPath(). */
 export function syncWrapperPath(): string {
   return join(dirname(getSessionPath()), 'hacklab-sync.cmd')
+}
+
+/** The tick's own wrapper — same pattern, its own file so the two tasks can be
+ * created and deleted independently. */
+export function tickWrapperPath(): string {
+  return join(dirname(getSessionPath()), 'hacklab-tick.cmd')
 }
 
 /** The batch wrapper Task Scheduler runs. schtasks' `/TR` chokes on the nested
@@ -179,6 +279,11 @@ export function syncWrapperPath(): string {
  * before the CLI's own logging still leaves a trace. */
 export function schtasksWrapper(cmd: SyncCommand, logPath: string): string {
   return `@echo off\r\n"${cmd.node}" "${cmd.script}" sync --quiet >> "${logPath}" 2>&1\r\n`
+}
+
+/** Same wrapper for the minutely tick, logging to the same sync.log. */
+export function schtasksTickWrapper(cmd: SyncCommand, logPath: string): string {
+  return `@echo off\r\n"${cmd.node}" "${cmd.script}" sync --tick >> "${logPath}" 2>&1\r\n`
 }
 
 /** Args for `schtasks /Create`. The `/TR` value is a single pre-quoted path;
@@ -201,45 +306,72 @@ export function schtasksCreateArgs(
   ]
 }
 
+/** Args for `schtasks /Create` for the tick: every minute, forever. */
+export function schtasksTickCreateArgs(wrapperPath: string): string[] {
+  return [
+    '/Create',
+    '/SC',
+    'MINUTE',
+    '/MO',
+    '1',
+    '/TN',
+    SCHTASKS_TICK_TASK,
+    '/TR',
+    `"${wrapperPath}"`,
+    '/F',
+  ]
+}
+
 // Generic fallback text, reused for both "Linux without a systemd user manager"
 // and "OS we don't auto-schedule on" — so it must not name a specific mechanism.
 export function manualInstructions(cmd: SyncCommand): string {
   return [
-    "Couldn't set up an automatic daily sync on this system.",
-    'To run it yourself, schedule this command to run once a day with cron, a',
-    "systemd timer, or your init system's scheduler:",
+    "Couldn't set up the automatic background sync on this system.",
+    'To run it yourself, schedule these two commands with cron, a systemd timer,',
+    "or your init system's scheduler — the tick every minute, the full sync once",
+    'a day:',
+    `  "${cmd.node}" "${cmd.script}" sync --tick`,
     `  "${cmd.node}" "${cmd.script}" sync --quiet`,
   ].join('\n')
+}
+
+function launchAgentPath(label: string): string {
+  return join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`)
+}
+
+/** Write a plist and (re)load it. Unload first so a re-run replaces the agent
+ * rather than stacking a second copy. */
+async function loadAgent(path: string, contents: string): Promise<number> {
+  await mkdir(dirname(path), { recursive: true })
+  await writeFile(path, contents, 'utf8')
+  await run('launchctl', ['unload', path])
+  return run('launchctl', ['load', '-w', path])
 }
 
 async function installLaunchd(
   cmd: SyncCommand,
   logPath: string
 ): Promise<InstallResult> {
-  const plistPath = join(
-    homedir(),
-    'Library',
-    'LaunchAgents',
-    `${LAUNCHD_LABEL}.plist`
-  )
+  const plistPath = launchAgentPath(LAUNCHD_LABEL)
   // Randomize the time so installs don't all hit the API at the same instant.
   const time = {
     hour: Math.floor(Math.random() * 24),
     minute: Math.floor(Math.random() * 60),
   }
-  await mkdir(dirname(plistPath), { recursive: true })
-  await writeFile(plistPath, launchdPlist(cmd, time, logPath), 'utf8')
-  // Reload idempotently. A plist in ~/Library/LaunchAgents also loads at next
-  // login, so even if `load` fails now the agent activates then — report that
-  // honestly rather than claiming it's already running.
-  await run('launchctl', ['unload', plistPath])
-  const loaded = await run('launchctl', ['load', '-w', plistPath])
+  const loaded = await loadAgent(plistPath, launchdPlist(cmd, time, logPath))
+  await loadAgent(
+    launchAgentPath(LAUNCHD_TICK_LABEL),
+    launchdTickPlist(cmd, logPath)
+  )
+  // A plist in ~/Library/LaunchAgents also loads at next login, so even if
+  // `load` fails now the agent activates then — report that honestly rather
+  // than claiming it's already running.
   return {
     ok: true,
     mechanism: 'launchd',
     detail:
       loaded === 0
-        ? `daily around ${pad2(time.hour)}:${pad2(time.minute)} (${plistPath})`
+        ? `tick every minute, full sync daily around ${pad2(time.hour)}:${pad2(time.minute)} (${plistPath})`
         : `installed (${plistPath}) — activates at next login`,
   }
 }
@@ -264,12 +396,28 @@ async function installSystemd(cmd: SyncCommand): Promise<InstallResult> {
     'utf8'
   )
   await writeFile(join(dir, `${SYSTEMD_UNIT}.timer`), systemdTimer(), 'utf8')
+  await writeFile(
+    join(dir, `${SYSTEMD_TICK_UNIT}.service`),
+    systemdTickService(cmd),
+    'utf8'
+  )
+  await writeFile(
+    join(dir, `${SYSTEMD_TICK_UNIT}.timer`),
+    systemdTickTimer(),
+    'utf8'
+  )
   await run('systemctl', ['--user', 'daemon-reload'])
   await run('systemctl', ['--user', 'enable', '--now', `${SYSTEMD_UNIT}.timer`])
+  await run('systemctl', [
+    '--user',
+    'enable',
+    '--now',
+    `${SYSTEMD_TICK_UNIT}.timer`,
+  ])
   return {
     ok: true,
     mechanism: 'systemd',
-    detail: `systemd user timer (${SYSTEMD_UNIT}.timer); logs in journalctl --user -u ${SYSTEMD_UNIT}. To keep it running while logged out: loginctl enable-linger`,
+    detail: `systemd user timers (${SYSTEMD_TICK_UNIT}.timer every minute, ${SYSTEMD_UNIT}.timer daily); logs in journalctl --user -u ${SYSTEMD_UNIT}. To keep them running while logged out: loginctl enable-linger`,
   }
 }
 
@@ -277,6 +425,11 @@ async function installSchtasks(cmd: SyncCommand): Promise<InstallResult> {
   const wrapperPath = syncWrapperPath()
   await mkdir(dirname(wrapperPath), { recursive: true })
   await writeFile(wrapperPath, schtasksWrapper(cmd, syncLogPath()), 'utf8')
+  await writeFile(
+    tickWrapperPath(),
+    schtasksTickWrapper(cmd, syncLogPath()),
+    'utf8'
+  )
   // Randomize the time so installs don't all hit the API at the same instant.
   const time = {
     hour: Math.floor(Math.random() * 24),
@@ -295,14 +448,21 @@ async function installSchtasks(cmd: SyncCommand): Promise<InstallResult> {
       instructions: manualInstructions(cmd),
     }
   }
+  // The daily job is the one that must exist; a refused minutely task (some
+  // policies cap task frequency) costs freshness, not the streak.
+  const tick = await run(
+    'schtasks',
+    schtasksTickCreateArgs(tickWrapperPath()),
+    { windowsVerbatimArguments: true }
+  )
   return {
     ok: true,
     mechanism: 'schtasks',
-    detail: `daily around ${pad2(time.hour)}:${pad2(time.minute)} (Task Scheduler task "${SCHTASKS_TASK}")`,
+    detail: `${tick === 0 ? 'tick every minute, ' : ''}full sync daily around ${pad2(time.hour)}:${pad2(time.minute)} (Task Scheduler task "${SCHTASKS_TASK}")`,
   }
 }
 
-/** Install (or refresh) the daily background sync for the current OS. */
+/** Install (or refresh) both background jobs (tick + daily) for the current OS. */
 export async function installDailySync(): Promise<InstallResult> {
   const cmd = resolveSyncCommand()
   try {
@@ -329,34 +489,30 @@ export async function installDailySync(): Promise<InstallResult> {
   }
 }
 
-/** Remove the daily background sync. Best-effort and never throws, so it's safe
- * to call from `logout` whether or not it was ever installed. */
+/** Remove both background jobs. Best-effort and never throws, so it's safe to
+ * call from `logout` whether or not they were ever installed. */
 export async function uninstallDailySync(): Promise<void> {
   const os = platform()
   try {
     if (os === 'darwin') {
-      const plistPath = join(
-        homedir(),
-        'Library',
-        'LaunchAgents',
-        `${LAUNCHD_LABEL}.plist`
-      )
-      await run('launchctl', ['unload', plistPath])
-      await rm(plistPath, { force: true })
+      for (const label of [LAUNCHD_LABEL, LAUNCHD_TICK_LABEL]) {
+        const plistPath = launchAgentPath(label)
+        await run('launchctl', ['unload', plistPath])
+        await rm(plistPath, { force: true })
+      }
     } else if (os === 'linux') {
-      await run('systemctl', [
-        '--user',
-        'disable',
-        '--now',
-        `${SYSTEMD_UNIT}.timer`,
-      ])
       const dir = join(homedir(), '.config', 'systemd', 'user')
-      await rm(join(dir, `${SYSTEMD_UNIT}.timer`), { force: true })
-      await rm(join(dir, `${SYSTEMD_UNIT}.service`), { force: true })
+      for (const unit of [SYSTEMD_UNIT, SYSTEMD_TICK_UNIT]) {
+        await run('systemctl', ['--user', 'disable', '--now', `${unit}.timer`])
+        await rm(join(dir, `${unit}.timer`), { force: true })
+        await rm(join(dir, `${unit}.service`), { force: true })
+      }
       await run('systemctl', ['--user', 'daemon-reload'])
     } else if (os === 'win32') {
       await run('schtasks', ['/Delete', '/TN', SCHTASKS_TASK, '/F'])
+      await run('schtasks', ['/Delete', '/TN', SCHTASKS_TICK_TASK, '/F'])
       await rm(syncWrapperPath(), { force: true })
+      await rm(tickWrapperPath(), { force: true })
     }
   } catch {
     // best-effort

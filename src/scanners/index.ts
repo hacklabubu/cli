@@ -21,53 +21,99 @@ export * from './util.js'
 // One self-contained scanner per tool. Each returns a uniform ScanResult and
 // keeps its own state (via TokenCollector), so they're pure and run in parallel.
 
-export async function scanClaudeCode(): Promise<ScanResult> {
-  const dir = join(homedir(), '.claude', 'projects')
-  try {
-    await stat(dir)
-  } catch {
-    return emptyResult('claude_code')
-  }
+// Where each harness keeps its logs. Resolved per call rather than at import
+// time so a test (or a run with a different HOME) sees the right home dir.
+export function claudeProjectsDir(): string {
+  return join(homedir(), '.claude', 'projects')
+}
+export function codexSessionsDir(): string {
+  return join(homedir(), '.codex', 'sessions')
+}
+export function openclawAgentsDir(): string {
+  return join(homedir(), '.openclaw', 'agents')
+}
+export function hermesDbPath(): string {
+  return join(homedir(), '.hermes', 'state.db')
+}
+export function opencodeDir(): string {
+  return join(homedir(), '.local', 'share', 'opencode')
+}
+export function opencodeDbPath(): string {
+  return join(opencodeDir(), 'opencode.db')
+}
 
-  const files = await findFiles(dir, '.jsonl')
+/**
+ * One usage-bearing line from a JSONL harness log, as the per-line parsers
+ * return it. `date === null` means the line carried no usable timestamp — the
+ * caller falls back to the file's mtime day, which it (unlike a pure parser)
+ * can cheaply resolve and memoize per file.
+ *
+ * These parsers exist so the full scan and the incremental tick
+ * (scanners/incremental.ts) read a line exactly the same way: the tick appends
+ * to aggregates the full scan produced, so any divergence would show up as
+ * drift in a user's numbers.
+ */
+export type UsageLine = {
+  tokens: number
+  model: string
+  date: string | null
+  hour: number | null
+}
+
+export function parseClaudeCodeLine(line: string): UsageLine | null {
+  if (!line.trim()) return null
+  try {
+    const parsed = JSON.parse(line)
+    const usage = parsed.message?.usage ?? parsed.usage ?? null
+    if (!usage) return null
+    const tokens =
+      (usage.input_tokens ?? 0) +
+      (usage.output_tokens ?? 0) +
+      (usage.cache_creation_input_tokens ?? 0) +
+      (usage.cache_read_input_tokens ?? 0)
+    if (tokens <= 0) return null
+
+    let date: string | null = null
+    let hour: number | null = null
+    if (parsed.timestamp) {
+      const d = new Date(
+        typeof parsed.timestamp === 'string' && /^\d+$/.test(parsed.timestamp)
+          ? Number(parsed.timestamp)
+          : parsed.timestamp
+      )
+      date = toDateStr(d)
+      hour = d.getHours()
+    }
+    return { tokens, model: parsed.message?.model ?? '', date, hour }
+  } catch {
+    // malformed line (or an unparseable timestamp) — skip it
+    return null
+  }
+}
+
+/** Every Claude Code transcript on this machine. */
+export async function claudeCodeFiles(): Promise<string[]> {
+  return findFiles(claudeProjectsDir(), '.jsonl')
+}
+
+export async function scanClaudeCode(): Promise<ScanResult> {
   const collector = new TokenCollector('claude_code')
 
-  for (const filePath of files) {
+  for (const filePath of await claudeCodeFiles()) {
     try {
       const content = await readFile(filePath, 'utf8')
+      let fallbackDate: string | null = null
       for (const line of content.split('\n')) {
-        if (!line.trim()) continue
-        try {
-          const parsed = JSON.parse(line)
-          const usage = parsed.message?.usage ?? parsed.usage ?? null
-          if (!usage) continue
-          const tokens =
-            (usage.input_tokens ?? 0) +
-            (usage.output_tokens ?? 0) +
-            (usage.cache_creation_input_tokens ?? 0) +
-            (usage.cache_read_input_tokens ?? 0)
-          if (tokens <= 0) continue
-
-          let date: string
-          let hour: number | null = null
-          if (parsed.timestamp) {
-            const d = new Date(
-              typeof parsed.timestamp === 'string' &&
-                /^\d+$/.test(parsed.timestamp)
-                ? Number(parsed.timestamp)
-                : parsed.timestamp
-            )
-            date = toDateStr(d)
-            hour = d.getHours()
-          } else {
-            date = toDateStr((await stat(filePath)).mtime)
-          }
-
-          const model: string = parsed.message?.model ?? ''
-          collector.addDaily(date, model, tokens, 1)
-          if (hour !== null) collector.addHourly(date, hour, model, tokens, 1)
-        } catch {
-          // skip malformed lines
+        const usage = parseClaudeCodeLine(line)
+        if (!usage) continue
+        let date = usage.date
+        if (!date) {
+          fallbackDate ??= toDateStr((await stat(filePath)).mtime)
+          date = fallbackDate
+        }
+        collector.addDaily(date, usage.model, usage.tokens, 1)
+        if (usage.hour !== null) {
+          collector.addHourly(date, usage.hour, usage.model, usage.tokens, 1)
         }
       }
     } catch {
@@ -91,44 +137,58 @@ export function codexDateFromRelPath(relPath: string): string | null {
   return null
 }
 
-export async function scanCodex(): Promise<ScanResult> {
-  const dir = join(homedir(), '.codex', 'sessions')
-  try {
-    await stat(dir)
-  } catch {
-    return emptyResult('codex')
-  }
+/** Session date for a Codex log path (.codex/sessions/YYYY/MM/DD/file.jsonl). */
+export function codexDateForFile(filePath: string): string | null {
+  return codexDateFromRelPath(filePath.slice(codexSessionsDir().length + 1))
+}
 
-  const files = await findFiles(dir, '.jsonl')
+/** Every Codex session log on this machine. */
+export async function codexFiles(): Promise<string[]> {
+  return findFiles(codexSessionsDir(), '.jsonl')
+}
+
+/**
+ * The running token total (and last model) a chunk of a Codex session log
+ * reports. Codex writes cumulative totals rather than per-message deltas, so a
+ * file's contribution is the max it ever reports — which also means an appended
+ * chunk can only ever raise that max, and the incremental tick can take the
+ * difference without re-reading the whole file.
+ */
+export function codexFileTotals(content: string): {
+  maxTotal: number
+  model: string
+} {
+  let maxTotal = 0
+  let model = ''
+  for (const line of content.split('\n')) {
+    if (!line.trim()) continue
+    try {
+      const parsed = JSON.parse(line)
+      if (parsed.payload?.model) model = parsed.payload.model as string
+      const usage = parsed.payload?.info?.total_token_usage
+      if (usage) {
+        const t = (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0)
+        if (t > maxTotal) maxTotal = t
+      }
+    } catch {
+      // skip malformed lines
+    }
+  }
+  return { maxTotal, model }
+}
+
+export async function scanCodex(): Promise<ScanResult> {
   const collector = new TokenCollector('codex')
 
-  for (const filePath of files) {
+  for (const filePath of await codexFiles()) {
     try {
-      const content = await readFile(filePath, 'utf8')
-      // Date from path: .codex/sessions/YYYY/MM/DD/file.jsonl.
-      const relPath = filePath.slice(dir.length + 1)
+      const { maxTotal, model } = codexFileTotals(
+        await readFile(filePath, 'utf8')
+      )
+      if (maxTotal <= 0) continue
       const date =
-        codexDateFromRelPath(relPath) ?? toDateStr((await stat(filePath)).mtime)
-
-      // Codex stores running totals; take the max per file.
-      let maxTotal = 0
-      let fileModel = ''
-      for (const line of content.split('\n')) {
-        if (!line.trim()) continue
-        try {
-          const parsed = JSON.parse(line)
-          if (parsed.payload?.model) fileModel = parsed.payload.model as string
-          const usage = parsed.payload?.info?.total_token_usage
-          if (usage) {
-            const t = (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0)
-            if (t > maxTotal) maxTotal = t
-          }
-        } catch {
-          // skip
-        }
-      }
-
-      if (maxTotal > 0) collector.addDaily(date, fileModel, maxTotal, 1)
+        codexDateForFile(filePath) ?? toDateStr((await stat(filePath)).mtime)
+      collector.addDaily(date, model, maxTotal, 1)
     } catch {
       // skip unreadable files
     }
@@ -138,7 +198,7 @@ export async function scanCodex(): Promise<ScanResult> {
 }
 
 export async function scanHermes(): Promise<ScanResult> {
-  const dbPath = join(homedir(), '.hermes', 'state.db')
+  const dbPath = hermesDbPath()
   try {
     await stat(dbPath)
   } catch {
@@ -189,14 +249,47 @@ export async function scanHermes(): Promise<ScanResult> {
   return collector.result()
 }
 
-export async function scanOpenclaw(): Promise<ScanResult> {
-  const agentsDir = join(homedir(), '.openclaw', 'agents')
+export function parseOpenclawLine(line: string): UsageLine | null {
+  if (!line.trim()) return null
   try {
-    await stat(agentsDir)
-  } catch {
-    return emptyResult('openclaw')
-  }
+    const parsed = JSON.parse(line)
+    const usage =
+      parsed.usage ??
+      parsed.tokenUsage ??
+      parsed.message?.usage ??
+      parsed.response?.usage ??
+      null
+    if (!usage || typeof usage !== 'object') return null
+    const tokens = (usage.total ??
+      (usage.input ?? usage.inputTokens ?? 0) +
+        (usage.output ?? usage.outputTokens ?? 0) +
+        (usage.cacheRead ?? usage.cacheReadTokens ?? 0) +
+        (usage.cacheWrite ?? usage.cacheWriteTokens ?? 0)) as number
+    if (!tokens || tokens <= 0) return null
 
+    let date: string | null = null
+    let hour: number | null = null
+    const ts = parsed.timestamp ?? parsed.t ?? parsed.time ?? null
+    if (ts) {
+      const tsMs = typeof ts === 'string' && /^\d+$/.test(ts) ? Number(ts) : ts
+      const d = new Date(tsMs)
+      if (!Number.isNaN(d.getTime())) {
+        date = toDateStr(d)
+        hour = d.getHours()
+      }
+    }
+
+    const model: string = parsed.model ?? parsed.response?.model ?? ''
+    return { tokens, model, date, hour }
+  } catch {
+    // skip malformed lines
+    return null
+  }
+}
+
+/** Every OpenClaw session log, across all of its agents. */
+export async function openclawFiles(): Promise<string[]> {
+  const agentsDir = openclawAgentsDir()
   const sessionFiles: string[] = []
   try {
     const agentIds = await readdir(agentsDir, { withFileTypes: true })
@@ -209,58 +302,29 @@ export async function scanOpenclaw(): Promise<ScanResult> {
       sessionFiles.push(...discovered)
     }
   } catch {
-    return emptyResult('openclaw')
+    // no OpenClaw on this machine
   }
-  if (sessionFiles.length === 0) return emptyResult('openclaw')
+  return sessionFiles
+}
 
+export async function scanOpenclaw(): Promise<ScanResult> {
   const collector = new TokenCollector('openclaw')
 
-  for (const filePath of sessionFiles) {
+  for (const filePath of await openclawFiles()) {
     try {
       const content = await readFile(filePath, 'utf8')
       let fileFallbackDate: string | null = null
       for (const line of content.split('\n')) {
-        if (!line.trim()) continue
-        try {
-          const parsed = JSON.parse(line)
-          const usage =
-            parsed.usage ??
-            parsed.tokenUsage ??
-            parsed.message?.usage ??
-            parsed.response?.usage ??
-            null
-          if (!usage || typeof usage !== 'object') continue
-          const tokens = (usage.total ??
-            (usage.input ?? usage.inputTokens ?? 0) +
-              (usage.output ?? usage.outputTokens ?? 0) +
-              (usage.cacheRead ?? usage.cacheReadTokens ?? 0) +
-              (usage.cacheWrite ?? usage.cacheWriteTokens ?? 0)) as number
-          if (!tokens || tokens <= 0) continue
-
-          let date: string
-          let hour: number | null = null
-          const ts = parsed.timestamp ?? parsed.t ?? parsed.time ?? null
-          if (ts) {
-            const tsMs =
-              typeof ts === 'string' && /^\d+$/.test(ts) ? Number(ts) : ts
-            const d = new Date(tsMs)
-            if (!Number.isNaN(d.getTime())) {
-              date = toDateStr(d)
-              hour = d.getHours()
-            } else {
-              fileFallbackDate ??= toDateStr((await stat(filePath)).mtime)
-              date = fileFallbackDate
-            }
-          } else {
-            fileFallbackDate ??= toDateStr((await stat(filePath)).mtime)
-            date = fileFallbackDate
-          }
-
-          const model: string = parsed.model ?? parsed.response?.model ?? ''
-          collector.addDaily(date, model, tokens, 1)
-          if (hour !== null) collector.addHourly(date, hour, model, tokens, 1)
-        } catch {
-          // skip malformed lines
+        const usage = parseOpenclawLine(line)
+        if (!usage) continue
+        let date = usage.date
+        if (!date) {
+          fileFallbackDate ??= toDateStr((await stat(filePath)).mtime)
+          date = fileFallbackDate
+        }
+        collector.addDaily(date, usage.model, usage.tokens, 1)
+        if (usage.hour !== null) {
+          collector.addHourly(date, usage.hour, usage.model, usage.tokens, 1)
         }
       }
     } catch {
@@ -272,7 +336,7 @@ export async function scanOpenclaw(): Promise<ScanResult> {
 }
 
 export async function scanOpenCode(): Promise<ScanResult> {
-  const baseDir = join(homedir(), '.local', 'share', 'opencode')
+  const baseDir = opencodeDir()
   try {
     await stat(baseDir)
   } catch {
@@ -283,7 +347,7 @@ export async function scanOpenCode(): Promise<ScanResult> {
 
   // Preferred: SQLite. Schema: message.data JSON with
   // { role, modelID, time: { created: ms }, tokens: { input, output, reasoning, cache: { read, write } } }
-  const dbPath = join(baseDir, 'opencode.db')
+  const dbPath = opencodeDbPath()
   try {
     await stat(dbPath)
     const rows = await queryDb(
