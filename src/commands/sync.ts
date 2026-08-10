@@ -4,6 +4,8 @@ import {
   appendSyncLog,
   clearSyncPaused,
   markSyncPaused,
+  readSyncPaused,
+  trimSyncLog,
 } from '../daily-sync.js'
 import { captureEvent } from '../posthog.js'
 import {
@@ -12,7 +14,18 @@ import {
   resolvePromptConsent,
   savePromptConsent,
 } from '../prompt-consent.js'
-import { scanAllTools } from '../scanners/index.js'
+import {
+  cumulativeTotals,
+  loadScanState,
+  markUploaded,
+  rebuildScanState,
+  runTick,
+  type ScanState,
+  sameTotals,
+  saveScanState,
+  tickPayload,
+} from '../scanners/incremental.js'
+import { collectToolScans, mergeToolScans } from '../scanners/index.js'
 import { loadSessionState, type Session } from '../session.js'
 import {
   checkSession,
@@ -21,6 +34,7 @@ import {
   LOGIN_EXPIRED_MESSAGE,
   refreshSession,
   runSync,
+  SyncUploadError,
   scanConsentedPromptStats,
   syncGithubRepos,
   uploadTokenScan,
@@ -35,6 +49,7 @@ const SESSION_EXPIRED_REASON =
  * `hacklab sync` — dispatch on flags:
  *   (none)            interactive sync (scan, upload, show stats)
  *   --install-daily   deprecated alias for `hacklab daemon`
+ *   --tick            the every-minute incremental run (usually a no-op)
  *   --quiet           the unattended daily run (logs to a file, no output)
  */
 export async function sync(args: string[] = []): Promise<void> {
@@ -51,6 +66,7 @@ export async function sync(args: string[] = []): Promise<void> {
     info(dim('`sync --install-daily` is now `hacklab daemon` — running that.'))
     return daemon()
   }
+  if (args.includes('--tick')) return tickSync()
   if (args.includes('--quiet')) return quietSync()
   return interactiveSync()
 }
@@ -60,6 +76,11 @@ export async function sync(args: string[] = []): Promise<void> {
  * Silent by design — everything goes to ~/.hacklab/sync.log. Proactively
  * refreshes a near-expiry session; if the session has truly lapsed it drops a
  * paused marker the next interactive run surfaces, then exits cleanly.
+ *
+ * It's also the repair pass for the minutely tick: a full stateless scan, so
+ * whatever the tick's tail-follow missed or double-counted is corrected here and
+ * the tick's state is re-based on the result. Incremental drift therefore can't
+ * outlive a day.
  */
 async function quietSync(): Promise<void> {
   const state = await loadSessionState()
@@ -79,7 +100,8 @@ async function quietSync(): Promise<void> {
   }
 
   const session = await ensureFreshSession(state.session)
-  const scan = await scanAllTools()
+  const results = await collectToolScans()
+  const scan = mergeToolScans(results)
   // Whatever the user already consented to. The unattended run never asks, so
   // a machine that has never answered uploads token counts only.
   const promptStats = await scanConsentedPromptStats(
@@ -88,9 +110,11 @@ async function quietSync(): Promise<void> {
 
   // Upload tokens AND mirror pinned repos together, so the after-refresh retry
   // below does the exact same work as the happy path (no silently-skipped repo
-  // sync on a day the session had to be refreshed mid-run).
+  // sync on a day the session had to be refreshed mid-run). The state rebuild
+  // rides along: everything just went out, so nothing is left dirty.
   const push = async (s: Session) => {
     await uploadTokenScan(s, scan, { promptStats })
+    await rebuildScanState(results)
     await syncGithubRepos(s)
   }
 
@@ -118,6 +142,133 @@ async function quietSync(): Promise<void> {
     }
     await markSyncPaused(SESSION_EXPIRED_REASON)
     await appendSyncLog('paused: session expired')
+  }
+}
+
+/** How long to sit out after a 429 that came without a Retry-After. */
+const DEFAULT_BACKOFF_MS = 15 * 60 * 1000
+const MAX_BACKOFF_MS = 6 * 60 * 60 * 1000
+
+function backoffMs(retryAfter: string | null): number {
+  const seconds = Number(retryAfter)
+  if (!Number.isFinite(seconds) || seconds <= 0) return DEFAULT_BACKOFF_MS
+  return Math.min(seconds * 1000, MAX_BACKOFF_MS)
+}
+
+/**
+ * Log a tick failure once. A minutely job that keeps hitting the same wall (no
+ * network, server down) would otherwise write 1440 identical lines a day, so the
+ * first one goes in and the rest are suppressed until something changes.
+ */
+async function logTickError(state: ScanState, line: string): Promise<void> {
+  if (state.lastError === line) return
+  state.lastError = line
+  await appendSyncLog(line)
+}
+
+/** Pause the background sync, logging it only the first time. */
+async function pauseTick(reason: string): Promise<void> {
+  const alreadyPaused = await readSyncPaused()
+  await markSyncPaused(reason)
+  if (!alreadyPaused) await appendSyncLog(`tick paused: ${reason}`)
+}
+
+/**
+ * `hacklab sync --tick` — the every-minute run. Where `--quiet` re-scans every
+ * log from scratch (~6s and a few hundred MB for a heavy user), this reads only
+ * what the AI tools appended since the last tick, and on the overwhelmingly
+ * common minute where nothing was appended it exits after a stat walk, without
+ * touching the network. Silent unless it uploaded, failed, or got paused: the
+ * log has to survive 1440 runs a day.
+ */
+async function tickSync(): Promise<void> {
+  const saved = await loadScanState()
+  // The server asked us to back off — respect it before doing any work at all.
+  if (saved?.nextAllowedAt && Date.now() < saved.nextAllowedAt) return
+  await trimSyncLog()
+
+  const sessionState = await loadSessionState()
+  if (!sessionState.session) {
+    // 'missing' is a logged-out machine: nothing to say, every minute.
+    if (
+      sessionState.status === 'expired' ||
+      sessionState.status === 'invalid'
+    ) {
+      await pauseTick(
+        sessionState.status === 'invalid'
+          ? 'your hacklab session file is unreadable — run `hacklab login`'
+          : SESSION_EXPIRED_REASON
+      )
+    }
+    return
+  }
+  const session = await ensureFreshSession(sessionState.session)
+
+  const { state, changed } = await runTick(saved)
+  const totals = cumulativeTotals(state)
+  if (
+    state.dirty.length === 0 &&
+    sameTotals(totals.toolTotals, state.uploaded.toolTotals) &&
+    sameTotals(totals.modelTotals, state.uploaded.modelTotals)
+  ) {
+    // The common case: nothing new to say. Persist only if the walk actually
+    // saw something move (a touched file, a re-read harness).
+    if (changed) await saveScanState(state)
+    return
+  }
+
+  const scan = tickPayload(state)
+  const dates = state.dirty.length
+  // No prompt stats and no GitHub mirror: those are the daily job's work, and a
+  // minutely run has no business re-reading transcripts. Not interactive either
+  // — a background tick isn't user activity.
+  try {
+    const result = await uploadTokenScan(session, scan)
+    markUploaded(state)
+    await saveScanState(state)
+    await clearSyncPaused()
+    await appendSyncLog(
+      `tick: +${formatTokens(Number(result.tokensDelta ?? 0))} tokens (${dates} date${dates === 1 ? '' : 's'})`
+    )
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    const status = e instanceof SyncUploadError ? e.status : 0
+
+    if (status === 429) {
+      const wait = backoffMs(e instanceof SyncUploadError ? e.retryAfter : null)
+      state.nextAllowedAt = Date.now() + wait
+      await logTickError(
+        state,
+        `tick: rate limited, pausing ${Math.round(wait / 1000)}s`
+      )
+      await saveScanState(state)
+      return
+    }
+
+    if (message === LOGIN_EXPIRED_MESSAGE) {
+      const refreshed = await refreshSession(session)
+      if (refreshed) {
+        try {
+          const result = await uploadTokenScan(refreshed, scan)
+          markUploaded(state)
+          await saveScanState(state)
+          await clearSyncPaused()
+          await appendSyncLog(
+            `tick: +${formatTokens(Number(result.tokensDelta ?? 0))} tokens (${dates} dates, after refresh)`
+          )
+          return
+        } catch {
+          // fall through to pause
+        }
+      }
+      await saveScanState(state)
+      await pauseTick(SESSION_EXPIRED_REASON)
+      return
+    }
+
+    // Dirty dates stay dirty, so the next tick retries them.
+    await logTickError(state, `tick error: ${message}`)
+    await saveScanState(state)
   }
 }
 
