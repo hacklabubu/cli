@@ -144,13 +144,31 @@ scan local AI usage → see your rank → sign in with GitHub → claim a userna
   it offers to claim or create. Subcommands: `hacklab org claim` (take ownership
   of a YC-seeded company you're a member of, or whose domain matches your login
   email) and `hacklab org create` (register a brand-new company from the CLI).
-- `hacklab org access` — manage who controls a company. Several people can
-  control one company, and any of them can add or remove others. Bare `org
-  access` (or `org access list`) shows everyone who controls it and who granted
-  them; `org access grant <handle>` hands control to another hacklab account;
-  `org access revoke <handle>` takes it away — including your own, though the
-  last remaining controller can't be removed. Use `--org <slug>` when you
-  control more than one, and `--json` on any of them for agents.
+- `hacklab org access` — manage who controls a company, and at what level.
+  Several people can be on one company's access list, at one of two roles:
+  **admin**, who can do everything (edit the profile, change this list, post
+  jobs), and **recruiter**, who can only reach `hacklab org jobs`. Bare `org
+  access` (or `org access list`) shows everyone and their role; `org access
+  grant <handle> [--role admin|recruiter]` adds someone (defaulting to admin —
+  re-granting an existing person changes their role); `org access revoke
+  <handle>` removes them — including yourself, though the last remaining
+  **admin** can't be removed or demoted. Only admins change the list; a
+  recruiter can stand down but nothing else. Use `--org <slug>` when you're on
+  more than one, and `--json` on any of them for agents.
+- `hacklab org jobs` — your company's Job Shop listings. Bare `org jobs` (or
+  `org jobs list`) shows every listing you've posted and its status; `org jobs
+  view <id>` reads one; `org jobs post` creates one, interactively or from
+  flags (`--role`, `--description`, `--apply-url`, `--contact`, plus optional
+  `--company`, `--company-url`, `--salary`, `--work-style`, `--min-belt`);
+  `org jobs close <id>` takes a live one down early. A listing costs
+  **$1,000**, so `post` can't finish in the terminal — it creates the listing
+  and hands back a Stripe checkout link to open. Once that's paid we review it
+  before it goes live, and it runs for 30 days. Admins and recruiters both
+  reach all of this; `--json` on any subcommand for agents.
+- `hacklab jobs` — browse the Job Shop. Bare `hacklab jobs` (or `jobs list`,
+  with `--limit 1-100`) lists what's hiring; `jobs view <id>` reads one listing
+  in full with its apply link. Read-only — posting is `hacklab org jobs post`.
+  Note `hacklab jo` is now ambiguous (`jobs` vs `join`): use `job` or `joi`.
 - `hacklab profile` — view and edit your own profile. Bare `profile` (or
   `profile view`) shows it; `profile edit` is an org-style autosave editor;
   `profile set <field> <value>` writes one field (`--clear` unsets, handles like

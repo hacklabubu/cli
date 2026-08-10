@@ -6,6 +6,7 @@ import { drop, parseDropArgs } from './commands/drop.js'
 import { essay } from './commands/essay.js'
 import { hackathon } from './commands/hackathon.js'
 import { hacker } from './commands/hacker.js'
+import { jobs } from './commands/jobs.js'
 import { join } from './commands/join.js'
 import { keys } from './commands/keys.js'
 import { login } from './commands/login.js'
@@ -98,10 +99,19 @@ export const COMMANDS: CommandSpec[] = [
   },
   {
     name: 'org',
-    args: '[list|view|set|apply|claim|create|access]',
+    args: '[list|view|set|apply|claim|create|access|jobs]',
     summary:
-      'claim, create, edit, or share your organization (--json for agents)',
+      'claim, create, edit, share, or hire for your organization (--json for agents)',
     run: (args) => org(args),
+  },
+  {
+    name: 'jobs',
+    args: '[list|view]',
+    // Note `jo` is now ambiguous (jobs/join) — `job` and `joi` still resolve.
+    // Same trade already taken for `org a` (access/apply): a real command is
+    // worth more than one saved keystroke on an abbreviation.
+    summary: 'browse the job shop (--json for agents)',
+    run: (args) => jobs(args),
   },
   {
     name: 'chat',
