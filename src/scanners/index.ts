@@ -41,6 +41,14 @@ export function opencodeDir(): string {
 export function opencodeDbPath(): string {
   return join(opencodeDir(), 'opencode.db')
 }
+/** Grok Build home. `GROK_HOME` wins so tests (and unusual installs) can point elsewhere. */
+export function grokHome(): string {
+  const override = process.env.GROK_HOME?.trim()
+  return override ? override : join(homedir(), '.grok')
+}
+export function grokLogsDir(): string {
+  return join(grokHome(), 'logs')
+}
 
 /**
  * One usage-bearing line from a JSONL harness log, as the per-line parsers
@@ -426,6 +434,78 @@ export async function scanOpenCode(): Promise<ScanResult> {
   return collector.result()
 }
 
+/**
+ * Grok Build writes one `shell.turn.inference_done` line per model round to
+ * `~/.grok/logs/unified.jsonl`. `prompt_tokens` is the full prompt (cache hits
+ * included); `cached_prompt_tokens` and `reasoning_tokens` are subsets, so the
+ * billed total is prompt + completion — same shape as counting Claude's
+ * input+output+cache as one number.
+ */
+export function parseGrokLine(line: string): UsageLine | null {
+  if (!line.includes('shell.turn.inference_done')) return null
+  try {
+    const parsed = JSON.parse(line) as {
+      msg?: string
+      ts?: string
+      ctx?: Record<string, unknown>
+      model?: string
+    }
+    if (parsed.msg !== 'shell.turn.inference_done') return null
+    const ctx = parsed.ctx ?? {}
+    const tokens =
+      Number(ctx.prompt_tokens ?? 0) + Number(ctx.completion_tokens ?? 0)
+    if (!Number.isFinite(tokens) || tokens <= 0) return null
+
+    let date: string | null = null
+    let hour: number | null = null
+    if (parsed.ts) {
+      const d = new Date(parsed.ts)
+      if (!Number.isNaN(d.getTime())) {
+        date = toDateStr(d)
+        hour = d.getHours()
+      }
+    }
+    const model =
+      String(ctx.model_id ?? ctx.model ?? parsed.model ?? '').trim() || 'grok'
+    return { tokens, model, date, hour }
+  } catch {
+    return null
+  }
+}
+
+/** Grok Build's local usage log (and any rotated `unified*.jsonl` siblings). */
+export async function grokLogFiles(): Promise<string[]> {
+  return findFiles(grokLogsDir(), '.jsonl')
+}
+
+export async function scanGrok(): Promise<ScanResult> {
+  const collector = new TokenCollector('grok')
+
+  for (const filePath of await grokLogFiles()) {
+    try {
+      const content = await readFile(filePath, 'utf8')
+      let fallbackDate: string | null = null
+      for (const line of content.split('\n')) {
+        const usage = parseGrokLine(line)
+        if (!usage) continue
+        let date = usage.date
+        if (!date) {
+          fallbackDate ??= toDateStr((await stat(filePath)).mtime)
+          date = fallbackDate
+        }
+        collector.addDaily(date, usage.model, usage.tokens, 1)
+        if (usage.hour !== null) {
+          collector.addHourly(date, usage.hour, usage.model, usage.tokens, 1)
+        }
+      }
+    } catch {
+      // skip unreadable files
+    }
+  }
+
+  return collector.result()
+}
+
 const CURSOR_TRACKING_DB = join(
   homedir(),
   '.cursor',
@@ -696,19 +776,28 @@ function resolveCursor(api: ScanResult, local: ScanResult): ScanResult {
 
 /** Run every scanner in parallel, returning one resolved result per tool. */
 export async function collectToolScans(): Promise<ScanResult[]> {
-  const [claude, codex, cursorApi, cursorLocal, openclaw, hermes, opencode] =
-    await Promise.all([
-      scanClaudeCode(),
-      scanCodex(),
-      scanCursorApi(),
-      scanCursorLocal(),
-      scanOpenclaw(),
-      scanHermes(),
-      scanOpenCode(),
-    ])
+  const [
+    claude,
+    codex,
+    cursorApi,
+    cursorLocal,
+    openclaw,
+    hermes,
+    opencode,
+    grok,
+  ] = await Promise.all([
+    scanClaudeCode(),
+    scanCodex(),
+    scanCursorApi(),
+    scanCursorLocal(),
+    scanOpenclaw(),
+    scanHermes(),
+    scanOpenCode(),
+    scanGrok(),
+  ])
 
   const cursor = resolveCursor(cursorApi, cursorLocal)
-  return [claude, codex, cursor, openclaw, hermes, opencode]
+  return [claude, codex, cursor, openclaw, hermes, opencode, grok]
 }
 
 /**

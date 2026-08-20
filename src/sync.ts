@@ -34,6 +34,7 @@ export type SyncResult = {
   openclawTotal: number
   hermesTotal: number
   opencodeTotal: number
+  grokTotal: number
   messagesTotal: number
   allEntries: DailyToolEntry[]
   cursorStats: CursorStats | null
@@ -177,7 +178,7 @@ export async function syncGithubRepos(
  * endpoint. Uses the exact same scan path as `join`, so the two commands report
  * identical numbers for the same machine.
  */
-/** The six tools the backend tallies, with explicit zeros so the payload shape
+/** The harnesses the backend tallies, with explicit zeros so the payload shape
  * is stable regardless of which tools the scan actually found. */
 function toolTotalsRecord(scan: AggregateScan) {
   return {
@@ -187,6 +188,7 @@ function toolTotalsRecord(scan: AggregateScan) {
     openclaw: scan.toolTotals.openclaw ?? 0,
     hermes: scan.toolTotals.hermes ?? 0,
     opencode: scan.toolTotals.opencode ?? 0,
+    grok: scan.toolTotals.grok ?? 0,
   }
 }
 
@@ -335,6 +337,7 @@ export async function runSync(
     openclawTotal: totals.openclaw,
     hermesTotal: totals.hermes,
     opencodeTotal: totals.opencode,
+    grokTotal: totals.grok,
     messagesTotal,
     allEntries,
     cursorStats: scan.cursorStats,

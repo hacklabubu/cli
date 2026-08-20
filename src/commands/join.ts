@@ -38,6 +38,7 @@ const TOOL_LABELS: Record<string, string> = {
   openclaw: 'OpenClaw',
   hermes: 'Hermes',
   opencode: 'OpenCode',
+  grok: 'Grok Build',
 }
 
 /**
@@ -511,6 +512,7 @@ function estimateCost(toolTotals: Record<string, number>): number {
     openclaw: 0.5,
     hermes: 0.5,
     opencode: 0.5,
+    grok: 0.5,
   }
   let cost = 0
   for (const [tool, tokens] of Object.entries(toolTotals)) {

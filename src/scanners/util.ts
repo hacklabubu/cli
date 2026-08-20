@@ -13,6 +13,7 @@ export type Tool =
   | 'openclaw'
   | 'hermes'
   | 'opencode'
+  | 'grok'
 
 export type DailyToolEntry = {
   date: string

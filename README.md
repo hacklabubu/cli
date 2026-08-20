@@ -35,7 +35,7 @@ irm https://hacklab.so/install.ps1 | iex
 ```
 
 The CLI reads your agents' usage from your Windows home (`%USERPROFILE%\.claude`,
-`.codex`, and Cursor's native tracking DB), and `hacklab daemon` registers the
+`.codex`, `.grok`, and Cursor's native tracking DB), and `hacklab daemon` registers the
 background sync as two Task Scheduler tasks. If you run Claude Code or Codex
 **inside WSL**, install there instead with the `curl … | sh` command above, run
 from your WSL shell.
@@ -63,7 +63,7 @@ scan local AI usage → see your rank → sign in with GitHub → claim a userna
 ```
 
 1. **Scan** — reads your local AI token usage from Claude Code, Codex, Cursor,
-   OpenClaw, Hermes, and OpenCode. Nothing leaves your machine yet.
+   OpenClaw, Hermes, OpenCode, and Grok Build. Nothing leaves your machine yet.
 2. **Cursor key** (Cursor users only) — if the scan finds Cursor on your machine
    and no key is configured, you're offered the chance to paste one. Cursor's
    local data only supports a rough estimate; a key buys exact per-event counts
