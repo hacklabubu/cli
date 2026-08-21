@@ -273,7 +273,10 @@ describe('join — existing GitHub account', () => {
     expect(m.promptShareOnX).toHaveBeenCalledOnce()
   })
 
-  it('shows a short discovery disclosure after a claim', async () => {
+  it('hides the discovery disclosure while discovery is disabled', async () => {
+    // Scout discovery isn't live, so the notice is switched off in join.ts
+    // (DISCOVERY_NOTICE_ENABLED). When it launches, re-enable it there and
+    // restore this test to assert the disclosure content again.
     m.loadSession.mockResolvedValueOnce(null).mockResolvedValue({
       token: 't',
       email: 'new@example.com',
@@ -284,13 +287,7 @@ describe('join — existing GitHub account', () => {
 
     await join({})
 
-    const disclosure = m.note.mock.calls.find((c) => c[1] === 'discovery')
-    expect(disclosure).toBeDefined()
-    const body = String(disclosure?.[0])
-    expect(body).toContain('public profile')
-    expect(body).toContain('never shared')
-    expect(body).toContain('get discovered')
-    expect(body).toContain('settings')
+    expect(m.note.mock.calls.some((c) => c[1] === 'discovery')).toBe(false)
   })
 
   it('does NOT show the scout disclosure to an already-claimed account', async () => {
