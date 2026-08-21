@@ -8,8 +8,8 @@ import { captureEvent } from '../posthog.js'
 import {
   isGithubRepoUrl,
   normalizeRepoUrl,
-  probeRepoPrivate,
   type ProjectFields,
+  probeRepoPrivate,
   slugFromName,
 } from '../project-fields.js'
 import { resolveCommand } from '../resolve-command.js'
