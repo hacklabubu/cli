@@ -15,6 +15,7 @@ import { org } from './commands/org.js'
 import { profile } from './commands/profile.js'
 import { project } from './commands/project.js'
 import { referral } from './commands/referral.js'
+import { rtfm } from './commands/rtfm.js'
 import { scout } from './commands/scout.js'
 import { sync } from './commands/sync.js'
 import { update } from './commands/update.js'
@@ -156,6 +157,13 @@ export const COMMANDS: CommandSpec[] = [
     summary:
       'get your referral link to invite hacker friends (--json for agents)',
     run: (args) => referral(args),
+  },
+  {
+    name: 'rtfm',
+    args: '[topic]',
+    // Note `r` is now ambiguous (referral/rtfm) — `rt` and `re` still resolve.
+    summary: 'the hacklab manuals (topics lists what they will cover)',
+    run: (args) => rtfm(args),
   },
   {
     name: 'keys',
