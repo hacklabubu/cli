@@ -6,14 +6,12 @@ import { parse as parseYaml } from 'yaml'
 
 import { captureEvent } from '../posthog.js'
 import {
-  findRepoRoot,
-  type InferredProject,
-  inferProject,
   isGithubRepoUrl,
   normalizeRepoUrl,
   probeRepoPrivate,
+  type ProjectFields,
   slugFromName,
-} from '../project-infer.js'
+} from '../project-fields.js'
 import { resolveCommand } from '../resolve-command.js'
 import {
   loadSession,
@@ -26,11 +24,10 @@ import { bold, dim, error, info, linkBlue, success } from '../ui.js'
 import { openBrowser } from '../utils/openBrowser.js'
 
 // `hacklab project` — publish and manage the projects on your profile. `add`
-// reads the repo you're in (git remote, README, package.json) and only asks
-// for confirmation; `apply` takes a declarative YAML/JSON manifest for agents
-// or long-form content. `add` is idempotent per repo: the slug derives from
-// the repo name, and a re-run refreshes the same project without touching its
-// publish date or losing screenshots.
+// takes explicit flags (`--title` plus optional URLs/tags/content); `apply`
+// takes a declarative YAML/JSON manifest for agents or long-form content.
+// Both are idempotent per slug: a re-run refreshes the same project without
+// touching its publish date or losing screenshots.
 
 const SUBCOMMANDS = ['add', 'apply', 'list', 'view', 'edit', 'delete'] as const
 
@@ -69,13 +66,10 @@ function usage(exitCode = 1): never {
     info('usage: hacklab project [add|apply|list|view|edit|delete]')
   else error('usage: hacklab project [add|apply|list|view|edit|delete]')
   info(
-    `  hacklab project ${dim('add [path] [--yes] [--json]')}       publish the repo you're in (re-run to refresh)`
+    `  hacklab project ${dim('add --title <t> [--yes] [--json]')}   publish a project (re-run to refresh)`
   )
   info(
-    `  hacklab project ${dim('add --no-repo --title <t> [--url <u>] [--desc <d>]')}  a project with no repo`
-  )
-  info(
-    `  hacklab project ${dim('add --title/--desc/--url/--repo/--live/--tags/--slug')}  override any field`
+    `  hacklab project ${dim('add --desc/--url/--repo/--live/--tags/--slug')}  set any field`
   )
   info(
     `  hacklab project ${dim('add --content <md> | --content-file <path>')}  set the long-form content`
@@ -233,13 +227,13 @@ function summarize(value: string | null, max = 72): string {
 }
 
 // ── `project apply <file>` — declarative YAML/JSON manifest ──────────────────
-// `add` reads a repo; `apply` reads a manifest, giving agents a one-shot path
+// `add` reads flags; `apply` reads a manifest, giving agents a one-shot path
 // for long-form content and explicit screenshots. The raw source is stored as
 // `sourceYaml` so a later `edit` can round-trip it.
 
 type ProjectScreenshot = { url: string; caption: string }
 
-type ProjectDraft = InferredProject & {
+type ProjectDraft = ProjectFields & {
   screenshots?: ProjectScreenshot[]
   sourceYaml?: string
 }
@@ -638,100 +632,62 @@ async function projectApply(args: string[]): Promise<void> {
 async function projectAdd(args: string[]): Promise<void> {
   const json = args.includes('--json')
   const yes = args.includes('--yes')
-  const noRepo = args.includes('--no-repo')
 
-  const overrides = {
+  const fields = {
     title: flagValue(args, '--title'),
     description: flagValue(args, '--description', '--desc'),
     liveUrl: flagValue(args, '--live'),
     repoUrl: flagValue(args, '--repo'),
     // `--url` auto-routes: a github.com URL becomes the repo, anything else the
-    // live link — the one flag a "just give it a URL" manual project needs.
+    // live link — the one flag a "just give it a URL" project needs.
     url: flagValue(args, '--url'),
     slug: flagValue(args, '--slug'),
     tags: flagValue(args, '--tags'),
-    // Override the long-form project content (defaults to the repo README):
-    // `--content` inline, or `--content-file <path>` to read it from disk.
+    // Long-form project content: `--content` inline, or `--content-file
+    // <path>` to read it from disk.
     content: flagValue(args, '--content'),
     contentFile: flagValue(args, '--content-file'),
   }
-  const flagValues = new Set(
-    Object.values(overrides).filter((v): v is string => v !== undefined)
-  )
 
-  if (overrides.content !== undefined && overrides.contentFile !== undefined) {
+  if (fields.content !== undefined && fields.contentFile !== undefined) {
     const message = 'use either --content or --content-file, not both'
     if (json) emitJsonError('invalid_fields', message)
     error(message)
     process.exit(1)
   }
-  let contentOverride = overrides.content
-  if (overrides.contentFile) {
+  let content = fields.content
+  if (fields.contentFile) {
     try {
-      contentOverride = await readFile(overrides.contentFile, 'utf8')
+      content = await readFile(fields.contentFile, 'utf8')
     } catch {
-      const message = `could not read ${overrides.contentFile}`
+      const message = `could not read ${fields.contentFile}`
       if (json) emitJsonError('read_failed', message)
       error(message)
       process.exit(1)
     }
   }
-  const pathArg = args.find((a) => !a.startsWith('-') && !flagValues.has(a))
 
-  // Manual (no-repo) project: explicit --no-repo, or a --title given from a
-  // non-git directory. Otherwise infer from the repo you're standing in.
-  const root = noRepo ? null : await findRepoRoot(pathArg ?? process.cwd())
-  const manual = noRepo || (!root && Boolean(overrides.title))
-
-  if (!manual && !root) {
-    const message = `not a git repository: ${pathArg ?? process.cwd()}`
-    if (json) emitJsonError('not_a_repo', message)
+  if (!fields.title) {
+    const message = 'a project needs a title: --title "My Project"'
+    if (json) emitJsonError('missing_title', message)
     error(message)
-    info('run from inside the repo you want to publish')
-    info(
-      `or add a project with no repo: ${dim('project add --no-repo --title "…"')}`
-    )
     process.exit(1)
   }
 
-  const urlIsRepo = overrides.url ? isGithubRepoUrl(overrides.url) : false
-  const urlAsRepo = urlIsRepo ? overrides.url : undefined
-  const urlAsLive = overrides.url && !urlIsRepo ? overrides.url : undefined
+  const urlIsRepo = fields.url ? isGithubRepoUrl(fields.url) : false
+  const urlAsRepo = urlIsRepo ? fields.url : undefined
+  const urlAsLive = fields.url && !urlIsRepo ? fields.url : undefined
 
-  let draft: InferredProject
-  if (manual) {
-    if (!overrides.title) {
-      const message =
-        'a project with no repo needs a title: --title "My Project"'
-      if (json) emitJsonError('missing_title', message)
-      error(message)
-      process.exit(1)
-    }
-    draft = {
-      slug: slugFromName(overrides.slug ?? overrides.title),
-      title: overrides.title,
-      description: overrides.description ?? null,
-      tags: overrides.tags ? parseTags(overrides.tags) : [],
-      repoUrl: overrides.repoUrl ?? urlAsRepo ?? null,
-      liveUrl: overrides.liveUrl ?? urlAsLive ?? null,
-      private: false,
-      content: null,
-    }
-  } else {
-    // biome-ignore lint/style/noNonNullAssertion: `manual` is false here so root is set.
-    const inferred = await inferProject(root!)
-    draft = {
-      ...inferred,
-      title: overrides.title ?? inferred.title,
-      description: overrides.description ?? inferred.description,
-      liveUrl: overrides.liveUrl ?? urlAsLive ?? inferred.liveUrl,
-      repoUrl: overrides.repoUrl ?? urlAsRepo ?? inferred.repoUrl,
-      slug: overrides.slug ? slugFromName(overrides.slug) : inferred.slug,
-      tags: overrides.tags ? parseTags(overrides.tags) : inferred.tags,
-    }
+  const draft: ProjectFields = {
+    slug: slugFromName(fields.slug ?? fields.title),
+    title: fields.title,
+    description: fields.description ?? null,
+    tags: fields.tags ? parseTags(fields.tags) : [],
+    repoUrl: fields.repoUrl ?? urlAsRepo ?? null,
+    liveUrl: fields.liveUrl ?? urlAsLive ?? null,
+    private: false,
+    content: content ?? null,
   }
-
-  if (contentOverride !== undefined) draft.content = contentOverride
 
   // Privacy: explicit --private/--public win; otherwise probe a github repoUrl.
   // A private repo's link 404s for visitors and it's absent from the public
@@ -801,7 +757,8 @@ async function projectAdd(args: string[]): Promise<void> {
     liveUrl: draft.liveUrl ?? undefined,
     private: draft.private,
     screenshots,
-    content: draft.content ?? undefined,
+    // A flag-less refresh keeps whatever content the project already has.
+    content: draft.content ?? existing?.content ?? undefined,
     publishedAt: existing?.publishedAt ?? new Date().toISOString(),
   }
 
@@ -831,7 +788,6 @@ async function projectAdd(args: string[]): Promise<void> {
   await captureEvent(session.handle, 'cli_project_added', {
     slug: draft.slug,
     refreshed: Boolean(existing),
-    manual,
     has_repo: Boolean(draft.repoUrl),
     private: draft.private,
     has_live_url: Boolean(draft.liveUrl),
@@ -874,7 +830,7 @@ async function projectList(args: string[]): Promise<void> {
 
   if (list.projects.length === 0) {
     info('no projects yet')
-    info(`run ${dim('hacklab project add')} inside a repo to publish one`)
+    info(`run ${dim('hacklab project add --title "…"')} to publish one`)
     return
   }
 
@@ -1198,8 +1154,8 @@ export async function project(args: string[]): Promise<void> {
     usage(0)
   }
 
-  // Bare `hacklab project` prints the help — publishing the current repo is
-  // an explicit `add` away.
+  // Bare `hacklab project` prints the help — publishing is an explicit
+  // `add` away.
   if (!subToken) {
     usage(0)
   }

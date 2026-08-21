@@ -16,9 +16,9 @@ vi.mock('../utils/openBrowser.js', () => ({
   openBrowser: vi.fn().mockResolvedValue(true),
 }))
 // Keep the real pure helpers; only stub the network probe so tests stay offline.
-vi.mock('../project-infer.js', async () => {
-  const actual = await vi.importActual<typeof import('../project-infer.js')>(
-    '../project-infer.js'
+vi.mock('../project-fields.js', async () => {
+  const actual = await vi.importActual<typeof import('../project-fields.js')>(
+    '../project-fields.js'
   )
   return { ...actual, probeRepoPrivate: vi.fn().mockResolvedValue(false) }
 })
@@ -140,6 +140,58 @@ describe('project command — dispatch', () => {
   it('resolves the "e" prefix to "edit"', async () => {
     await project(['e', 'my-app', '--title', 'Renamed'])
     expect(postBody().title).toBe('Renamed')
+  })
+})
+
+describe('project add', () => {
+  it('exits 1 without a --title', async () => {
+    await expect(project(['add'])).rejects.toThrow('__exit__')
+    expect(exitCode).toBe(1)
+    expect(output()).toContain('needs a title')
+    expect(vi.mocked(fetchApi)).not.toHaveBeenCalled()
+  })
+
+  it('publishes from flags, deriving the slug from the title', async () => {
+    mockList([])
+    await project([
+      'add',
+      '--title',
+      'My New Thing',
+      '--desc',
+      'a thing',
+      '--tags',
+      'cli,AI',
+      '--yes',
+    ])
+    const body = postBody()
+    expect(body.title).toBe('My New Thing')
+    expect(body.slug).toBe('my-new-thing')
+    expect(body.description).toBe('a thing')
+    expect(body.tags).toEqual(['cli', 'ai'])
+    expect(body.repoUrl).toBeUndefined()
+    expect(body.liveUrl).toBeUndefined()
+  })
+
+  it('routes a github --url to repoUrl', async () => {
+    mockList([])
+    await project([
+      'add',
+      '--title',
+      'Thing',
+      '--url',
+      'https://github.com/acme/thing',
+      '--yes',
+    ])
+    expect(postBody().repoUrl).toBe('https://github.com/acme/thing')
+    expect(postBody().liveUrl).toBeUndefined()
+  })
+
+  it('refreshing an existing slug keeps its publish date and content', async () => {
+    await project(['add', '--title', 'My App', '--yes'])
+    const body = postBody()
+    expect(body.slug).toBe('my-app')
+    expect(body.publishedAt).toBe(PROJECT.publishedAt)
+    expect(body.content).toBe(PROJECT.content)
   })
 })
 
