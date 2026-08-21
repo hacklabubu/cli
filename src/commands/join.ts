@@ -363,10 +363,17 @@ export async function join(opts: { browser?: boolean } = {}) {
 
   // Keep the required discovery notice visible without another decision or a
   // wall of text in the join path.
-  clack.note(
-    'Your public profile can appear in vetted scout discovery. Email, DMs, and AI session content are never shared. Change "get discovered" anytime in profile settings.',
-    'discovery'
-  )
+  //
+  // Temporarily disabled (2026-08): scout discovery isn't live — no profile
+  // data is shared with employers — so the notice is pure noise in the join
+  // flow right now. Flip this back on before discovery launches.
+  const DISCOVERY_NOTICE_ENABLED = false
+  if (DISCOVERY_NOTICE_ENABLED) {
+    clack.note(
+      'Your public profile can appear in vetted scout discovery. Email, DMs, and AI session content are never shared. Change "get discovered" anytime in profile settings.',
+      'discovery'
+    )
+  }
 
   // The viral loop's last beat: a personal referral link at the very end of the
   // ritual, once the account is real and there's a handle to key it on. Purely
