@@ -103,6 +103,35 @@ describe('project command — dispatch', () => {
     expect(output()).toContain('unknown subcommand')
   })
 
+  it('prints the help and exits 0 when run bare', async () => {
+    await expect(project([])).rejects.toThrow('__exit__')
+    expect(exitCode).toBe(0)
+    expect(output()).toContain(
+      'usage: hacklab project [add|apply|list|view|edit|delete]'
+    )
+    expect(vi.mocked(fetchApi)).not.toHaveBeenCalled()
+  })
+
+  it('prints the help and exits 0 for help/--help/-h', async () => {
+    for (const token of ['help', '--help', '-h']) {
+      out = []
+      await expect(project([token])).rejects.toThrow('__exit__')
+      expect(exitCode).toBe(0)
+      expect(output()).not.toContain('unknown subcommand')
+      expect(output()).toContain(
+        'usage: hacklab project [add|apply|list|view|edit|delete]'
+      )
+    }
+  })
+
+  it('prints the usage header only once on an unknown subcommand', async () => {
+    await expect(project(['frobnicate'])).rejects.toThrow('__exit__')
+    const headers = out.filter((line) =>
+      line.includes('usage: hacklab project [add|apply|list|view|edit|delete]')
+    )
+    expect(headers).toHaveLength(1)
+  })
+
   it('resolves the "v" prefix to "view"', async () => {
     await project(['v', 'my-app'])
     expect(output()).toContain('My App')
