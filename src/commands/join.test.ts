@@ -273,10 +273,7 @@ describe('join — existing GitHub account', () => {
     expect(m.promptShareOnX).toHaveBeenCalledOnce()
   })
 
-  it('hides the discovery disclosure while discovery is disabled', async () => {
-    // Scout discovery isn't live, so the notice is switched off in join.ts
-    // (DISCOVERY_NOTICE_ENABLED). When it launches, re-enable it there and
-    // restore this test to assert the disclosure content again.
+  it('does not put a discovery section on the join tail', async () => {
     m.loadSession.mockResolvedValueOnce(null).mockResolvedValue({
       token: 't',
       email: 'new@example.com',
@@ -288,12 +285,14 @@ describe('join — existing GitHub account', () => {
     await join({})
 
     expect(m.note.mock.calls.some((c) => c[1] === 'discovery')).toBe(false)
+    expect(
+      m.note.mock.calls.some((c) => String(c[0]).includes('get discovered'))
+    ).toBe(false)
   })
 
-  it('does NOT show the scout disclosure to an already-claimed account', async () => {
+  it('does NOT show the join tail to an already-claimed account', async () => {
     // The already-claimed path short-circuits at Stage 4: nothing new became
-    // feed-eligible, so re-disclosing on every `join` would be noise. Those
-    // members are covered by the posted announcement.
+    // a profile, so the next block would be noise on every `join`.
     m.loadSession.mockResolvedValueOnce(null).mockResolvedValue({
       token: 't',
       email: 'owner@example.com',
@@ -305,6 +304,7 @@ describe('join — existing GitHub account', () => {
 
     await join({})
 
+    expect(m.note.mock.calls.some((c) => c[1] === 'next')).toBe(false)
     expect(m.note.mock.calls.some((c) => c[1] === 'discovery')).toBe(false)
   })
 
@@ -342,9 +342,7 @@ describe('join — existing GitHub account', () => {
     )
   })
 
-  it('hands the user off to `hacklab daemon` instead of scheduling it', async () => {
-    // Onboarding step 4 is "summon the daemon", so the last thing join does is
-    // name that command — both in the note and in the outro line.
+  it('ends with a single next block: referral link + daemon command', async () => {
     m.loadSession.mockResolvedValueOnce(null).mockResolvedValue({
       token: 't',
       email: 'new@example.com',
@@ -357,13 +355,22 @@ describe('join — existing GitHub account', () => {
 
     expect(calledClaim()).toBe(true)
     expect(m.installDailySync).not.toHaveBeenCalled()
-    const daemonNote = m.note.mock.calls.find((c) =>
-      String(c[1]).includes('daemon')
+    expect(m.note.mock.calls.some((c) => c[1] === 'invite your crew')).toBe(
+      false
     )
-    expect(String(daemonNote?.[0])).toContain('hacklab daemon')
     expect(
-      m.outro.mock.calls.some((c) => String(c[0]).includes('hacklab daemon'))
-    ).toBe(true)
+      m.note.mock.calls.some((c) => String(c[1]).includes('summon the daemon'))
+    ).toBe(false)
+    const nextNotes = m.note.mock.calls.filter((c) => c[1] === 'next')
+    expect(nextNotes).toHaveLength(1)
+    expect(nextNotes[0]?.[0]).toBe(
+      'invite your crew\nhttps://hacklab.so/?ref=newname\n\n' +
+        'install the daemon — keeps your ai dashboard live\n' +
+        '$ hacklab daemon'
+    )
+    expect(m.outro).toHaveBeenCalledWith(
+      'done. return to onboarding for your bio and drop.'
+    )
   })
 
   it('reuses a half-finished authenticated signup without logging in again', async () => {

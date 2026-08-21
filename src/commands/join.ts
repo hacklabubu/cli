@@ -361,47 +361,17 @@ export async function join(opts: { browser?: boolean } = {}) {
   const cardPath = await renderShareCard(card)
   await promptShareOnX(card, cardPath)
 
-  // Keep the required discovery notice visible without another decision or a
-  // wall of text in the join path.
-  //
-  // Temporarily disabled (2026-08): scout discovery isn't live — no profile
-  // data is shared with employers — so the notice is pure noise in the join
-  // flow right now. Flip this back on before discovery launches.
-  const DISCOVERY_NOTICE_ENABLED = false
-  if (DISCOVERY_NOTICE_ENABLED) {
-    clack.note(
-      'Your public profile can appear in vetted scout discovery. Email, DMs, and AI session content are never shared. Change "get discovered" anytime in profile settings.',
-      'discovery'
-    )
-  }
-
-  // The viral loop's last beat: a personal referral link at the very end of the
-  // ritual, once the account is real and there's a handle to key it on. Purely
-  // informational — no prompt to answer — so it never stands between the user
-  // and their finished profile. `hacklab referral` reprints it any time.
+  // One next block: referral + the daemon command. Discovery copy used to live
+  // here too; it is gone. Join still does not schedule the daemon — onboarding
+  // owns that step, and a background job should be a command they ran.
   clack.note(
-    `${bold(referralUrl(claimedHandle, base))}\n\n` +
-      'Send it to your smartest hacker friends. The more of your crew here,\n' +
-      'the better the network — they join, you both climb the ranks.',
-    'invite your crew'
+    `invite your crew\n${referralUrl(claimedHandle, base)}\n\n` +
+      'install the daemon — keeps your ai dashboard live\n' +
+      '$ hacklab daemon',
+    'next'
   )
 
-  // Point at the daemon instead of scheduling it here. Onboarding makes it its
-  // own step, and a background job installed on someone's machine as a silent
-  // side effect of joining is exactly the kind of thing that should be a
-  // deliberate command they ran.
-  clack.note(
-    `${bold('hacklab daemon')}\n\n` +
-      'Schedules a daily background re-scan so your tokens, rank, and streak\n' +
-      'stay current without you running anything. No daemon, no streak.',
-    'next: summon the daemon'
-  )
-
-  clack.outro(
-    dim(
-      'run `hacklab daemon`, then return to onboarding for your bio and drop.'
-    )
-  )
+  clack.outro(dim('done. return to onboarding for your bio and drop.'))
 }
 
 /** The per-tool token lines + grand total shown after a scan. */
