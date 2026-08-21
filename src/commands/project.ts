@@ -64,8 +64,10 @@ function emitJsonError(code: string, message: string): never {
   process.exit(1)
 }
 
-function printProjectHelp(): void {
-  info('usage: hacklab project [add|apply|list|view|edit|delete]')
+function usage(exitCode = 1): never {
+  if (exitCode === 0)
+    info('usage: hacklab project [add|apply|list|view|edit|delete]')
+  else error('usage: hacklab project [add|apply|list|view|edit|delete]')
   info(
     `  hacklab project ${dim('add [path] [--yes] [--json]')}       publish the repo you're in (re-run to refresh)`
   )
@@ -96,12 +98,7 @@ function printProjectHelp(): void {
   info(
     `  hacklab project ${dim('delete <slug> [--yes] [--json]')}     remove one`
   )
-}
-
-function usage(): never {
-  error('usage: hacklab project [add|apply|list|view|edit|delete]')
-  printProjectHelp()
-  process.exit(1)
+  process.exit(exitCode)
 }
 
 async function requireSession(json: boolean): Promise<Session> {
@@ -1197,10 +1194,17 @@ async function projectDelete(args: string[]): Promise<void> {
 export async function project(args: string[]): Promise<void> {
   const [subToken, ...rest] = args
 
-  // Bare `hacklab project` inside a repo means "publish this" — the verb the
-  // command exists for. `list` is one word away.
-  if (!subToken || subToken.startsWith('-')) {
-    return projectAdd(args)
+  if (subToken === '--help' || subToken === '-h' || subToken === 'help') {
+    usage(0)
+  }
+
+  // Bare `hacklab project` prints the help — publishing the current repo is
+  // an explicit `add` away.
+  if (!subToken) {
+    usage(0)
+  }
+  if (subToken.startsWith('-')) {
+    usage()
   }
 
   const resolved = resolveCommand(subToken, SUBCOMMANDS)
