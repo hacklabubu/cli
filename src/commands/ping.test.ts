@@ -91,10 +91,7 @@ describe('ping', () => {
 
     expect(output()).toContain('server reached — https://hacklab.so')
     expect(output()).toContain('authenticated as grace — ping recorded')
-    const [, init] = fetchMock.mock.calls[0] as unknown as [
-      string,
-      RequestInit,
-    ]
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(init.headers).toEqual({ Authorization: 'Bearer secret-token' })
   })
 
