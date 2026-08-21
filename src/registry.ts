@@ -12,6 +12,7 @@ import { keys } from './commands/keys.js'
 import { login } from './commands/login.js'
 import { logout } from './commands/logout.js'
 import { org } from './commands/org.js'
+import { ping } from './commands/ping.js'
 import { profile } from './commands/profile.js'
 import { project } from './commands/project.js'
 import { referral } from './commands/referral.js'
@@ -57,6 +58,11 @@ export const COMMANDS: CommandSpec[] = [
     name: 'whoami',
     summary: "check who you're logged in as",
     run: () => whoami(),
+  },
+  {
+    name: 'ping',
+    summary: 'check the hacklab server is reachable',
+    run: () => ping(),
   },
   {
     name: 'drop',
