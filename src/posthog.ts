@@ -183,7 +183,7 @@ export async function identifyUser(
     ph.identify({ distinctId: handle, properties })
     await withTimeout(ph.flush())
   } catch {
-    // Identification is best-effort — never break login/join over it.
+    // Identification is best-effort — never break login over it.
   }
 }
 

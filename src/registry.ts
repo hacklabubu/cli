@@ -7,7 +7,6 @@ import { essay } from './commands/essay.js'
 import { hackathon } from './commands/hackathon.js'
 import { hacker } from './commands/hacker.js'
 import { jobs } from './commands/jobs.js'
-import { join } from './commands/join.js'
 import { keys } from './commands/keys.js'
 import { login } from './commands/login.js'
 import { logout } from './commands/logout.js'
@@ -16,6 +15,7 @@ import { profile } from './commands/profile.js'
 import { project } from './commands/project.js'
 import { referral } from './commands/referral.js'
 import { rtfm } from './commands/rtfm.js'
+import { scan } from './commands/scan.js'
 import { scout } from './commands/scout.js'
 import { sync } from './commands/sync.js'
 import { update } from './commands/update.js'
@@ -38,10 +38,9 @@ export type CommandSpec = {
 
 export const COMMANDS: CommandSpec[] = [
   {
-    name: 'join',
-    args: '[--browser]',
-    summary: 'join hacklab from your terminal',
-    run: (args) => join({ browser: args.includes('--browser') }),
+    name: 'scan',
+    summary: 'scan local AI usage and generate a share card',
+    run: () => scan(),
   },
   {
     name: 'sync',
@@ -70,10 +69,8 @@ export const COMMANDS: CommandSpec[] = [
   },
   {
     name: 'login',
-    args: '[--browser]',
-    summary:
-      're-authenticate with github (--browser for the local browser flow)',
-    run: (args) => login({ browser: args.includes('--browser') }),
+    summary: 're-authenticate with github',
+    run: () => login(),
   },
   {
     name: 'logout',
@@ -108,9 +105,6 @@ export const COMMANDS: CommandSpec[] = [
   {
     name: 'jobs',
     args: '[list|view]',
-    // Note `jo` is now ambiguous (jobs/join) — `job` and `joi` still resolve.
-    // Same trade already taken for `org a` (access/apply): a real command is
-    // worth more than one saved keystroke on an abbreviation.
     summary: 'browse the job shop (--json for agents)',
     run: (args) => jobs(args),
   },

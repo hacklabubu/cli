@@ -1,28 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-
-// Covers the ordering contract of the device-code flow: the user must see the
-// code BEFORE anything opens a browser window on them, and the browser only
-// opens once they've said they're ready. The rest of login() (session persist,
-// analytics) is mocked out — this file is about what the user sees, and when.
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const m = vi.hoisted(() => ({
-  note: vi.fn(),
   waitForEnter: vi.fn(),
   openBrowser: vi.fn(),
   saveSession: vi.fn(),
-  // Every user-visible step appends to this, so assertions read as a script.
   order: [] as string[],
 }))
 
-vi.mock('@clack/prompts', () => ({
-  intro: vi.fn(),
-  outro: vi.fn(),
-  note: m.note,
-  cancel: vi.fn(),
-  isCancel: () => false,
-  spinner: () => ({ start: vi.fn(), stop: vi.fn() }),
-  log: { success: vi.fn(), info: vi.fn() },
-}))
 vi.mock('../session.js', () => ({
   getAppUrl: () => 'https://hacklab.so',
   saveSession: m.saveSession,
@@ -37,10 +21,7 @@ vi.mock('../utils/waitForEnter.js', () => ({ waitForEnter: m.waitForEnter }))
 vi.mock('../ui.js', () => ({
   bold: (s: string) => s,
   dim: (s: string) => s,
-  white: (s: string) => s,
-  linkBlue: (s: string) => s,
-  info: vi.fn(),
-  success: vi.fn(),
+  link: (s: string) => s,
 }))
 
 import { login } from './login.js'
@@ -62,10 +43,10 @@ function jsonResponse(body: unknown) {
 beforeEach(() => {
   vi.clearAllMocks()
   m.order.length = 0
-
-  m.note.mockImplementation((body: string) => {
-    m.order.push(`note:${body.trim()}`)
+  vi.spyOn(console, 'log').mockImplementation((msg: unknown) => {
+    m.order.push(`log:${String(msg)}`)
   })
+
   m.waitForEnter.mockImplementation(async (prompt: string) => {
     m.order.push(`enter:${prompt.trim()}`)
     return true
@@ -81,7 +62,6 @@ beforeEach(() => {
       if (String(url).includes('/api/cli/device/start')) {
         return jsonResponse(START)
       }
-      // First poll approves, so the flow never sleeps on its 5s interval.
       return jsonResponse({
         status: 'approved',
         token: 'tok',
@@ -93,36 +73,35 @@ beforeEach(() => {
   )
 })
 
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+})
+
 describe('login — device flow', () => {
   it('shows the code first, then waits for Enter before opening GitHub', async () => {
-    await login({ allowSignup: true })
+    await login()
 
     expect(m.order).toEqual([
-      'note:WDJB-MJHT',
-      'enter:press Enter to open https://github.com/login/device in your browser',
+      'log:copy code',
+      'log:',
+      'log:WDJB-MJHT',
+      'log:',
+      'log:https://github.com/login/device',
+      'enter:(press enter)',
       'open:https://github.com/login/device?user_code=WDJB-MJHT',
+      'log:',
+      'log:signed in as @ada',
     ])
   })
 
-  it('labels the note as the device code rather than as instructions', async () => {
-    await login({ allowSignup: true })
-
-    expect(m.note).toHaveBeenCalledWith(
-      expect.stringContaining('WDJB-MJHT'),
-      'your github device code',
-      expect.anything()
-    )
-  })
-
   it('still opens the browser when stdin is non-interactive', async () => {
-    // waitForEnter returns false on a non-TTY: the pause is a courtesy, not a
-    // gate, so an unattended run must proceed to the browser regardless.
     m.waitForEnter.mockImplementation(async () => {
       m.order.push('enter:skipped')
       return false
     })
 
-    await login({ allowSignup: true })
+    await login()
 
     expect(m.order).toContain(
       'open:https://github.com/login/device?user_code=WDJB-MJHT'
@@ -147,10 +126,55 @@ describe('login — device flow', () => {
       )
     )
 
-    await login({ allowSignup: true })
+    await login()
 
     expect(m.openBrowser).toHaveBeenCalledWith(
       'https://github.com/login/device'
     )
+  })
+
+  it('uses the GitHub login when the poll has no handle', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) =>
+        String(url).includes('/api/cli/device/start')
+          ? jsonResponse(START)
+          : jsonResponse({
+              status: 'approved',
+              token: 'tok',
+              email: 'a@b.co',
+              login: 'mattbratos',
+            })
+      )
+    )
+
+    await login()
+
+    expect(m.order).toContain('log:signed in as @mattbratos')
+    expect(m.saveSession).toHaveBeenCalledWith(
+      expect.objectContaining({ handle: 'mattbratos' })
+    )
+  })
+
+  it('resolves the handle from the profile when poll omits it', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const u = String(url)
+        if (u.includes('/api/cli/device/start')) return jsonResponse(START)
+        if (u.includes('/api/hackers/me')) {
+          return jsonResponse({ handle: 'mattbratos', claimed: true })
+        }
+        return jsonResponse({
+          status: 'approved',
+          token: 'tok',
+          email: 'a@b.co',
+        })
+      })
+    )
+
+    await login()
+
+    expect(m.order).toContain('log:signed in as @mattbratos')
   })
 })

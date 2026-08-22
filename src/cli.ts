@@ -92,8 +92,7 @@ const HELP_GROUPS: Array<{
   {
     title: 'auth',
     rows: [
-      { label: 'join [--browser]', summary: 'join from your terminal' },
-      { label: 'login [--browser]', summary: 're-authenticate with github' },
+      { label: 'login', summary: 'sign in with github' },
       { label: 'logout', summary: "clear this machine's session" },
       { label: 'whoami', summary: "who you're logged in as" },
     ],
@@ -109,7 +108,8 @@ const HELP_GROUPS: Array<{
     title: 'game',
     rows: [
       { label: 'rules', summary: 'understand how the ranking works' },
-      { label: 'sync', summary: 'scan local AI usage to see your stats' },
+      { label: 'scan', summary: 'scan local AI usage and share a card' },
+      { label: 'sync', summary: 'upload local AI usage to your profile' },
     ],
   },
   {
@@ -241,12 +241,8 @@ async function main() {
 
   // Surface a paused daily background sync (e.g. the session expired while the
   // machine was off) once, then clear the marker. Skipped for the auth commands
-  // that fix it (login/join), so we never nag mid-fix.
-  if (
-    process.stdout.isTTY &&
-    command.name !== 'login' &&
-    command.name !== 'join'
-  ) {
+  // that fix it (login), so we never nag mid-fix.
+  if (process.stdout.isTTY && command.name !== 'login') {
     const paused = await readSyncPaused()
     if (paused) {
       console.error(dim(`paused: daily background sync — ${paused}`))

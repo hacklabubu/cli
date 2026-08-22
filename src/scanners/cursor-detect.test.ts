@@ -1,10 +1,10 @@
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// detectCursorUsage decides whether `join` interrupts someone to ask for a
+// detectCursorUsage decides whether `scan` interrupts someone to ask for a
 // Cursor API key, so both directions are behavioral: a miss means a Cursor user
 // silently keeps the rough local estimate, a false positive means every
-// non-Cursor joiner answers a question that can't help them.
+// non-Cursor user answers a question that can't help them.
 
 // HOME/APPDATA live in the hoisted block so the vi.mock('node:os') factory
 // (hoisted above the module body) can reference them without hitting the TDZ.

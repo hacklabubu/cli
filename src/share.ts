@@ -13,12 +13,14 @@ export type { ShareCardData } from './share-card.js'
 
 function displayTextCard(card: ShareCardData) {
   const rank = card.rank > 0 ? `rank #${card.rank}` : 'unranked'
-  clack.note(
-    `${bold(`@${card.handle}`)} · lv.${card.level} ${card.title} (${card.beltColor} belt)\n` +
-      `${formatTokens(card.tokensTotal)} tokens · ${rank} · ${card.streak}d streak\n` +
-      `https://hacklab.so/${card.handle}`,
-    'your hacklab card'
+  clack.log.step('your hacklab card')
+  clack.log.message(
+    `${bold(`@${card.handle}`)} · lv.${card.level} ${card.title} (${card.beltColor} belt)`
   )
+  clack.log.message(
+    `${formatTokens(card.tokensTotal)} tokens · ${rank} · ${card.streak}d streak`
+  )
+  clack.log.message(`https://hacklab.so/${card.handle}`)
 }
 
 /** Generate the stats card and show it inline, with a text fallback. */
@@ -37,7 +39,6 @@ export async function renderShareCard(
       displayTextCard(card)
     }
 
-    console.log('')
     return cardPath
   } catch {
     displayTextCard(card)

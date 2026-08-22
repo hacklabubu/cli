@@ -1,6 +1,6 @@
 // The referral link and its share copy live here, in one place, so every
-// surface that shows it (the `join` onboarding outro, the standalone `hacklab
-// referral` command) builds the exact same URL and message. A referral is just
+// surface that shows it (the standalone `hacklab referral` command) builds the
+// exact same URL and message. A referral is just
 // the user's handle carried on a `?ref=` query param onto the marketing site:
 // the root domain always resolves, an unrecognized query param can't 404, and
 // it's the conventional shape for the backend to attribute a signup to whoever

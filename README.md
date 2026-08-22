@@ -1,34 +1,34 @@
 # hacklab
 
 The terminal-native way to join [Hacklab](https://hacklab.so) — a social network
-for AI-native hackers. Scan your local AI token usage, see where you rank, claim
-your profile with GitHub.
+for AI-native hackers. Sign in with GitHub, scan your local AI token usage, share
+a card.
 
-## Install & join
+## Install
 
-Install, join, then summon the daemon:
+Install, sign in, then summon the daemon:
 
 ```bash
 curl -fsSL https://hacklab.so/install | sh
-hacklab join
+hacklab login
 hacklab daemon
 ```
 
 The script checks for Node 20+ and installs the CLI globally — that's all it
-does. After it, `hacklab` is a real command on your PATH; `join` claims your
-handle and `daemon` schedules the background sync. If you already have Node
-(including through a version manager), you can skip the script:
+does. After it, `hacklab` is a real command on your PATH; `login` creates or
+restores your account and `daemon` schedules the background sync. If you already
+have Node 20+ (including through a version manager), you can skip the script:
 
 ```bash
 npm i -g hacklab@latest
-hacklab join
+hacklab login
 hacklab daemon
 ```
 
 ### Windows
 
 On native Windows (PowerShell), use the `.ps1` installer instead — it checks
-for Node 20+ and installs the CLI globally, then points you at `hacklab join`:
+for Node 20+ and installs the CLI globally, then points you at `hacklab login`:
 
 ```powershell
 irm https://hacklab.so/install.ps1 | iex
@@ -46,49 +46,26 @@ runs. If you install manually instead (`npm i -g hacklab@latest`) and PowerShell
 says *"running scripts is disabled on this system"*, run that one line yourself,
 or call `hacklab.cmd …` (which no execution policy blocks).
 
-If this machine is already set up with a finished profile, `hacklab join` stops
-early: it prints who you're signed in as and how to switch (`hacklab logout`
-then `hacklab login`) instead of re-registering. A half-finished signup that
-authenticated but never claimed a username still falls through, so you can
-re-run and complete it. The `curl | sh` installer itself only installs — it
-never touches your session.
+The `curl | sh` installer itself only installs — it never touches your session.
 
 The CLI prints a one-line nudge when a newer version is published (checked at
 most once a day); update with `npm i -g hacklab@latest`.
 
-## The join ritual
+## Scan
 
 ```
-scan local AI usage → see your rank → sign in with GitHub → claim a username → card → optional X share
+scan local AI usage → card → optional X share
 ```
 
-1. **Scan** — reads your local AI token usage from Claude Code, Codex, Cursor,
-   OpenClaw, Hermes, OpenCode, and Grok Build. Nothing leaves your machine yet.
-2. **Cursor key** (Cursor users only) — if the scan finds Cursor on your machine
-   and no key is configured, you're offered the chance to paste one. Cursor's
-   local data only supports a rough estimate; a key buys exact per-event counts
-   and real daily history. Skip it and the estimate stands — you can add a key
-   later with `hacklab config cursor-api-key <key>`. Nobody without Cursor is
-   asked.
-3. **Rank** — shows the rank that usage would hold (`you'd be #15 of N`), with no
-   account required.
-4. **GitHub** — sign in to authenticate and link your profile + repos.
-5. **Username** — pick your Hacklab handle (checked for availability live).
-6. **Claim** — saves your usage, syncs pinned GitHub projects, and claims
-   `hacklab.so/<username>`. Bio and the first drop finish activation in the web
-   onboarding flow. Join never schedules anything behind your back — it points
-   you at `hacklab daemon` for the background sync.
-7. **Card** — renders the belt, level, rank, and token breakdown directly in the
-   terminal. Terminals without inline images get a text version.
-8. **Share** — one optional X prompt. Saying yes saves the image to
-   `~/hacklab-card.png`, copies it, and opens a prefilled X post; saying no exits.
+`hacklab scan` reads your local AI token usage from Claude Code, Codex, Cursor,
+OpenClaw, Hermes, OpenCode, and Grok Build. Nothing leaves your machine unless
+you share the card. Cursor users with no API key are offered one (local Cursor
+data is only an estimate). Then it renders the belt/level/token card in the
+terminal and asks whether to share it on X.
 
 ## Commands
 
-- `hacklab join` — the join ritual above. Running bare `hacklab` does this for
-  new users (and `sync` for returning ones). If you're already signed in with a
-  finished profile it stops early and points you at `hacklab logout` +
-  `hacklab login` to switch accounts.
+- `hacklab scan` — scan local AI usage and generate a share card.
 - `hacklab sync` — re-scan local AI usage and sync it to your profile.
 - `hacklab daemon` — summon the daemon: two OS-native background jobs (launchd on
   macOS, systemd user timers on Linux, Task Scheduler tasks on Windows) so your
@@ -109,7 +86,7 @@ scan local AI usage → see your rank → sign in with GitHub → claim a userna
   `tail`, `post`, `history`, `dms`, `dm <handle>`, `flag`. Author handles are
   coloured by belt rank. Add `--json` to any non-interactive subcommand for
   machine-readable output an agent can drive.
-- `hacklab login` — re-authenticate with GitHub.
+- `hacklab login` — sign in with GitHub (creates an account if you don't have one).
 - `hacklab logout` — clear your saved session on this machine.
 - `hacklab config <key> <value>` — set config (`cursor-api-key`, `cursor-email`,
   `prompt-stats`).
@@ -169,7 +146,7 @@ scan local AI usage → see your rank → sign in with GitHub → claim a userna
 - `hacklab jobs` — browse the Job Shop. Bare `hacklab jobs` (or `jobs list`,
   with `--limit 1-100`) lists what's hiring; `jobs view <id>` reads one listing
   in full with its apply link. Read-only — posting is `hacklab org jobs post`.
-  Note `hacklab jo` is now ambiguous (`jobs` vs `join`): use `job` or `joi`.
+  `hacklab jo` resolves to `jobs`.
 - `hacklab profile` — view and edit your own profile. Bare `profile` (or
   `profile view`) shows it; `profile edit` is an org-style autosave editor;
   `profile set <field> <value>` writes one field (`--clear` unsets, handles like
@@ -279,7 +256,7 @@ Every command resolves which backend to talk to by the same precedence:
 4. **production** (`https://hacklab.so`) by default.
 
 ```bash
-hacklab join --env development     # http://localhost:3000
+hacklab login --env development    # http://localhost:3000
 hacklab drop "hi" --env dev        # the override applies to every command, not just login
 ```
 
@@ -307,9 +284,6 @@ you logged in.
   the full precedence.
 - `HACKLAB_SESSION_PATH` — custom path for the session file
   (default `~/.hacklab/session.json`).
-- `HACKLAB_CALLBACK_PORT` — pin the local OAuth callback port (default: a random
-  free port). Lets you forward a fixed port for the browser-callback flow on a
-  remote host.
 - `HACKLAB_NO_UPDATE_CHECK` — set to any value to disable the once-a-day
   "newer version available" nudge. The check is already skipped for piped /
   scripted / `--json` runs; this turns it off for interactive runs too.
@@ -319,31 +293,11 @@ you logged in.
 
 ## Signing in
 
-`hacklab login` and `hacklab join` use **GitHub's device flow** by default,
-everywhere (desktop or headless): they print a short code and
-`github.com/login/device`. Open that on any device where you're signed into
-GitHub, enter the code, and authorize Hacklab — the terminal logs into the
-linked Hacklab account. No local server, no port forwarding, no localhost/app
-URL. (No Hacklab account linked to that GitHub yet? `hacklab join` registers
-one; `hacklab login` tells you to run `join`.)
-
-### `--browser`: the local browser flow
-
-Pass `--browser` to `login`/`join` to use the OAuth-redirect flow instead — it
-opens your browser and catches the redirect on a local callback server. Handy on
-a desktop where auto-opening a browser beats typing a code. On a remote host
-you'd forward the callback port (pin it with `HACKLAB_CALLBACK_PORT` so the
-forward is stable):
-
-```bash
-# on the remote host:
-HACKLAB_CALLBACK_PORT=8765 hacklab login --browser
-# from your laptop, forward that port, then open the printed URL:
-ssh -L 8765:localhost:8765 <this-host>
-```
-
-The device flow also falls back to `--browser` automatically if a backend
-doesn't expose the device routes yet.
+`hacklab login` uses **GitHub's device flow**, everywhere (desktop or headless):
+it prints a short code and `github.com/login/device`. Open that on any device
+where you're signed into GitHub, enter the code, and authorize Hacklab — the
+terminal logs into the linked Hacklab account, creating one if needed. No local
+server, no port forwarding, no localhost/app URL.
 
 ## Local development
 
@@ -362,7 +316,7 @@ development` (localhost) or `HACKLAB_APP_URL=<url>`. Use a throwaway session to
 avoid touching a real account:
 
 ```bash
-HACKLAB_SESSION_PATH=/tmp/hl-test.json pnpm dev join --env development
+HACKLAB_SESSION_PATH=/tmp/hl-test.json pnpm dev login --env development
 ```
 
 ## Telemetry

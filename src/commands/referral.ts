@@ -5,8 +5,8 @@ import { resolveAppUrl, type Session } from '../session.js'
 import { bold, dim, error, hint, info, success } from '../ui.js'
 
 // `hacklab referral` — surface the link a user sends to recruit their hacker
-// friends, plus how many have joined through them. Same link the join ritual
-// shows at the end of onboarding, retrievable any time. `--json` gives an agent
+// friends, plus how many have joined through them. Retrievable any time.
+// `--json` gives an agent
 // the URL, a paste-ready message, and the stats.
 
 type ReferralRecent = { handle: string; displayName: string | null }
@@ -51,10 +51,10 @@ export async function referral(args: string[]): Promise<void> {
 
   const handle = session.handle
   if (!handle) {
-    const message = 'claim a username first with `hacklab join`'
+    const message = 'claim a username first with `hacklab login`'
     if (json) emitJsonError('no_handle', message)
     error('no referral link yet — you have not claimed a username')
-    hint('run `hacklab join` to finish setting up your profile')
+    hint('run `hacklab login` to finish setting up your profile')
     process.exit(1)
   }
 
