@@ -1,8 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { probeRepoPrivate } from '../project-fields.js'
 import { loadSession } from '../session.js'
 import { fetchApi } from '../sync.js'
 
+vi.mock('@clack/prompts', () => ({
+  confirm: vi.fn(),
+  isCancel: (v: unknown) => typeof v === 'symbol',
+}))
 vi.mock('../session.js', () => ({
   loadSession: vi.fn(),
   resolveAppUrl: (s: { appUrl?: string }) => s?.appUrl ?? 'https://hacklab.so',
@@ -19,7 +24,18 @@ vi.mock('../project-fields.js', async () => {
   return { ...actual, probeRepoPrivate: vi.fn().mockResolvedValue(false) }
 })
 
-import { parseViewTarget, project } from './project.js'
+import * as clack from '@clack/prompts'
+
+import { project } from './project.js'
+
+const originalIsTTY = process.stdin.isTTY
+
+function setTTY(value: boolean) {
+  Object.defineProperty(process.stdin, 'isTTY', {
+    value,
+    configurable: true,
+  })
+}
 
 const OWN = {
   slug: 'cli',
@@ -37,17 +53,6 @@ const OWN = {
   path: '/isomiki/cli',
 }
 
-const THEIRS = {
-  slug: 'cli',
-  title: 'cli',
-  description: 'terminal for hacklab',
-  content: '# Why I built it\n\nA terminal for hacklab.',
-  tags: ['typescript'],
-  repoUrl: 'https://github.com/alice/cli',
-  liveUrl: 'https://cli.hacklab.so',
-  path: '/alice/cli',
-}
-
 function jsonResponse(body: unknown, status = 200): Response {
   return { ok: status < 400, status, json: async () => body } as Response
 }
@@ -62,9 +67,8 @@ function postBody(): Record<string, unknown> {
   return JSON.parse((call?.[2] as RequestInit).body as string)
 }
 
-function mockApi(opts?: { own?: unknown[]; theirs?: unknown[] }) {
+function mockApi(opts?: { own?: unknown[] }) {
   const own = opts?.own ?? [OWN]
-  const theirs = opts?.theirs ?? [THEIRS]
   vi.mocked(fetchApi).mockImplementation((async (
     _s: unknown,
     path: string,
@@ -79,30 +83,6 @@ function mockApi(opts?: { own?: unknown[]; theirs?: unknown[] }) {
         schemaVersion: 1,
         handle: 'isomiki',
         projects: own,
-      })
-    }
-    const one = path.match(/^\/api\/hackers\/([^/]+)\/projects\/([^/]+)$/)
-    if (one) {
-      const slug = one[2] ? decodeURIComponent(one[2]) : ''
-      const hit = (theirs as { slug: string }[]).find((p) => p.slug === slug)
-      if (!hit) {
-        return jsonResponse(
-          {
-            schemaVersion: 1,
-            error: { code: 'not_found', message: `no project named "${slug}"` },
-          },
-          404
-        )
-      }
-      return jsonResponse({ schemaVersion: 1, handle: one[1], project: hit })
-    }
-    const list = path.match(/^\/api\/hackers\/([^/]+)\/projects$/)
-    if (list) {
-      const handle = list[1] ? decodeURIComponent(list[1]) : ''
-      return jsonResponse({
-        schemaVersion: 1,
-        handle,
-        projects: theirs,
       })
     }
     return jsonResponse({ error: 'unexpected path' }, 500)
@@ -129,48 +109,30 @@ beforeEach(() => {
     handle: 'isomiki',
   } as never)
   mockApi()
+  // Default to the agent/CI shape: no TTY, so a missing --yes refuses rather
+  // than hanging on a prompt.
+  setTTY(false)
+  vi.mocked(clack.confirm).mockResolvedValue(true)
+})
+
+afterEach(() => {
+  setTTY(originalIsTTY as boolean)
 })
 
 const output = () => out.join('\n')
-
-describe('parseViewTarget', () => {
-  it('treats a handle as their list', () => {
-    expect(parseViewTarget('alice')).toEqual({ kind: 'list', handle: 'alice' })
-  })
-
-  it('strips a leading @', () => {
-    expect(parseViewTarget('@alice/cli')).toEqual({
-      kind: 'one',
-      handle: 'alice',
-      slug: 'cli',
-    })
-  })
-
-  it('splits handle/slug', () => {
-    expect(parseViewTarget('alice/cli')).toEqual({
-      kind: 'one',
-      handle: 'alice',
-      slug: 'cli',
-    })
-  })
-
-  it('is missing when empty or the slug is blank', () => {
-    expect(parseViewTarget(undefined)).toEqual({ kind: 'missing' })
-    expect(parseViewTarget('alice/')).toEqual({ kind: 'missing' })
-  })
-})
 
 describe('project command — help', () => {
   it('prints the agent help and exits 0 when run bare', async () => {
     await expect(project([])).rejects.toThrow('__exit__')
     expect(exitCode).toBe(0)
     expect(output()).toContain('hacklab project add --title')
-    expect(output()).toContain('--url')
-    expect(output()).toContain('hacklab project view <handle>/<slug>')
-    expect(output()).toContain('hacklab project view <handle>')
+    expect(output()).toContain('--repo')
+    expect(output()).toContain('hacklab project list')
+    expect(output()).toContain('hacklab project view <slug>')
+    expect(output()).toContain('hacklab project edit <slug>')
     expect(output()).toContain('hacklab project delete <slug>')
     expect(output()).not.toContain('apply')
-    expect(output()).not.toContain('edit')
+    expect(output()).not.toContain('<handle>/<slug>')
     expect(vi.mocked(fetchApi)).not.toHaveBeenCalled()
   })
 
@@ -189,12 +151,6 @@ describe('project command — help', () => {
     expect(output()).toContain('unknown subcommand')
     expect(output()).toContain('hacklab project add --title')
   })
-
-  it('does not resolve a leftover edit verb', async () => {
-    await expect(project(['edit', 'cli'])).rejects.toThrow('__exit__')
-    expect(exitCode).toBe(1)
-    expect(output()).toContain('unknown subcommand')
-  })
 })
 
 describe('project add', () => {
@@ -207,10 +163,10 @@ describe('project add', () => {
     expect(vi.mocked(fetchApi)).not.toHaveBeenCalled()
   })
 
-  it('exits 1 without a --url', async () => {
+  it('exits 1 without a --repo or --url', async () => {
     await expect(project(['add', '--title', 'cli'])).rejects.toThrow('__exit__')
     expect(exitCode).toBe(1)
-    expect(output()).toContain('needs a url')
+    expect(output()).toContain('needs a link')
     expect(vi.mocked(fetchApi)).not.toHaveBeenCalled()
   })
 
@@ -246,6 +202,43 @@ describe('project add', () => {
     ])
     expect(postBody().repoUrl).toBe('https://github.com/hacklabubu/cli')
     expect(postBody().liveUrl).toBeUndefined()
+  })
+
+  it('takes --repo on a non-github git host', async () => {
+    mockApi({ own: [] })
+    await project([
+      'add',
+      '--title',
+      'cli',
+      '--repo',
+      'https://gitlab.com/hacklabubu/cli.git',
+    ])
+    expect(postBody().repoUrl).toBe('https://gitlab.com/hacklabubu/cli')
+    expect(postBody().liveUrl).toBeUndefined()
+  })
+
+  it('keeps a github --url as the live site when --repo is given', async () => {
+    mockApi({ own: [] })
+    await project([
+      'add',
+      '--title',
+      'cli',
+      '--repo',
+      'git@codeberg.org:hacklabubu/cli.git',
+      '--url',
+      'https://github.com/hacklabubu/cli',
+    ])
+    expect(postBody().repoUrl).toBe('https://codeberg.org/hacklabubu/cli')
+    expect(postBody().liveUrl).toBe('https://github.com/hacklabubu/cli')
+  })
+
+  it('rejects a --url that is not http(s)', async () => {
+    await expect(
+      project(['add', '--title', 'cli', '--url', 'ftp://files.example.com'])
+    ).rejects.toThrow('__exit__')
+    expect(exitCode).toBe(1)
+    expect(output()).toContain('--url must be an http(s) URL')
+    expect(vi.mocked(fetchApi)).not.toHaveBeenCalled()
   })
 
   it('refreshes an existing slug and keeps its publish date', async () => {
@@ -297,81 +290,319 @@ describe('project add', () => {
     ).rejects.toThrow('__exit__')
     expect(output()).toContain('not logged in')
   })
-})
 
-describe('project view', () => {
-  it('lists someone else projects', async () => {
-    await project(['view', 'alice'])
-    expect(output()).toContain('cli')
-    expect(output()).toContain('terminal for hacklab')
-    expect(vi.mocked(fetchApi).mock.calls[0]?.[1]).toBe(
-      '/api/hackers/alice/projects'
-    )
+  it('does not read a leading-dash flag value as a flag', async () => {
+    mockApi({ own: [] })
+    await project([
+      'add',
+      '--title',
+      '-30 days of hacking',
+      '--url',
+      'https://x.dev',
+      '--desc',
+      '--not-a-flag',
+    ])
+    const body = postBody()
+    expect(body.title).toBe('-30 days of hacking')
+    expect(body.description).toBe('--not-a-flag')
+    expect(output()).not.toContain('unknown flag')
   })
 
-  it('renders one project including its long-form content', async () => {
-    await project(['view', 'alice/cli'])
+  it('probes the repo for visibility by default', async () => {
+    mockApi({ own: [] })
+    vi.mocked(probeRepoPrivate).mockResolvedValue(true)
+    await project([
+      'add',
+      '--title',
+      'cli',
+      '--url',
+      'https://github.com/hacklabubu/cli',
+    ])
+    expect(postBody().private).toBe(true)
+  })
+
+  it('--public overrides a probe that says private', async () => {
+    mockApi({ own: [] })
+    vi.mocked(probeRepoPrivate).mockResolvedValue(true)
+    await project([
+      'add',
+      '--title',
+      'cli',
+      '--url',
+      'https://github.com/hacklabubu/cli',
+      '--public',
+    ])
+    expect(postBody().private).toBe(false)
+  })
+
+  it('--private wins without probing', async () => {
+    mockApi({ own: [] })
+    await project([
+      'add',
+      '--title',
+      'cli',
+      '--url',
+      'https://cli.hacklab.so',
+      '--private',
+    ])
+    expect(postBody().private).toBe(true)
+    expect(vi.mocked(probeRepoPrivate)).not.toHaveBeenCalled()
+  })
+})
+
+describe('project list', () => {
+  it('lists your own projects', async () => {
+    await project(['list'])
     expect(output()).toContain('cli')
     expect(output()).toContain('terminal for hacklab')
-    expect(output()).toContain('Why I built it')
-    expect(output()).toContain('https://hacklab.so/alice/cli')
-    expect(vi.mocked(fetchApi).mock.calls[0]?.[1]).toBe(
-      '/api/hackers/alice/projects/cli'
-    )
+    expect(vi.mocked(fetchApi).mock.calls[0]?.[1]).toBe('/api/projects')
+  })
+
+  it('points an empty list at project add', async () => {
+    mockApi({ own: [] })
+    await project(['list'])
+    expect(output()).toContain('no projects yet')
+    expect(output()).toContain('hacklab project add')
   })
 
   it('--json prints the list envelope', async () => {
-    await project(['view', 'alice', '--json'])
+    await project(['list', '--json'])
     const printed = JSON.parse(output())
-    expect(printed.handle).toBe('alice')
+    expect(printed.schemaVersion).toBe(1)
+    expect(printed.handle).toBe('isomiki')
     expect(printed.projects[0].slug).toBe('cli')
   })
+})
 
-  it('--json prints the full project for handle/slug', async () => {
-    await project(['view', 'alice/cli', '--json'])
+describe('project view', () => {
+  it('renders one of your projects including its long-form content', async () => {
+    await project(['view', 'cli'])
+    expect(output()).toContain('terminal for hacklab')
+    expect(output()).toContain('the command')
+    expect(output()).toContain('https://hacklab.so/isomiki/cli')
+    expect(vi.mocked(fetchApi).mock.calls[0]?.[1]).toBe('/api/projects')
+  })
+
+  it('--json prints the full project', async () => {
+    await project(['view', 'cli', '--json'])
     const printed = JSON.parse(output())
     expect(printed.project.slug).toBe('cli')
-    expect(printed.project.content).toContain('Why I built it')
+    expect(printed.project.content).toContain('the command')
   })
 
-  it('404s a missing slug, exit 1', async () => {
-    await expect(project(['view', 'alice/nope'])).rejects.toThrow('__exit__')
+  it('404s a missing slug with a near-match suggestion, exit 1', async () => {
+    await expect(project(['view', 'cl'])).rejects.toThrow('__exit__')
     expect(exitCode).toBe(1)
-    expect(output()).toContain('no project named "nope"')
+    expect(output()).toContain('no project named "cl"')
+    expect(output()).toContain('hacklab project view cli')
   })
 
-  it('exits 1 without a handle', async () => {
+  it('rejects a handle/slug argument', async () => {
+    await expect(project(['view', 'alice/cli'])).rejects.toThrow('__exit__')
+    expect(exitCode).toBe(1)
+    expect(output()).toContain('hacklab project view <slug>')
+    expect(vi.mocked(fetchApi)).not.toHaveBeenCalled()
+  })
+
+  it('exits 1 without a slug', async () => {
     await expect(project(['view'])).rejects.toThrow('__exit__')
     expect(exitCode).toBe(1)
     expect(output()).toContain('hacklab project view')
   })
 
   it('resolves the v prefix to view', async () => {
-    await project(['v', 'alice/cli'])
-    expect(output()).toContain('Why I built it')
+    await project(['v', 'cli'])
+    expect(output()).toContain('the command')
+  })
+})
+
+describe('project edit', () => {
+  it('exits 1 with usage when no slug is given', async () => {
+    await expect(project(['edit', '--title', 'x'])).rejects.toThrow('__exit__')
+    expect(exitCode).toBe(1)
+    expect(output()).toContain('usage: hacklab project edit')
+  })
+
+  it('exits 1 when no field flags are passed', async () => {
+    await expect(project(['edit', 'cli'])).rejects.toThrow('__exit__')
+    expect(exitCode).toBe(1)
+    expect(output()).toContain('nothing to edit')
+  })
+
+  it('merges only passed fields and round-trips the rest', async () => {
+    await project(['edit', 'cli', '--title', 'Renamed', '--desc', 'new'])
+    const body = postBody()
+    expect(body.title).toBe('Renamed')
+    expect(body.description).toBe('new')
+    expect(body.slug).toBe('cli')
+    expect(body.content).toBe(OWN.content)
+    expect(body.repoUrl).toBe(OWN.repoUrl)
+    expect(body.liveUrl).toBe(OWN.liveUrl)
+  })
+
+  it('takes --repo on any git host', async () => {
+    await project(['edit', 'cli', '--repo', 'git@gitlab.com:acme/next.git'])
+    expect(postBody().repoUrl).toBe('https://gitlab.com/acme/next')
+    expect(postBody().liveUrl).toBe(OWN.liveUrl)
+  })
+
+  it('routes a github --url to repoUrl and a plain --url to liveUrl', async () => {
+    await project(['edit', 'cli', '--url', 'https://example.com'])
+    expect(postBody().liveUrl).toBe('https://example.com')
+    expect(postBody().repoUrl).toBe(OWN.repoUrl)
+
+    vi.mocked(fetchApi).mockClear()
+    mockApi()
+    await project(['edit', 'cli', '--url', 'https://github.com/acme/next'])
+    expect(postBody().repoUrl).toBe('https://github.com/acme/next')
+  })
+
+  it('404s a missing slug with a suggestion, exit 1', async () => {
+    await expect(project(['edit', 'cl', '--title', 'x'])).rejects.toThrow(
+      '__exit__'
+    )
+    expect(exitCode).toBe(1)
+    expect(output()).toContain('no project named "cl"')
+    expect(output()).toContain('hacklab project edit cli')
+  })
+
+  it('--json prints an edited envelope', async () => {
+    await project(['edit', 'cli', '--title', 'Renamed', '--json'])
+    const printed = JSON.parse(output())
+    expect(printed.edited).toBe(true)
+    expect(printed.slug).toBe('cli')
+    expect(printed.path).toBe('/isomiki/cli')
+  })
+
+  it('resolves the e prefix to edit', async () => {
+    await project(['e', 'cli', '--title', 'Renamed'])
+    expect(postBody().title).toBe('Renamed')
+  })
+
+  it('keeps the stored visibility when the repo is untouched', async () => {
+    mockApi({ own: [{ ...OWN, private: true }] })
+    await project(['edit', 'cli', '--title', 'Renamed'])
+    expect(postBody().private).toBe(true)
+    expect(vi.mocked(probeRepoPrivate)).not.toHaveBeenCalled()
+  })
+
+  it('re-probes visibility when the repo URL changes', async () => {
+    mockApi({ own: [{ ...OWN, private: false }] })
+    vi.mocked(probeRepoPrivate).mockResolvedValue(true)
+    await project(['edit', 'cli', '--repo', 'https://github.com/acme/next'])
+    expect(vi.mocked(probeRepoPrivate)).toHaveBeenCalledWith(
+      'https://github.com/acme/next'
+    )
+    expect(postBody().private).toBe(true)
+  })
+
+  it('an explicit --public beats the re-probe', async () => {
+    mockApi({ own: [{ ...OWN, private: true }] })
+    vi.mocked(probeRepoPrivate).mockResolvedValue(true)
+    await project([
+      'edit',
+      'cli',
+      '--repo',
+      'https://github.com/acme/next',
+      '--public',
+    ])
+    expect(postBody().private).toBe(false)
+  })
+
+  it('accepts --private alone as an edit', async () => {
+    await project(['edit', 'cli', '--private'])
+    expect(postBody().private).toBe(true)
+    expect(output()).not.toContain('nothing to edit')
+  })
+
+  it('refuses to edit a github-synced project without --yes', async () => {
+    mockApi({ own: [{ ...OWN, source: 'github' }] })
+    await expect(project(['edit', 'cli', '--title', 'x'])).rejects.toThrow(
+      '__exit__'
+    )
+    expect(exitCode).toBe(1)
+    expect(output()).toContain('synced from GitHub')
+    const call = vi
+      .mocked(fetchApi)
+      .mock.calls.find((c) => (c[2] as RequestInit)?.method === 'POST')
+    expect(call).toBeUndefined()
+  })
+
+  it('--json reports the synced refusal with a code', async () => {
+    mockApi({ own: [{ ...OWN, source: 'github' }] })
+    await expect(
+      project(['edit', 'cli', '--title', 'x', '--json'])
+    ).rejects.toThrow('__exit__')
+    expect(JSON.parse(output()).error.code).toBe('synced')
+  })
+
+  it('edits a github-synced project with --yes', async () => {
+    mockApi({ own: [{ ...OWN, source: 'github' }] })
+    await project(['edit', 'cli', '--title', 'Renamed', '--yes'])
+    expect(postBody().title).toBe('Renamed')
   })
 })
 
 describe('project delete', () => {
-  it('deletes by slug without a confirm', async () => {
-    await project(['delete', 'cli'])
+  it('deletes by slug with --yes', async () => {
+    await project(['delete', 'cli', '--yes'])
     const call = vi
       .mocked(fetchApi)
       .mock.calls.find((c) => (c[2] as RequestInit)?.method === 'DELETE')
     expect(call?.[1]).toBe('/api/projects/cli')
     expect(output()).toContain('deleted')
     expect(output()).toContain('cli')
+    expect(vi.mocked(clack.confirm)).not.toHaveBeenCalled()
+  })
+
+  it('refuses without --yes when there is no TTY', async () => {
+    await expect(project(['delete', 'cli'])).rejects.toThrow('__exit__')
+    expect(exitCode).toBe(1)
+    expect(output()).toContain('refusing to delete without confirmation')
+    const call = vi
+      .mocked(fetchApi)
+      .mock.calls.find((c) => (c[2] as RequestInit)?.method === 'DELETE')
+    expect(call).toBeUndefined()
+  })
+
+  it('refuses without --yes in --json mode even on a TTY', async () => {
+    setTTY(true)
+    await expect(project(['delete', 'cli', '--json'])).rejects.toThrow(
+      '__exit__'
+    )
+    const printed = JSON.parse(output())
+    expect(printed.error.code).toBe('confirm')
+    expect(vi.mocked(clack.confirm)).not.toHaveBeenCalled()
+  })
+
+  it('prompts on a TTY and keeps the project when declined', async () => {
+    setTTY(true)
+    vi.mocked(clack.confirm).mockResolvedValue(false)
+    await project(['delete', 'cli'])
+    expect(output()).toContain('kept.')
+    const call = vi
+      .mocked(fetchApi)
+      .mock.calls.find((c) => (c[2] as RequestInit)?.method === 'DELETE')
+    expect(call).toBeUndefined()
+  })
+
+  it('deletes after an accepted TTY prompt', async () => {
+    setTTY(true)
+    vi.mocked(clack.confirm).mockResolvedValue(true)
+    await project(['delete', 'cli'])
+    expect(vi.mocked(clack.confirm)).toHaveBeenCalled()
+    expect(output()).toContain('deleted')
   })
 
   it('--json prints a deleted envelope', async () => {
-    await project(['delete', 'cli', '--json'])
+    await project(['delete', 'cli', '--yes', '--json'])
     const printed = JSON.parse(output())
     expect(printed.deleted).toBe(true)
     expect(printed.slug).toBe('cli')
   })
 
   it('exits 1 without a slug', async () => {
-    await expect(project(['delete'])).rejects.toThrow('__exit__')
+    await expect(project(['delete', '--yes'])).rejects.toThrow('__exit__')
     expect(exitCode).toBe(1)
     expect(output()).toContain('hacklab project delete')
   })

@@ -65,6 +65,11 @@
     "file": "src/commands/project.ts"
   },
   {
+    "event_name": "cli_project_edited",
+    "event_description": "A user changed fields on an existing project via `hacklab project edit`.",
+    "file": "src/commands/project.ts"
+  },
+  {
     "event_name": "cli_project_deleted",
     "event_description": "A user deleted a project from their profile via the CLI.",
     "file": "src/commands/project.ts"

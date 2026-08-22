@@ -99,16 +99,23 @@ machine's usage to your profile. Cursor users with no API key are offered one
   `prompt-stats`).
   Bare `hacklab config` prints the effective values and where each came from.
 - `hacklab project` — agent help for publishing a project to your profile.
-  `project add --title "…" --url <url> [--desc "…"]` posts it (`--json` for
-  agents). A github.com URL becomes the repo link; anything else is the live
-  site. Re-run with the same title to update. `project view <handle>` lists
-  someone else's work; `project view <handle>/<slug>` prints the full page.
-  `project delete <slug>` removes one of yours.
+  `project add --title "…" [--repo <git url>] [--url <live url>] [--desc "…"]`
+  posts it (`--json` for agents); one of `--repo`/`--url` is required. `--repo`
+  takes any git host; a github.com `--url` with no `--repo` is treated as the
+  repo. A github repo is probed for visibility so a private one stays hidden on
+  the web; `--private`/`--public` override that. Re-run with the same title to
+  update. `project list` shows yours, `project view <slug>` prints one full
+  page, and `project edit <slug> [--title/--desc/--repo/--url/--private/--public]`
+  changes fields — editing a GitHub-synced project ends that sync, so it needs
+  `--yes`. `project delete <slug>` removes one; it confirms first, and `--yes`
+  is required when there's no terminal to ask (scripts, agents, `--json`).
 - `hacklab essay` — agent help for posting an essay. `essay post --title "…"
-  --content <md>` publishes it (`--file` for a markdown file on disk, `--json`
-  for agents). `essay update <id>` replaces the body at the same URL.
-  `essay view <id>` reads one; `essay view <handle>` lists theirs.
-  `essay delete <id>` removes one of yours.
+  --content <md>` publishes it (`--file <path.md>`, or a bare `<path.md>`, for
+  a file on disk; `--json` for agents). `essay update <id>` replaces the body at
+  the same URL. `essay list` shows yours — `essay list <handle>` a hacker's,
+  `essay list org <slug>` an org's, `--page N` for more. `essay view <id>` reads
+  one essay. `essay delete <id>` removes one of yours; like `project delete` it
+  confirms first and needs `--yes` when nothing can ask.
 - `hacklab org` — hub for company management. If you already own a company, pick
   a field, type the new value, and it saves as you go. If you don't own one yet,
   it offers to claim or create. Subcommands: `hacklab org claim` (take ownership
