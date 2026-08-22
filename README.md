@@ -151,11 +151,15 @@ terminal and asks whether to share it on X.
   `profile view`) shows it; `profile edit` is an org-style autosave editor;
   `profile set <field> <value>` writes one field (`--clear` unsets, handles like
   `x mattbratos` become full links); `profile set https://x.com/mattbratos`
-  picks the field from the host (x, youtube, instagram, goodreads); `profile
-  set readme --file profile.md` writes a long Markdown README without shell
-  quoting; `profile apply profile.yaml` writes many fields in one shot. Fields:
-  `name`, `bio`, `readme`, `website`, `blog`, `x`, `youtube`, `instagram`,
-  `goodreads`, `rss`, `open-to-work`.
+  picks the field from the host; `profile set readme --file profile.md` writes
+  a long Markdown README without shell quoting; `profile apply profile.yaml`
+  writes many fields in one shot. `profile set` alone lists every field:
+  `name`, `bio`, `readme`, `website`, `blog`, `rss`, `open-to-work`, and a
+  link per platform (`x`, `linkedin`, `youtube`, `instagram`, `huggingface`,
+  `kaggle`, `cursor`, `gitlab`, `devpost`, `replit`, `codepen`,
+  `stackoverflow`, `producthunt`, `arxiv`, `scholar`, `substack`, `dribbble`,
+  `behance`, `twitch`, `farcaster`, `goodreads`, `filmweb`, `imdb`,
+  `spotify`).
   Add `--json` to `view`/`set`/`apply` for machine-readable output.
 - `hacklab hacker <username> --json` — read the rich agent profile including
   links, counts, skills, recent projects, essays, and drops.

@@ -39,7 +39,19 @@ export type ProfileField = {
   handlePath?: string
   /** handle kind: recognized site prefixes to strip before rebuilding. */
   strip?: RegExp
+  /**
+   * Hostname pattern for URLs that belong to this platform but aren't the
+   * canonical prefix (`name.substack.com`, `name.itch.io`). Such a URL is
+   * kept verbatim, and `set <url>` infers the field from it.
+   */
+  hosts?: RegExp
   hint: string
+}
+
+// `siteStrip('x.com', 'twitter.com')` — canonical-prefix strip for those hosts.
+function siteStrip(...hosts: string[]): RegExp {
+  const alts = hosts.map((h) => h.replace(/\./g, '\\.')).join('|')
+  return new RegExp(`^(?:https?:\\/\\/)?(?:www\\.)?(?:${alts})\\/`, 'i')
 }
 
 // Mirrors the server's PROFILE_LINK_KEYS (apps/web/lib/profile-fields.ts) —
@@ -61,8 +73,17 @@ export const PROFILE_FIELDS: ProfileField[] = [
     name: 'x',
     kind: 'handle',
     base: 'https://x.com/',
-    strip: /^(?:https?:\/\/)?(?:www\.)?(?:x|twitter)\.com\//i,
+    strip: siteStrip('x.com', 'twitter.com'),
     hint: 'handle or x.com url',
+  },
+  {
+    key: 'linkedinUrl',
+    name: 'linkedin',
+    kind: 'handle',
+    base: 'https://www.linkedin.com/',
+    handlePath: 'in/',
+    strip: /^(?:https?:\/\/)?(?:[a-z]{2,3}\.)?linkedin\.com\//i,
+    hint: 'handle or linkedin url',
   },
   {
     key: 'youtubeUrl',
@@ -78,8 +99,144 @@ export const PROFILE_FIELDS: ProfileField[] = [
     name: 'instagram',
     kind: 'handle',
     base: 'https://instagram.com/',
-    strip: /^(?:https?:\/\/)?(?:www\.)?instagram\.com\//i,
+    strip: siteStrip('instagram.com'),
     hint: 'handle or instagram url',
+  },
+  {
+    key: 'huggingfaceUrl',
+    name: 'huggingface',
+    kind: 'handle',
+    base: 'https://huggingface.co/',
+    strip: siteStrip('huggingface.co'),
+    hint: 'handle or huggingface.co url',
+  },
+  {
+    key: 'kaggleUrl',
+    name: 'kaggle',
+    kind: 'handle',
+    base: 'https://www.kaggle.com/',
+    strip: siteStrip('kaggle.com'),
+    hint: 'handle or kaggle url',
+  },
+  {
+    key: 'cursorUrl',
+    name: 'cursor',
+    kind: 'handle',
+    base: 'https://cursor.com/',
+    handlePath: '@',
+    strip: siteStrip('cursor.com'),
+    hint: '@handle or cursor.com url',
+  },
+  {
+    key: 'gitlabUrl',
+    name: 'gitlab',
+    kind: 'handle',
+    base: 'https://gitlab.com/',
+    strip: siteStrip('gitlab.com'),
+    hint: 'handle or gitlab url',
+  },
+  {
+    key: 'devpostUrl',
+    name: 'devpost',
+    kind: 'handle',
+    base: 'https://devpost.com/',
+    strip: siteStrip('devpost.com'),
+    hint: 'handle or devpost url',
+  },
+  {
+    key: 'replitUrl',
+    name: 'replit',
+    kind: 'handle',
+    base: 'https://replit.com/',
+    handlePath: '@',
+    strip: siteStrip('replit.com'),
+    hint: '@handle or replit url',
+  },
+  {
+    key: 'codepenUrl',
+    name: 'codepen',
+    kind: 'handle',
+    base: 'https://codepen.io/',
+    strip: siteStrip('codepen.io'),
+    hint: 'handle or codepen url',
+  },
+  {
+    key: 'stackoverflowUrl',
+    name: 'stackoverflow',
+    kind: 'handle',
+    base: 'https://stackoverflow.com/',
+    handlePath: 'users/',
+    strip: siteStrip('stackoverflow.com'),
+    hint: 'user id or stackoverflow url',
+  },
+  {
+    key: 'producthuntUrl',
+    name: 'producthunt',
+    kind: 'handle',
+    base: 'https://www.producthunt.com/',
+    handlePath: '@',
+    strip: siteStrip('producthunt.com'),
+    hint: '@handle or producthunt url',
+  },
+  {
+    key: 'arxivUrl',
+    name: 'arxiv',
+    kind: 'handle',
+    base: 'https://arxiv.org/',
+    handlePath: 'a/',
+    strip: siteStrip('arxiv.org'),
+    hint: 'author id or arxiv url',
+  },
+  {
+    key: 'googlescholarUrl',
+    name: 'scholar',
+    kind: 'handle',
+    base: 'https://scholar.google.com/',
+    handlePath: 'citations?user=',
+    strip: /^(?:https?:\/\/)?scholar\.google\.com\//i,
+    hint: 'user id or scholar url',
+  },
+  {
+    key: 'substackUrl',
+    name: 'substack',
+    kind: 'handle',
+    base: 'https://substack.com/',
+    handlePath: '@',
+    strip: siteStrip('substack.com'),
+    hosts: /(^|\.)substack\.com$/i,
+    hint: '@handle or substack url',
+  },
+  {
+    key: 'dribbbleUrl',
+    name: 'dribbble',
+    kind: 'handle',
+    base: 'https://dribbble.com/',
+    strip: siteStrip('dribbble.com'),
+    hint: 'handle or dribbble url',
+  },
+  {
+    key: 'behanceUrl',
+    name: 'behance',
+    kind: 'handle',
+    base: 'https://www.behance.net/',
+    strip: siteStrip('behance.net'),
+    hint: 'handle or behance url',
+  },
+  {
+    key: 'twitchUrl',
+    name: 'twitch',
+    kind: 'handle',
+    base: 'https://www.twitch.tv/',
+    strip: /^(?:https?:\/\/)?(?:www\.|m\.)?twitch\.tv\//i,
+    hint: 'handle or twitch url',
+  },
+  {
+    key: 'farcasterUrl',
+    name: 'farcaster',
+    kind: 'handle',
+    base: 'https://farcaster.xyz/',
+    strip: siteStrip('farcaster.xyz', 'warpcast.com'),
+    hint: 'handle or farcaster url',
   },
   {
     key: 'goodreadsUrl',
@@ -87,8 +244,35 @@ export const PROFILE_FIELDS: ProfileField[] = [
     kind: 'handle',
     base: 'https://www.goodreads.com/',
     handlePath: 'user/show/',
-    strip: /^(?:https?:\/\/)?(?:www\.)?goodreads\.com\//i,
+    strip: siteStrip('goodreads.com'),
     hint: 'user id or goodreads url',
+  },
+  {
+    key: 'filmwebUrl',
+    name: 'filmweb',
+    kind: 'handle',
+    base: 'https://www.filmweb.pl/',
+    handlePath: 'user/',
+    strip: siteStrip('filmweb.pl'),
+    hint: 'handle or filmweb url',
+  },
+  {
+    key: 'imdbUrl',
+    name: 'imdb',
+    kind: 'handle',
+    base: 'https://www.imdb.com/',
+    handlePath: 'user/',
+    strip: /^(?:https?:\/\/)?(?:www\.|m\.)?imdb\.com\//i,
+    hint: 'user id or imdb url',
+  },
+  {
+    key: 'spotifyUrl',
+    name: 'spotify',
+    kind: 'handle',
+    base: 'https://open.spotify.com/',
+    handlePath: 'user/',
+    strip: /^(?:https?:\/\/)?(?:open\.)?spotify\.com\//i,
+    hint: 'handle or spotify url',
   },
   {
     key: 'rssFeedUrl',
@@ -106,28 +290,32 @@ export const PROFILE_FIELDS: ProfileField[] = [
 
 const FIELD_NAMES = PROFILE_FIELDS.map((f) => f.name)
 
+// Link columns come back keyed by PROFILE_FIELDS' `key`s; the fixed part is
+// the non-link identity.
 type Profile = {
   handle: string
   displayName: string | null
   bio: string | null
   profileReadme: string | null
-  websiteUrl: string | null
-  blogUrl: string | null
-  xUrl: string | null
-  youtubeUrl: string | null
-  instagramUrl: string | null
-  goodreadsUrl: string | null
-  rssFeedUrl: string | null
   githubUsername: string | null
   openToWork: boolean
   claimed: boolean
-}
+} & Record<string, string | boolean | null | undefined>
 
 type PatchResponse = { updated: string[]; profile: Profile }
 
 export type NormalizedValue =
   | { ok: true; value: string | boolean | null }
   | { ok: false; error: string }
+
+/** Hostname of a possibly schemeless URL-ish string, else null. */
+function hostOf(value: string): string | null {
+  try {
+    return new URL(ensureScheme(value)).hostname.toLowerCase()
+  } catch {
+    return null
+  }
+}
 
 /** Strip repeatedly until stable, so a pasted double prefix can't survive. */
 function stripAll(pattern: RegExp, value: string): string {
@@ -171,9 +359,19 @@ export function normalizeFieldValue(
     const cleaned = stripAll(field.strip, trimmed)
     const handle = cleaned.replace(/^@/, '')
     if (!handle) return { ok: true, value: null }
-    // A path on the canonical site is kept as-is under the canonical origin.
-    if (onSite && handle.includes('/')) {
+    // A path on the canonical site is kept as-is under the canonical origin —
+    // including one that already carries the handle path (`/@foo`, `/in/foo`,
+    // `/citations?user=…`).
+    if (
+      onSite &&
+      (/[/?]/.test(handle) ||
+        (field.handlePath && cleaned.startsWith(field.handlePath)))
+    ) {
       return { ok: true, value: field.base + cleaned }
+    }
+    // A subdomain form of the platform (`name.substack.com`) is the URL.
+    if (!onSite && field.hosts && hostOf(trimmed)?.match(field.hosts)) {
+      return { ok: true, value: ensureScheme(trimmed) }
     }
     // Anything else URL-shaped passes through as a URL; a bare handle gets
     // the canonical base. Dots alone don't make it a URL — instagram handles
@@ -305,7 +503,7 @@ function usage(exitCode = 1): never {
     ...table([
       ['view', 'show your profile'],
       ['set <field> <value>', 'set one field'],
-      ['set <url>', 'x, youtube, instagram, goodreads — field from the host'],
+      ['set <url>', 'field from the host (x.com, youtube, kaggle, …)'],
       ['edit', 'interactive editor'],
       ['apply <file>', 'fields from a yaml/json file'],
     ]),
@@ -342,9 +540,13 @@ function setUsage(): never {
  */
 export function inferFieldFromUrl(token: string): ProfileField | null {
   if (!/^(?:https?:\/\/|www\.)|\.[a-z]{2,}(?:\/|$)/i.test(token)) return null
+  const host = hostOf(token)
   return (
-    PROFILE_FIELDS.find((f) => f.kind === 'handle' && f.strip?.test(token)) ??
-    null
+    PROFILE_FIELDS.find(
+      (f) =>
+        f.kind === 'handle' &&
+        (f.strip?.test(token) || (host && f.hosts?.test(host)))
+    ) ?? null
   )
 }
 

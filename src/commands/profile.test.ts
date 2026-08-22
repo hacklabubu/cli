@@ -204,6 +204,62 @@ describe('parseProfileDocument', () => {
   })
 })
 
+describe('platform handles', () => {
+  it('rebuilds the canonical link for every handle field from its own placeholder', () => {
+    // Each handle field must round-trip: bare handle → base+handlePath+handle,
+    // and that URL pasted back → unchanged. Guards every row in the table.
+    for (const f of PROFILE_FIELDS) {
+      if (f.kind !== 'handle' || !f.base) continue
+      const built = normalizeFieldValue(f, 'someone')
+      expect(built).toEqual({
+        ok: true,
+        value: `${f.base}${f.handlePath ?? ''}someone`,
+      })
+      if (!built.ok || typeof built.value !== 'string') throw new Error()
+      expect(normalizeFieldValue(f, built.value)).toEqual(built)
+      expect(inferFieldFromUrl(built.value)?.name).toBe(f.name)
+    }
+  })
+
+  it('handles the odd hosts: linkedin locales, spotify open., farcaster/warpcast', () => {
+    expect(
+      normalizeFieldValue(field('linkedin'), 'https://pl.linkedin.com/in/matt')
+    ).toEqual({ ok: true, value: 'https://www.linkedin.com/in/matt' })
+    expect(normalizeFieldValue(field('linkedin'), 'matt')).toEqual({
+      ok: true,
+      value: 'https://www.linkedin.com/in/matt',
+    })
+    expect(
+      normalizeFieldValue(field('spotify'), 'open.spotify.com/user/matt')
+    ).toEqual({ ok: true, value: 'https://open.spotify.com/user/matt' })
+    expect(
+      normalizeFieldValue(field('farcaster'), 'https://warpcast.com/matt')
+    ).toEqual({ ok: true, value: 'https://farcaster.xyz/matt' })
+    expect(
+      normalizeFieldValue(
+        field('scholar'),
+        'scholar.google.com/citations?user=AbC'
+      )
+    ).toEqual({
+      ok: true,
+      value: 'https://scholar.google.com/citations?user=AbC',
+    })
+  })
+
+  it('keeps a subdomain form of a platform as the URL', () => {
+    expect(normalizeFieldValue(field('substack'), 'matt.substack.com')).toEqual(
+      { ok: true, value: 'https://matt.substack.com' }
+    )
+    expect(normalizeFieldValue(field('substack'), 'matt')).toEqual({
+      ok: true,
+      value: 'https://substack.com/@matt',
+    })
+    expect(inferFieldFromUrl('https://matt.substack.com')?.name).toBe(
+      'substack'
+    )
+  })
+})
+
 describe('inferFieldFromUrl', () => {
   it('picks the handle field from a pasted URL host', () => {
     expect(inferFieldFromUrl('https://x.com/mattbratos')?.name).toBe('x')
