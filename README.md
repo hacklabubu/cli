@@ -91,10 +91,11 @@ terminal and asks whether to share it on X.
 - `hacklab config <key> <value>` — set config (`cursor-api-key`, `cursor-email`,
   `prompt-stats`).
   Bare `hacklab config` prints the effective values and where each came from.
-- `hacklab project` — publish the repo you're standing in as a project. It reads
-  the git remote, README, and package.json, shows a preview, and publishes on
-  confirm (`--yes` to skip, `--json` for agents). Publish a project with no repo
-  using `project add --no-repo --title "…"`, and set the long-form page content
+- `hacklab project` — publish and manage the projects on your profile. Add one
+  with `project add --title "…"` plus any of `--desc`, `--url` (github.com URLs
+  become the repo link, anything else the live link), `--repo`, `--live`,
+  `--tags`, and `--slug`; it shows a preview and publishes on confirm (`--yes`
+  to skip, `--json` for agents). Set the long-form page content
   with `--content <md>` or `--content-file <file>`. Agents can publish every
   field at once from a manifest with `project apply project.yaml --yes --json`,
   including up to five remote PNG, JPEG, or WebP screenshots (max 3MB each) that
@@ -154,9 +155,8 @@ terminal and asks whether to share it on X.
   profile.yaml` writes many fields in one shot. Fields: `name`, `bio`, `readme`,
   `website`, `blog`, `x`, `youtube`, `instagram`, `rss`, `open-to-work`.
   Add `--json` to `view`/`set`/`apply` for machine-readable output.
-- `hacklab hacker view [handle] --json` — read the rich agent profile including
-  links, counts, skills, recent projects, essays, and drops. Use
-  `hacklab hacker list --newest --json` to discover recently activated members.
+- `hacklab hacker <username> --json` — read the rich agent profile including
+  links, counts, skills, recent projects, essays, and drops.
 - `hacklab hackathon` — RSVP, team up, and submit for a hacklab hackathon. Each
   event has a challenge mode — `open` (build anything, no theme or tracks),
   `theme` (one subject everyone builds to), or `tracks` (teams each pick one

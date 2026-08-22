@@ -379,7 +379,7 @@ async function interactiveSync() {
     if (reported > 0 && matched === 0) {
       info(
         dim(
-          `  none of your ${reported} local repos matched a hacklab project — run \`hacklab brag\` in one`
+          `  none of your ${reported} local repos matched a hacklab project — run \`hacklab project add\` in one`
         )
       )
     } else if (matched > 0) {

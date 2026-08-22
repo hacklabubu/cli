@@ -122,8 +122,8 @@ export const COMMANDS: CommandSpec[] = [
   },
   {
     name: 'hacker',
-    args: '[view|list]',
-    summary: 'view a hacker or list newest members (--json for agents)',
+    args: '<username>',
+    summary: "view a hacker's profile card (--json for agents)",
     run: (args) => hacker(args),
   },
   {

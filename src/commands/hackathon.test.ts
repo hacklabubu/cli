@@ -60,16 +60,37 @@ beforeEach(() => {
 const output = () => out.join('\n')
 
 describe('hackathon dispatch', () => {
-  it('bare hackathon lists events', async () => {
-    vi.mocked(fetchApi).mockResolvedValue(
-      jsonResponse({ schemaVersion: 1, hackathons: [] })
-    )
-    await hackathon([])
-    expect(fetchApi).toHaveBeenCalledWith(
-      expect.anything(),
-      '/api/hackathons',
-      expect.anything()
-    )
+  it('bare hackathon prints the help and exits 0, without calling the API', async () => {
+    await expect(hackathon([])).rejects.toThrow('__exit__')
+    expect(exitCode).toBe(0)
+    expect(output()).toContain('usage: hacklab hackathon')
+    expect(fetchApi).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    'help',
+    '--help',
+    '-h',
+  ])('%s prints the help and exits 0', async (token) => {
+    await expect(hackathon([token])).rejects.toThrow('__exit__')
+    expect(exitCode).toBe(0)
+    expect(output()).toContain('usage: hacklab hackathon')
+    expect(fetchApi).not.toHaveBeenCalled()
+  })
+
+  it('a lone flag (e.g. --json) is a usage error, not a list', async () => {
+    await expect(hackathon(['--json'])).rejects.toThrow('__exit__')
+    expect(exitCode).toBe(1)
+    expect(output()).toContain('usage: hacklab hackathon')
+    expect(fetchApi).not.toHaveBeenCalled()
+  })
+
+  it('"teams" suggests `hacklab hackathon team list`', async () => {
+    await expect(hackathon(['teams'])).rejects.toThrow('__exit__')
+    expect(exitCode).toBe(1)
+    expect(output()).toContain('unknown subcommand: hackathon teams')
+    expect(output()).toContain('did you mean')
+    expect(output()).toContain('hacklab hackathon team list')
   })
 
   it('exits 1 on an unknown subcommand', async () => {
