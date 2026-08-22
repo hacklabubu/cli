@@ -18,4 +18,23 @@ describe('waitForEnter', () => {
       })
     }
   })
+
+  it('resolves false when aborted', async () => {
+    const original = process.stdin.isTTY
+    Object.defineProperty(process.stdin, 'isTTY', {
+      configurable: true,
+      value: true,
+    })
+    const abort = new AbortController()
+    try {
+      const pending = waitForEnter('press Enter', abort.signal)
+      abort.abort()
+      await expect(pending).resolves.toBe(false)
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', {
+        configurable: true,
+        value: original,
+      })
+    }
+  })
 })

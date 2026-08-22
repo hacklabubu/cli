@@ -40,6 +40,8 @@ function jsonResponse(body: unknown) {
   return { ok: true, status: 200, json: async () => body } as Response
 }
 
+const originalIsTTY = process.stdin.isTTY
+
 beforeEach(() => {
   vi.clearAllMocks()
   m.order.length = 0
@@ -74,41 +76,67 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  Object.defineProperty(process.stdin, 'isTTY', {
+    configurable: true,
+    value: originalIsTTY,
+  })
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
 
 describe('login — device flow', () => {
-  it('shows the code first, then waits for Enter before opening GitHub', async () => {
+  it('shows the code and URL before opening GitHub', async () => {
     await login()
 
-    expect(m.order).toEqual([
+    expect(m.order.slice(0, 4)).toEqual([
       'log:copy code',
-      'log:',
       'log:WDJB-MJHT',
       'log:',
       'log:https://github.com/login/device',
-      'enter:(press enter)',
-      'open:https://github.com/login/device?user_code=WDJB-MJHT',
-      'log:',
-      'log:signed in as @ada',
     ])
+    expect(m.order).toContain('enter:(press enter)')
+    expect(m.order).toContain(
+      'open:https://github.com/login/device?user_code=WDJB-MJHT'
+    )
+    expect(m.order.at(-1)).toBe('log:signed in as @ada')
   })
 
   it('still opens the browser when stdin is non-interactive', async () => {
-    m.waitForEnter.mockImplementation(async () => {
-      m.order.push('enter:skipped')
-      return false
+    Object.defineProperty(process.stdin, 'isTTY', {
+      configurable: true,
+      value: false,
     })
+    m.waitForEnter.mockResolvedValue(false)
 
     await login()
 
-    expect(m.order).toContain(
-      'open:https://github.com/login/device?user_code=WDJB-MJHT'
+    expect(m.openBrowser).toHaveBeenCalledWith(
+      'https://github.com/login/device?user_code=WDJB-MJHT'
     )
     expect(m.saveSession).toHaveBeenCalledWith(
       expect.objectContaining({ token: 'tok', handle: 'ada' })
     )
+  })
+
+  it('finishes login when they click the link without pressing Enter', async () => {
+    Object.defineProperty(process.stdin, 'isTTY', {
+      configurable: true,
+      value: true,
+    })
+    m.waitForEnter.mockImplementation(
+      (_prompt: string, signal?: AbortSignal) =>
+        new Promise<boolean>((resolve) => {
+          signal?.addEventListener('abort', () => resolve(false))
+        })
+    )
+
+    await login()
+
+    expect(m.openBrowser).not.toHaveBeenCalled()
+    expect(m.saveSession).toHaveBeenCalledWith(
+      expect.objectContaining({ token: 'tok', handle: 'ada' })
+    )
+    expect(m.order.at(-1)).toBe('log:signed in as @ada')
   })
 
   it('falls back to the plain verification URI when GitHub omits the complete one', async () => {
