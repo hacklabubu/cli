@@ -56,6 +56,8 @@ beforeEach(() => {
     ok: true,
     mechanism: 'systemd',
     detail: 'systemd user timer (hacklab-sync.timer)',
+    tick: true,
+    recorded: true,
   })
   m.uninstallDailySync.mockResolvedValue(undefined)
   m.clearSyncPaused.mockResolvedValue(undefined)
@@ -79,6 +81,24 @@ describe('hacklab daemon', () => {
       'cli_daily_sync_installed',
       expect.objectContaining({ mechanism: 'systemd' })
     )
+  })
+
+  it('does not claim a minutely tick the scheduler refused', async () => {
+    // Some Windows policies cap task frequency: the daily job installs, the tick
+    // doesn't. Promising a tick that will never run is how a user stops trusting
+    // the streak.
+    m.installDailySync.mockResolvedValue({
+      ok: true,
+      mechanism: 'schtasks',
+      detail: 'full sync daily around 07:03',
+      tick: false,
+      recorded: true,
+    })
+
+    await daemon([])
+
+    expect(said(m.success, 'full sync daily')).toBe(true)
+    expect(said(m.success, 'tick every minute')).toBe(false)
   })
 
   it('refuses to schedule anything when not logged in', async () => {

@@ -2,7 +2,7 @@ import * as clack from '@clack/prompts'
 
 import { beltForTokens } from '../belt.js'
 import { loadConfig, resolveCursorAuth, saveConfig } from '../config.js'
-import { dailySyncInstalled, installDailySync } from '../daily-sync.js'
+import { dailySyncState, installDailySync } from '../daily-sync.js'
 import { captureEvent } from '../posthog.js'
 import { rebuildScanState } from '../scanners/incremental.js'
 import {
@@ -98,7 +98,7 @@ export async function scan(args: string[] = []): Promise<void> {
     uploaded = await uploadTokenScan(session, scanResult, { interactive: true })
     await rebuildScanState(results)
   } catch (err) {
-    error(err instanceof Error ? err.message : 'sync failed')
+    error(err instanceof Error ? err.message : String(err))
     process.exit(1)
   }
 
@@ -139,14 +139,41 @@ export async function scan(args: string[] = []): Promise<void> {
   }
   console.log('')
 
+  // Only touch the scheduler when something is actually wrong with it: a
+  // reinstall rewrites the plists/units and bounces the jobs (killing a tick
+  // mid-run), so doing it every scan is pure churn.
   if (!noDaemon) {
-    const existed = await dailySyncInstalled()
-    const result = await installDailySync()
-    if (result.ok && !existed) {
-      await captureEvent(session.handle, 'cli_daily_sync_installed', {
-        mechanism: result.mechanism,
-        source: 'scan',
-      })
+    const state = await dailySyncState()
+    if (state !== 'current') {
+      const result = await installDailySync()
+      if (!result.ok) {
+        // Only a machine with nothing scheduled gets the manual fallback. A
+        // failed *repair* means the jobs are still there (an SSH session with no
+        // user D-Bus fails the systemd probe every time while the desktop
+        // session's timers keep running), and printing cron instructions there
+        // both spams every scan and talks the user into a second, duplicate
+        // schedule.
+        if (state === 'missing') {
+          console.log(dim(result.instructions))
+          await captureEvent(session.handle, 'cli_daily_sync_manual', {
+            mechanism: result.mechanism,
+            source: 'scan',
+          })
+        }
+      } else if (!result.recorded) {
+        // The jobs are scheduled but we couldn't write the config, so every
+        // future scan will reinstall. Explain the churn instead of repeating an
+        // "installed" announcement (and its event) forever.
+        console.log(
+          dim('could not record daily-sync state — config unwritable')
+        )
+      } else if (state === 'missing') {
+        console.log(dim(`daily sync scheduled (${result.mechanism})`))
+        await captureEvent(session.handle, 'cli_daily_sync_installed', {
+          mechanism: result.mechanism,
+          source: 'scan',
+        })
+      }
     }
   }
 

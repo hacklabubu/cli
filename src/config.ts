@@ -2,9 +2,28 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
+/**
+ * What the OS-native background jobs were last installed with — written by
+ * daily-sync.ts on a successful install, cleared on uninstall. `command`
+ * fingerprints the scheduled `node <script>` pair plus the template generation
+ * that produced the jobs, so a routine run can tell a working schedule from one
+ * worth replacing; hour/minute pin the daily slot so a reinstall doesn't re-roll
+ * it. Opaque here: daily-sync.ts owns the format.
+ */
+export type DailySyncRecord = {
+  command: string
+  hour?: number
+  minute?: number
+  /** False when the scheduler accepted the daily job but refused the minutely
+   * tick (a Windows policy cap), so a later run doesn't read that machine as a
+   * half-install and reinstall on every scan. */
+  tick?: boolean
+}
+
 export type HacklabConfig = {
   cursorApiKey?: string
   cursorEmail?: string
+  dailySync?: DailySyncRecord
   /**
    * Consent for uploading Claude Code conversation data: 'none' | 'stats' |
    * 'full'. Absent means never asked — see prompt-consent.ts, which owns the
@@ -72,4 +91,50 @@ export async function loadConfig(): Promise<HacklabConfig> {
 export async function saveConfig(config: HacklabConfig): Promise<void> {
   await mkdir(dirname(CONFIG_PATH), { recursive: true })
   await writeFile(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, 'utf8')
+}
+
+/**
+ * Read-modify-write the config file for background callers that must not lose
+ * the rest of it. Unlike `loadConfig`, which flattens every read failure to
+ * `{}`, this refuses to write when the file exists but can't be parsed —
+ * spreading `{}` over an unreadable config would silently drop the user's cursor
+ * key and prompt-stats consent, and nothing here is worth that.
+ *
+ * `mutate` returns the config to write, or null for "nothing to change" (no
+ * write at all — a background job shouldn't rewrite config.json for nothing).
+ * Never throws: resolves true when the config reflects the mutation, false when
+ * the write was refused or failed, so the caller can react to not being
+ * remembered.
+ */
+export async function updateConfig(
+  mutate: (config: HacklabConfig) => HacklabConfig | null
+): Promise<boolean> {
+  let current: HacklabConfig = {}
+  try {
+    const parsed: unknown = JSON.parse(await readFile(CONFIG_PATH, 'utf8'))
+    // A file that parses to a non-object (`null`, an array, a bare string) is
+    // just as unreadable as one that doesn't parse: refuse it too.
+    if (
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
+      return false
+    }
+    current = parsed as HacklabConfig
+  } catch (err) {
+    // No config yet is the normal first-run case; anything else means there IS
+    // content we can't see, so leave it alone.
+    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') return false
+  }
+
+  const next = mutate(current)
+  if (!next) return true
+  try {
+    await saveConfig(next)
+    return true
+  } catch {
+    // Read-only home, no permission, disk full — the caller decides what to say.
+    return false
+  }
 }
