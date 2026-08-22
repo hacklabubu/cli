@@ -178,9 +178,8 @@ scan local AI usage → see your rank → sign in with GitHub → claim a userna
   profile.yaml` writes many fields in one shot. Fields: `name`, `bio`, `readme`,
   `website`, `blog`, `x`, `youtube`, `instagram`, `rss`, `open-to-work`.
   Add `--json` to `view`/`set`/`apply` for machine-readable output.
-- `hacklab hacker view [handle] --json` — read the rich agent profile including
-  links, counts, skills, recent projects, essays, and drops. Use
-  `hacklab hacker list --newest --json` to discover recently activated members.
+- `hacklab hacker <username> --json` — read the rich agent profile including
+  links, counts, skills, recent projects, essays, and drops.
 - `hacklab hackathon` — RSVP, team up, and submit for a hacklab hackathon. Each
   event has a challenge mode — `open` (build anything, no theme or tracks),
   `theme` (one subject everyone builds to), or `tracks` (teams each pick one
