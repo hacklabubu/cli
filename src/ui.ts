@@ -11,6 +11,11 @@ export const white = chalk.whiteBright
 // GitHub's link blue. chalk degrades the hex to the nearest ANSI colour on
 // terminals without truecolor support.
 export const linkBlue = chalk.hex('#79b8ff')
+
+/** Clickable OSC-8 hyperlink. Visible text is the URL so a copy still works. */
+export function link(url: string): string {
+  return `\u001b]8;;${url}\u001b\\${linkBlue(url)}\u001b]8;;\u001b\\`
+}
 // Phosphor Mint (DESIGN.md --primary #82F5C6): the "active and alive" signal —
 // the open-to-work status dot and lit activity cells. chalk degrades the hex on
 // terminals without truecolor.

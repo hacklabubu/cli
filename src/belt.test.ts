@@ -59,7 +59,7 @@ describe('beltForTokens', () => {
     })
   }
 
-  it('a brand-new join with zero tokens is a white-belt gaijin at 0%', () => {
+  it('a brand-new account with zero tokens is a white-belt gaijin at 0%', () => {
     const belt = beltForTokens(0)
     expect(belt).toMatchObject({
       level: 0,

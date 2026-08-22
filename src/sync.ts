@@ -21,7 +21,7 @@ import {
 import { dim } from './ui.js'
 
 export type { CursorScanStatus, CursorStats, DailyToolEntry }
-// Token scanning lives in one place — the scanners/ module (used by both `join`
+// Token scanning lives in one place — the scanners/ module (used by both `scan`
 // and `sync`). This file is just the `sync` command's API layer: session
 // checks, the claim upload, and error formatting. Re-export the shared scan
 // helpers so existing importers don't have to reach into scanners/ directly.
@@ -156,7 +156,7 @@ export async function checkSession(session: Session): Promise<SessionCheck> {
 /**
  * Ask the server to mirror the user's pinned GitHub repos into their projects
  * (and drop ones that are no longer pinned/public). Best-effort and non-fatal —
- * returns null on any failure so a GitHub hiccup never fails `sync`/`join`.
+ * returns null on any failure so a GitHub hiccup never fails `sync`.
  */
 export async function syncGithubRepos(
   session: Session
@@ -173,11 +173,6 @@ export async function syncGithubRepos(
   }
 }
 
-/**
- * Scan local AI usage (via the shared scanners) and upload it to the claim
- * endpoint. Uses the exact same scan path as `join`, so the two commands report
- * identical numbers for the same machine.
- */
 /** The harnesses the backend tallies, with explicit zeros so the payload shape
  * is stable regardless of which tools the scan actually found. */
 function toolTotalsRecord(scan: AggregateScan) {
@@ -195,11 +190,10 @@ function toolTotalsRecord(scan: AggregateScan) {
 /**
  * Upload a scan's token totals to the backend (the `/api/claim/sync` capsule).
  * The single place the upload payload is built and the response is checked, so
- * the `sync` command, the `join` ritual's background upload, and the daily
- * background job all push the exact same shape. Throws LOGIN_EXPIRED_MESSAGE on
- * 401 so callers can tell an expired session apart from a transient failure.
- * Pass `timeoutMs` to hard-cap a slow upload (join uses this so the ritual can
- * never hang); omit it for an unbounded one-shot.
+ * the `sync` command and the daily background job all push the exact same
+ * shape. Throws LOGIN_EXPIRED_MESSAGE on 401 so callers can tell an expired
+ * session apart from a transient failure. Pass `timeoutMs` to hard-cap a slow
+ * upload; omit it for an unbounded one-shot.
  *
  * Tags the upload with this machine's stable id so the backend can sum usage
  * across the user's machines while keeping each machine's re-sync idempotent.
@@ -221,7 +215,7 @@ export async function uploadTokenScan(
       'Content-Type': 'application/json',
       Authorization: `Bearer ${session.token}`,
       // Manual `hacklab sync` counts as user activity; the automated daily job
-      // and join's background upload (both this same endpoint) do not. The
+      // (this same endpoint) does not. The
       // backend emits user_active only when this header is present, so the
       // shared payload stays identical otherwise.
       ...(opts.interactive ? { 'x-hacklab-interactive': '1' } : {}),

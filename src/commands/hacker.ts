@@ -130,11 +130,11 @@ async function hackerView(args: string[]): Promise<void> {
     if (json) {
       return emitJsonError(
         'no_handle',
-        'you have not claimed a username yet — run `hacklab join` first'
+        'you have not claimed a username yet — run `hacklab login` first'
       )
     }
     error("you haven't claimed a username yet")
-    info(`run ${dim('hacklab join')} to claim one, or pass a handle`)
+    info(`run ${dim('hacklab login')} to claim one, or pass a handle`)
     process.exit(1)
   }
 

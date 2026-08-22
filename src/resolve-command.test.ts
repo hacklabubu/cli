@@ -20,9 +20,10 @@ describe('resolveCommand', () => {
   })
 
   it('resolves a unique prefix to its full command', () => {
-    // `join` and `jobs` diverge at the 3rd letter, so `jo` no longer picks one.
-    expect(resolveCommand('joi')).toEqual({ kind: 'match', name: 'join' })
     expect(resolveCommand('job')).toEqual({ kind: 'match', name: 'jobs' })
+    expect(resolveCommand('jo')).toEqual({ kind: 'match', name: 'jobs' })
+    expect(resolveCommand('sca')).toEqual({ kind: 'match', name: 'scan' })
+    expect(resolveCommand('sco')).toEqual({ kind: 'match', name: 'scout' })
     expect(resolveCommand('w')).toEqual({ kind: 'match', name: 'whoami' })
     expect(resolveCommand('sy')).toEqual({ kind: 'match', name: 'sync' })
     expect(resolveCommand('o')).toEqual({ kind: 'match', name: 'org' })
@@ -31,7 +32,6 @@ describe('resolveCommand', () => {
     expect(resolveCommand('co')).toEqual({ kind: 'match', name: 'config' })
     expect(resolveCommand('con')).toEqual({ kind: 'match', name: 'config' })
     expect(resolveCommand('ch')).toEqual({ kind: 'match', name: 'chat' })
-    expect(resolveCommand('sc')).toEqual({ kind: 'match', name: 'scout' })
     // `hacker` and `hackathon` diverge at the 5th letter (`hacke…` vs
     // `hackat…`), so a prefix needs at least 5 letters to pick one.
     expect(resolveCommand('hacke')).toEqual({ kind: 'match', name: 'hacker' })
@@ -56,7 +56,11 @@ describe('resolveCommand', () => {
     // honest answer, not a silent guess.
     expect(resolveCommand('s')).toEqual({
       kind: 'ambiguous',
-      matches: ['sync', 'scout'],
+      matches: ['scan', 'sync', 'scout'],
+    })
+    expect(resolveCommand('sc')).toEqual({
+      kind: 'ambiguous',
+      matches: ['scan', 'scout'],
     })
     // `ha` now spans both `hacker` and `hackathon` — ambiguous is the honest
     // answer here too, same as `s` above.
@@ -68,11 +72,6 @@ describe('resolveCommand', () => {
     expect(resolveCommand('d')).toEqual({
       kind: 'ambiguous',
       matches: ['daemon', 'drop'],
-    })
-    // `jo` stopped being join shorthand when the job shop landed.
-    expect(resolveCommand('jo')).toEqual({
-      kind: 'ambiguous',
-      matches: ['join', 'jobs'],
     })
   })
 

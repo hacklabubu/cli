@@ -479,7 +479,7 @@ export async function installDailySync(): Promise<InstallResult> {
       instructions: manualInstructions(cmd),
     }
   } catch {
-    // A failed write (permissions, read-only home, …) must not crash the join
+    // A failed write (permissions, read-only home, …) must not crash the command
     // ritual — fall back to printable instructions.
     return {
       ok: false,

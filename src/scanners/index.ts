@@ -543,14 +543,14 @@ async function dirHasEntries(p: string): Promise<boolean> {
 }
 
 /**
- * Does this machine look like a Cursor machine? `join` uses this to decide
+ * Does this machine look like a Cursor machine? `scan` uses this to decide
  * whether asking for a Cursor API key is worth a prompt.
  *
  * A false positive costs a question the user has to skip, so this looks for
  * evidence Cursor has been *used* — the AI-tracking db, editor session state,
  * per-workspace storage, or local file history — rather than merely installed.
  * Every probe is a filesystem existence check, so it stays cheap enough to run
- * inline in the join flow.
+ * inline in the scan flow.
  */
 export async function detectCursorUsage(): Promise<boolean> {
   if (await pathExists(CURSOR_TRACKING_DB)) return true
@@ -802,7 +802,7 @@ export async function collectToolScans(): Promise<ScanResult[]> {
 
 /**
  * Re-run only the Cursor API scanner and swap the result into an existing set of
- * scans. `join` calls this after the user supplies a key mid-flow, so the exact
+ * scans. `scan` calls this after the user supplies a key mid-flow, so the exact
  * API numbers replace the local estimate without re-walking every other tool's
  * logs (which for a heavy Claude Code user means re-parsing thousands of files).
  */

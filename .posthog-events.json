@@ -1,13 +1,13 @@
 [
   {
     "event_name": "cli_login_completed",
-    "event_description": "A user successfully authenticated via device flow or browser callback and a session was saved.",
+    "event_description": "A user successfully authenticated via GitHub device flow and a session was saved.",
     "file": "src/commands/login.ts"
   },
   {
-    "event_name": "cli_join_completed",
-    "event_description": "A new user completed the full join ritual — scanned tokens, claimed a handle, and uploaded usage.",
-    "file": "src/commands/join.ts"
+    "event_name": "cli_scan_completed",
+    "event_description": "A user scanned local AI usage and generated a share card.",
+    "file": "src/commands/scan.ts"
   },
   {
     "event_name": "cli_sync_completed",
