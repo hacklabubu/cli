@@ -2,14 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { extractOgImage, parseTags } from './commands/project.js'
 import {
-  detectTags,
-  firstParagraph,
   isGithubRepoUrl,
   normalizeRepoUrl,
   probeRepoPrivate,
   slugFromName,
-  titleFromReadme,
-} from './project-infer.js'
+} from './project-fields.js'
 
 describe('normalizeRepoUrl', () => {
   it('normalizes every common remote spelling to one https URL', () => {
@@ -44,63 +41,6 @@ describe('slugFromName', () => {
     expect(slugFromName('My_Cool.Repo')).toBe('my-cool-repo')
     expect(slugFromName('--weird--')).toBe('weird')
     expect(slugFromName('***')).toBe('project')
-  })
-})
-
-describe('titleFromReadme', () => {
-  it('takes the first heading, stripped of markdown', () => {
-    expect(titleFromReadme('# **hacklab**\n\nstuff')).toBe('hacklab')
-    expect(titleFromReadme('badge line\n\n## [demo](https://x.dev)\n')).toBe(
-      'demo'
-    )
-    expect(titleFromReadme('no headings here')).toBeNull()
-  })
-})
-
-describe('firstParagraph', () => {
-  it('skips headings, badges, and fences to find prose', () => {
-    const md = [
-      '# title',
-      '',
-      '![build](https://img.shields.io/badge.svg)',
-      '',
-      '```sh',
-      'npm install',
-      '```',
-      '',
-      'The home for **AI-native** hackers.',
-      'Scan usage, claim a handle.',
-      '',
-      'Second paragraph never appears.',
-    ].join('\n')
-    expect(firstParagraph(md)).toBe(
-      'The home for AI-native hackers. Scan usage, claim a handle.'
-    )
-  })
-
-  it('returns null for a README with no prose', () => {
-    expect(firstParagraph('# just\n## headings\n')).toBeNull()
-  })
-})
-
-describe('detectTags', () => {
-  it('keeps keywords first, then stack tags, deduped and capped', () => {
-    const tags = detectTags({
-      keywords: ['cli', 'NEXTJS'],
-      dependencies: { next: '16.0.0', react: '19.0.0', 'drizzle-orm': '0.1' },
-      devDependencies: { typescript: '5.0.0', vitest: '4.0.0' },
-    })
-    expect(tags[0]).toBe('cli')
-    expect(tags).toContain('nextjs')
-    expect(tags).toContain('react')
-    expect(tags).toContain('drizzle')
-    expect(tags).toContain('typescript')
-    expect(tags).not.toContain('vitest')
-    expect(new Set(tags).size).toBe(tags.length)
-  })
-
-  it('handles absent fields', () => {
-    expect(detectTags({})).toEqual([])
   })
 })
 
