@@ -162,7 +162,7 @@ export const COMMANDS: CommandSpec[] = [
     name: 'rtfm',
     args: '[topic]',
     // Note `r` is now ambiguous (referral/rtfm) — `rt` and `re` still resolve.
-    summary: 'the hacklab manuals (topics lists what they will cover)',
+    summary: 'list and read the hacklab manuals',
     run: (args) => rtfm(args),
   },
   {

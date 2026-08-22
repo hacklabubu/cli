@@ -1,66 +1,120 @@
-import { bold, dim, info } from '../ui.js'
+import { bold, dim, error, info } from '../ui.js'
 
-// `hacklab rtfm` — the manuals. The command isn't live yet: everything except
-// `rtfm topics` prints a not-available-yet notice. The topics list below is the
-// roadmap of manuals we're writing, shown so people (and agents) can see what's
-// coming before the content lands.
+type Manual = {
+  name: string
+  summary: string
+  sections: Array<{
+    heading: string
+    lines: string[]
+  }>
+}
 
-type Topic = { name: string; summary: string }
-
-// `onboarding` stands alone as the first manual a new user needs; the rest are
-// task-shaped topics in the order we expect to ship them.
-const TOPIC_GROUPS: Topic[][] = [
-  [{ name: 'onboarding', summary: 'setup user profile from zero to live' }],
-  [
-    {
-      name: 'wtf',
-      summary: 'what hacklab is, why proof of work, how this cli maps to it',
-    },
-    {
-      name: 'game',
-      summary:
-        'how game system works on hacklab, how do you get XP, what are belts and so on',
-    },
-    { name: 'post-job', summary: 'org owners: publish a job to the job shop' },
-    {
-      name: 'find-team',
-      summary: 'hackathons: rsvp, browse hackers, form a team',
-    },
-    {
-      name: 'org-setup',
-      summary: 'claim or create an org, get access, invite',
-    },
-    {
-      name: 'drop-daily',
-      summary: "post a drop on the user's behalf (retention loop)",
-    },
-    {
-      name: 'grow',
-      summary:
-        'identify all people in your network and invite them all with your referral link',
-    },
-  ],
+const MANUALS: Manual[] = [
+  {
+    name: 'profile-setup',
+    summary: 'build a complete profile from available information',
+    sections: [
+      {
+        heading: 'objective',
+        lines: [
+          "Set up the user's hacklab profile. Make it impressive and something they're proud of.",
+        ],
+      },
+      {
+        heading: 'prerequisites',
+        lines: ['- Confirm authentication with `hacklab whoami`.'],
+      },
+      {
+        heading: 'steps',
+        lines: [
+          '1. Run `hacklab ping` immediately.',
+          '   This tells hacklab that profile setup is in progress and lets the user continue on the platform.',
+          '2. Inspect the current profile with `hacklab profile --json`.',
+          '3. Gather the most relevant, verifiable information about the user.',
+          '4. Look for their profiles on:',
+          '   - blog or personal website',
+          '   - GitHub',
+          '   - Hugging Face',
+          '   - X (x.com)',
+          '   - LinkedIn',
+          '   - YouTube',
+          '   - Product Hunt',
+          '   - Kaggle',
+          '   - Cursor (`cursor.com/@handle`)',
+          '   - Dribbble',
+          '   - Behance',
+          '   - GitLab',
+          '   - Devpost',
+          '   - Replit',
+          '   - itch.io',
+          '   - CodePen',
+          '   - Stack Overflow',
+          '   - arXiv',
+          '   - Google Scholar',
+          '   - Substack',
+          '   - Twitch',
+          '   - Farcaster',
+          '   - Goodreads',
+          '   - Filmweb',
+          '   - IMDb',
+          '   - Spotify',
+          '5. Run `hacklab profile set --help` to get the exact field names.',
+          '6. Add every verified profile field and link:',
+          '   - one field: `hacklab profile set <field> <url> --json`',
+          '   - several fields: create a YAML or JSON file, then run:',
+          '     `hacklab profile apply <file> --json`',
+          '7. Verify the finished profile with `hacklab profile --json`.',
+        ],
+      },
+      {
+        heading: 'done when',
+        lines: [
+          '- The profile looks polished and complete.',
+          '- The most relevant verified information available has been added.',
+          '- The final state has been checked with `hacklab profile --json`.',
+        ],
+      },
+      {
+        heading: 'do not',
+        lines: ['- Do not put social links in the bio or README.'],
+      },
+    ],
+  },
 ]
 
 export function rtfm(args: string[]): void {
-  if (args[0] === 'topics') {
-    printTopics()
+  const topic = args[0]
+  if (!topic || topic === '--help' || topic === '-h' || topic === 'help') {
+    printManuals()
     return
   }
-  info('rtfm is not available yet — coming soon.')
-  info(`run ${bold('hacklab rtfm topics')} to see what it will cover`)
+
+  const manual = MANUALS.find(({ name }) => name === topic)
+  if (!manual) {
+    error(`manual not found: ${topic}`)
+    info(`run ${bold('hacklab rtfm')} to list manuals`)
+    process.exit(1)
+  }
+
+  printManual(manual)
 }
 
-function printTopics() {
-  // Pad the names so the summaries line up, matching the `--help` layout.
-  const width = Math.max(
-    ...TOPIC_GROUPS.flat().map((topic) => topic.name.length)
-  )
-  for (const group of TOPIC_GROUPS) {
+function printManuals(): void {
+  const width = Math.max(...MANUALS.map(({ name }) => name.length))
+  console.log('')
+  for (const { name, summary } of MANUALS) {
+    console.log(`  ${dim(name.padEnd(width))}  ${summary}`)
+  }
+  console.log('')
+}
+
+function printManual(manual: Manual): void {
+  console.log('')
+  console.log(`  ${bold(manual.name)}`)
+  for (const section of manual.sections) {
     console.log('')
-    for (const { name, summary } of group) {
-      console.log(`  ${dim(name.padEnd(width))}  ${summary}`)
-    }
+    console.log(`  ${bold(section.heading)}`)
+    for (const line of section.lines) console.log(`    ${line}`)
   }
   console.log('')
 }

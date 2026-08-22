@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   displayValue,
+  inferFieldFromUrl,
   normalizeFieldValue,
   PROFILE_FIELDS,
   type ProfileField,
@@ -50,9 +51,59 @@ describe('normalizeFieldValue', () => {
     expect(normalizeFieldValue(field('website'), 'https://bratos.xyz')).toEqual(
       { ok: true, value: 'https://bratos.xyz' }
     )
+    expect(normalizeFieldValue(field('rss'), 'bratos.xyz/rss.xml')).toEqual({
+      ok: true,
+      value: 'https://bratos.xyz/rss.xml',
+    })
+  })
+
+  it('builds the youtube @channel link from a handle or pasted URL', () => {
+    for (const input of [
+      'error529',
+      '@error529',
+      'youtube.com/@error529',
+      'https://www.youtube.com/@error529',
+      'm.youtube.com/@error529',
+    ]) {
+      expect(normalizeFieldValue(field('youtube'), input)).toEqual({
+        ok: true,
+        value: 'https://youtube.com/@error529',
+      })
+    }
+  })
+
+  it('builds the goodreads profile link from a user id or pasted URL', () => {
+    expect(normalizeFieldValue(field('goodreads'), '12345')).toEqual({
+      ok: true,
+      value: 'https://www.goodreads.com/user/show/12345',
+    })
     expect(
-      normalizeFieldValue(field('youtube'), 'youtube.com/@error529')
-    ).toEqual({ ok: true, value: 'https://youtube.com/@error529' })
+      normalizeFieldValue(
+        field('goodreads'),
+        'https://www.goodreads.com/user/show/12345-matt'
+      )
+    ).toEqual({
+      ok: true,
+      value: 'https://www.goodreads.com/user/show/12345-matt',
+    })
+  })
+
+  it('keeps a non-handle path on the canonical site', () => {
+    expect(
+      normalizeFieldValue(field('x'), 'https://x.com/mattbratos/status/1')
+    ).toEqual({ ok: true, value: 'https://x.com/mattbratos/status/1' })
+    expect(
+      normalizeFieldValue(field('youtube'), 'youtube.com/channel/UCabc')
+    ).toEqual({ ok: true, value: 'https://youtube.com/channel/UCabc' })
+    expect(
+      normalizeFieldValue(
+        field('goodreads'),
+        'goodreads.com/review/list/12345?shelf=read'
+      )
+    ).toEqual({
+      ok: true,
+      value: 'https://www.goodreads.com/review/list/12345?shelf=read',
+    })
   })
 
   it('builds the canonical x link from a bare handle, @handle, or pasted URL', () => {
@@ -150,6 +201,29 @@ describe('parseProfileDocument', () => {
 
   it('rejects a boolean on a non-boolean field', () => {
     expect(parseProfileDocument({ bio: true }).ok).toBe(false)
+  })
+})
+
+describe('inferFieldFromUrl', () => {
+  it('picks the handle field from a pasted URL host', () => {
+    expect(inferFieldFromUrl('https://x.com/mattbratos')?.name).toBe('x')
+    expect(inferFieldFromUrl('twitter.com/mattbratos')?.name).toBe('x')
+    expect(inferFieldFromUrl('https://youtube.com/@mattbratos')?.name).toBe(
+      'youtube'
+    )
+    expect(inferFieldFromUrl('www.instagram.com/matt.bratos')?.name).toBe(
+      'instagram'
+    )
+    expect(
+      inferFieldFromUrl('https://www.goodreads.com/user/show/12345')?.name
+    ).toBe('goodreads')
+  })
+
+  it('returns null for own-domain URLs and non-URLs', () => {
+    expect(inferFieldFromUrl('https://bratos.xyz')).toBeNull()
+    expect(inferFieldFromUrl('bratos.xyz/rss.xml')).toBeNull()
+    expect(inferFieldFromUrl('mattbratos')).toBeNull()
+    expect(inferFieldFromUrl('ope')).toBeNull()
   })
 })
 

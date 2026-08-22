@@ -150,10 +150,12 @@ terminal and asks whether to share it on X.
 - `hacklab profile` — view and edit your own profile. Bare `profile` (or
   `profile view`) shows it; `profile edit` is an org-style autosave editor;
   `profile set <field> <value>` writes one field (`--clear` unsets, handles like
-  `x mattbratos` become full links); `profile set readme --file profile.md`
-  writes a long Markdown README without shell quoting; `profile apply
-  profile.yaml` writes many fields in one shot. Fields: `name`, `bio`, `readme`,
-  `website`, `blog`, `x`, `youtube`, `instagram`, `rss`, `open-to-work`.
+  `x mattbratos` become full links); `profile set https://x.com/mattbratos`
+  picks the field from the host (x, youtube, instagram, goodreads); `profile
+  set readme --file profile.md` writes a long Markdown README without shell
+  quoting; `profile apply profile.yaml` writes many fields in one shot. Fields:
+  `name`, `bio`, `readme`, `website`, `blog`, `x`, `youtube`, `instagram`,
+  `goodreads`, `rss`, `open-to-work`.
   Add `--json` to `view`/`set`/`apply` for machine-readable output.
 - `hacklab hacker <username> --json` — read the rich agent profile including
   links, counts, skills, recent projects, essays, and drops.
