@@ -51,6 +51,19 @@ that says `hacklab login` is noise.
 **One job per command.** `login` creates or restores an account. `scan` reads
 local usage and makes a card. `sync` uploads. Don't glue those into a ritual.
 
+**The one sanctioned exception: `setup`.** First-run onboarding tested badly as
+separate commands — face-to-face, people who had just installed the CLI read
+`login` then `scan` as unrelated chores and stalled between them, so `hacklab
+setup` runs the whole first run as one flow (scan → rank → GitHub → one consent
+question → upload → background sync). It earns the exception because it is the
+*first* run and nothing else: it composes existing commands rather than
+duplicating them (it calls into `login`'s device flow and `scan`'s receipt), it
+skips any stage already done and stops outright when there is nothing left, and
+every piece it runs stays a standalone command for re-running one of them. It is
+also the only command allowed clack chrome (`intro`/`outro`, a spinner, one
+`confirm`) — it is a multi-stage flow, not a login-shaped command. Do not read
+this as licence for a second composite: adding one needs the same evidence.
+
 **Identity is `@handle`.** Print email only when there is no handle, or on
 `whoami`. Don't show both unless asked.
 

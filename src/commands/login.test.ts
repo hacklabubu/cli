@@ -9,6 +9,8 @@ const m = vi.hoisted(() => ({
 
 vi.mock('../session.js', () => ({
   getAppUrl: () => 'https://hacklab.so',
+  resolveAppUrl: (session?: { appUrl?: string } | null) =>
+    session?.appUrl ?? 'https://hacklab.so',
   saveSession: m.saveSession,
 }))
 vi.mock('../posthog.js', () => ({

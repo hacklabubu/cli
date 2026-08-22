@@ -6,31 +6,31 @@ a card.
 
 ## Install
 
-Install, sign in, then scan this machine:
+Install, then run setup:
 
 ```bash
 curl -fsSL https://hacklab.so/install | sh
-hacklab login
-hacklab scan
+hacklab setup
 ```
 
 The script checks for Node 20+ and installs the CLI globally — that's all it
-does. After it, `hacklab` is a real command on your PATH; `login` creates or
-restores your account and `scan` uploads this machine's usage, shares the card,
-and turns on the background daemon. If you already have Node 20 or newer
-(including a version manager), you can skip the script:
+does. After it, `hacklab` is a real command on your PATH, and `hacklab setup` is
+the guided first run: it scans this machine's AI usage, signs you in with GitHub,
+uploads your usage, and starts the background sync. If you already have Node 20
+or newer (including a version manager), you can skip the script:
 
 ```bash
 npm i -g hacklab@latest
-hacklab login
-hacklab scan
+hacklab setup
 ```
+
+`login`, `scan`, and `sync` all still exist as standalone commands for re-running
+one piece on its own.
 
 ### Windows
 
 On native Windows (PowerShell), use the `.ps1` installer instead — it checks
-for Node 20+ and installs the CLI globally, then points you at `hacklab login`
-and `hacklab scan`:
+for Node 20+ and installs the CLI globally, then points you at `hacklab setup`:
 
 ```powershell
 irm https://hacklab.so/install.ps1 | iex
@@ -71,6 +71,9 @@ machine's usage to your profile. Cursor users with no API key are offered one
 
 ## Commands
 
+- `hacklab setup` — the guided first run: scan, GitHub sign-in, one question
+  about sharing prompts, upload, background sync on. Safe to re-run; it skips
+  whatever is already done and stops early once everything is.
 - `hacklab scan` — scan this machine, upload to your profile, share the card.
   Requires login. Summons the daemon afterwards (`--no-daemon` to skip).
 - `hacklab sync` — re-scan local AI usage and sync it to your profile.

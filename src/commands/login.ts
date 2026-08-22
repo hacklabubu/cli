@@ -1,6 +1,11 @@
 import { clearSyncPaused } from '../daily-sync.js'
 import { captureEvent, identifyUser } from '../posthog.js'
-import { getAppUrl, saveSession } from '../session.js'
+import {
+  getAppUrl,
+  resolveAppUrl,
+  type Session,
+  saveSession,
+} from '../session.js'
 import { bold, dim, link } from '../ui.js'
 import { openBrowser } from '../utils/openBrowser.js'
 import { waitForEnter } from '../utils/waitForEnter.js'
@@ -13,48 +18,108 @@ type Credentials = {
   expiresAt?: string
 }
 
+export type LoginOutcome = {
+  /** The session as it now stands (already persisted by `performLogin`). */
+  session: Session
+  /**
+   * True when the account had a handle that still needed claiming and
+   * `POST /api/cli/claim` never succeeded. `login` shrugs this off; `setup`
+   * surfaces it, because the web onboarding UI polls `username_claimed` and
+   * waits forever when the claim is silently lost.
+   */
+  claimFailed: boolean
+}
+
 /**
- * Authenticate via GitHub's device flow. Unknown GitHub identities get an
- * account. An unclaimed GitHub-derived handle is claimed as-is.
+ * Authenticate via GitHub's device flow and persist the session. Unknown GitHub
+ * identities get an account. An unclaimed GitHub-derived handle is claimed as-is.
+ *
+ * The shared implementation behind both `hacklab login` and `hacklab setup` —
+ * there is exactly one device flow (the code/URL beat with the parallel
+ * Enter-wait ↔ poll race), and both front doors go through it. `claimAttempts`
+ * is how hard the handle claim tries before giving up.
  */
-export async function login(): Promise<void> {
+export async function performLogin(
+  opts: { claimAttempts?: number } = {}
+): Promise<LoginOutcome> {
   const appUrl = getAppUrl()
   const creds = await loginViaDevice(appUrl)
 
-  let handle = creds.handle
-  let usernameClaimed = creds.usernameClaimed
+  const outcome = await ensureHandleClaimed(
+    {
+      token: creds.token,
+      email: creds.email,
+      handle: creds.handle,
+      usernameClaimed: creds.usernameClaimed,
+      appUrl,
+      savedAt: new Date().toISOString(),
+      expiresAt: creds.expiresAt,
+    },
+    opts.claimAttempts
+  )
+
+  await saveSession(outcome.session)
+  await clearSyncPaused()
+  return outcome
+}
+
+/**
+ * Make sure the session's handle is actually claimed, resolving it from the
+ * profile first when the device poll didn't send one. Pure: it returns the
+ * updated session (the same object when nothing changed) and leaves persistence
+ * to the caller, so it works both on a session that was just minted and on one
+ * already sitting on disk from a half-finished signup.
+ */
+export async function ensureHandleClaimed(
+  session: Session,
+  attempts = 1
+): Promise<LoginOutcome> {
+  if (session.handle && session.usernameClaimed) {
+    return { session, claimFailed: false }
+  }
+
+  const appUrl = resolveAppUrl(session)
+  let handle = session.handle
+  let usernameClaimed = session.usernameClaimed
   if (!handle) {
-    const me = await fetchMe(appUrl, creds.token)
+    const me = await fetchMe(appUrl, session.token)
     handle = me?.handle ?? me?.githubUsername ?? undefined
     if (me?.claimed != null) usernameClaimed = me.claimed
   }
-  if (handle && !usernameClaimed) {
-    const claimed = await claimHandle(appUrl, creds.token, handle)
-    if (claimed) {
-      handle = claimed
-      usernameClaimed = true
+
+  if (!handle || usernameClaimed) {
+    return {
+      session: { ...session, handle, usernameClaimed },
+      claimFailed: false,
     }
   }
 
-  await saveSession({
-    token: creds.token,
-    email: creds.email,
-    handle,
-    usernameClaimed,
-    appUrl,
-    savedAt: new Date().toISOString(),
-    expiresAt: creds.expiresAt,
-  })
-  await clearSyncPaused()
+  const claimed = await claimHandle(appUrl, session.token, handle, attempts)
+  return {
+    session: {
+      ...session,
+      handle: claimed ?? handle,
+      usernameClaimed: claimed ? true : usernameClaimed,
+    },
+    claimFailed: claimed === null,
+  }
+}
+
+/**
+ * `hacklab login` — the standalone re-authenticate command. A lost handle claim
+ * stays quiet here (the account still works; the next login retries it); the
+ * guided `setup` flow is the one that has to complain.
+ */
+export async function login(): Promise<void> {
+  const { session } = await performLogin()
+  const { handle, email, appUrl, usernameClaimed } = session
 
   console.log('')
-  console.log(
-    handle ? `signed in as @${handle}` : `signed in as ${creds.email}`
-  )
+  console.log(handle ? `signed in as @${handle}` : `signed in as ${email}`)
 
   if (handle) {
     await identifyUser(handle, {
-      $set: { email: creds.email, handle, app_url: appUrl },
+      $set: { email, handle, app_url: appUrl },
     })
     await captureEvent(handle, 'cli_login_completed', {
       login_method: 'device_flow',
@@ -206,24 +271,34 @@ async function fetchMe(
   }
 }
 
+/**
+ * Claim `username` for this account, returning the claimed handle or null if
+ * every attempt failed. `attempts > 1` retries — the claim is idempotent for the
+ * owner, and a lost one leaves an account the web onboarding never sees finish.
+ */
 async function claimHandle(
   appUrl: string,
   token: string,
-  username: string
+  username: string,
+  attempts = 1
 ): Promise<string | null> {
-  try {
-    const res = await fetch(`${appUrl}/api/cli/claim`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ username }),
-    })
-    if (!res.ok) return null
-    const data = (await res.json()) as { handle?: string }
-    return data.handle ?? username
-  } catch {
-    return null
+  for (let i = 0; i < Math.max(1, attempts); i++) {
+    try {
+      const res = await fetch(`${appUrl}/api/cli/claim`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ username }),
+      })
+      if (res.ok) {
+        const data = (await res.json()) as { handle?: string }
+        return data.handle ?? username
+      }
+    } catch {
+      // fall through to the next attempt
+    }
   }
+  return null
 }

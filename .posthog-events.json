@@ -1,5 +1,10 @@
 [
   {
+    "event_name": "cli_setup_completed",
+    "event_description": "A user finished the guided first run (`hacklab setup`): scanned, signed in with GitHub, answered the prompt-sharing question, and uploaded their usage. Props: tokens_total, rank (real rank when the upload returned one, else the anonymous preview), prompt_consent (none|stats|full).",
+    "file": "src/commands/setup.ts"
+  },
+  {
     "event_name": "cli_login_completed",
     "event_description": "A user successfully authenticated via GitHub device flow and a session was saved.",
     "file": "src/commands/login.ts"
@@ -16,12 +21,12 @@
   },
   {
     "event_name": "cli_daily_sync_installed",
-    "event_description": "A user ran `hacklab daemon` and the OS-native daily background sync was successfully installed.",
+    "event_description": "The OS-native daily background sync was successfully installed. `source` says which command armed it: daemon (`hacklab daemon`), scan (`hacklab scan`), or setup (the guided first run).",
     "file": "src/commands/daemon.ts"
   },
   {
     "event_name": "cli_daily_sync_manual",
-    "event_description": "A user ran `hacklab daemon` on a platform we can't auto-schedule (or the scheduler write failed), so the manual cron instructions were printed instead.",
+    "event_description": "The background sync could not be auto-scheduled (unsupported platform, or the scheduler write failed), so the manual cron instructions were printed instead. `source` says which command tried: daemon, scan, or setup.",
     "file": "src/commands/daemon.ts"
   },
   {
