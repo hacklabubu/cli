@@ -1,35 +1,28 @@
-import { readFile } from 'node:fs/promises'
-import { basename } from 'node:path'
-
 import * as clack from '@clack/prompts'
-import { parse as parseYaml } from 'yaml'
 
+import {
+  apiErrorMessage,
+  emitJsonError,
+  requireSession,
+} from '../api-client.js'
 import { captureEvent } from '../posthog.js'
 import {
   isGithubRepoUrl,
   normalizeRepoUrl,
-  type ProjectFields,
   probeRepoPrivate,
   slugFromName,
 } from '../project-fields.js'
 import { resolveCommand } from '../resolve-command.js'
-import {
-  loadSession,
-  resolveAppUrl,
-  type Session,
-  unauthorizedHint,
-} from '../session.js'
+import { resolveAppUrl, type Session } from '../session.js'
 import { fetchApi } from '../sync.js'
-import { bold, dim, error, info, linkBlue, success } from '../ui.js'
-import { openBrowser } from '../utils/openBrowser.js'
+import { bold, dim, error, info, link, stripControl, success } from '../ui.js'
 
-// `hacklab project` — publish and manage the projects on your profile. `add`
-// takes explicit flags (`--title` plus optional URLs/tags/content); `apply`
-// takes a declarative YAML/JSON manifest for agents or long-form content.
-// Both are idempotent per slug: a re-run refreshes the same project without
-// touching its publish date or losing screenshots.
+// `hacklab project` — agent help on the bare command; `add` publishes a
+// project from flags the agent already has (no cwd, no git, no files).
+// `list`/`view`/`edit`/`delete` work on your own projects. Re-running `add`
+// with the same title refreshes the same slug.
 
-const SUBCOMMANDS = ['add', 'apply', 'list', 'view', 'edit', 'delete'] as const
+const SUBCOMMANDS = ['add', 'list', 'view', 'edit', 'delete'] as const
 
 const PROJECTS_PATH = '/api/projects'
 
@@ -41,91 +34,45 @@ type RemoteProject = {
   tags: string[]
   repoUrl: string | null
   liveUrl: string | null
-  private: boolean
-  source: string
-  screenshots: { url: string; caption: string }[]
-  sourceYaml: string | null
+  private?: boolean
+  source?: string
+  screenshots?: { url: string; caption: string }[]
+  sourceYaml?: string | null
   publishedAt: string | null
-  updatedAt: string
   path: string
 }
 
-type ProjectList = { handle: string; projects: RemoteProject[] }
+type OwnList = { handle: string; projects: RemoteProject[] }
 
 function printJson(data: unknown) {
   console.log(JSON.stringify(data, null, 2))
 }
 
-function emitJsonError(code: string, message: string): never {
-  console.log(JSON.stringify({ schemaVersion: 1, error: { code, message } }))
-  process.exit(1)
+function printHelp() {
+  console.log(
+    `hacklab project add --title <t> [--repo <url>] [--url <url>] [--desc <d>] [--json]`
+  )
+  console.log(dim('  publish one; same title again updates'))
+  console.log(dim('  --repo is the source, --url the live site; one is enough'))
+  console.log(dim('  --private/--public override the repo visibility probe'))
+  console.log('')
+  console.log(`hacklab project list [--json]`)
+  console.log(dim('  your projects'))
+  console.log(`hacklab project view <slug> [--json]`)
+  console.log(dim('  one of yours, full page'))
+  console.log('')
+  console.log(
+    `hacklab project edit <slug> [--title <t>] [--desc <d>] [--repo <url>] [--url <url>] [--yes] [--json]`
+  )
+  console.log(dim('  change fields, keep the slug; --private/--public too'))
+  console.log(dim('  --yes to edit a github-synced project (ends the sync)'))
+  console.log(`hacklab project delete <slug> [--yes] [--json]`)
+  console.log(dim('  yours only; --yes skips the confirm'))
 }
 
 function usage(exitCode = 1): never {
-  if (exitCode === 0)
-    info('usage: hacklab project [add|apply|list|view|edit|delete]')
-  else error('usage: hacklab project [add|apply|list|view|edit|delete]')
-  info(
-    `  hacklab project ${dim('add --title <t> [--yes] [--json]')}   publish a project (re-run to refresh)`
-  )
-  info(
-    `  hacklab project ${dim('add --desc/--url/--repo/--live/--tags/--slug')}  set any field`
-  )
-  info(
-    `  hacklab project ${dim('add --content <md> | --content-file <path>')}  set the long-form content`
-  )
-  info(
-    `  hacklab project ${dim('apply <file> [--yes] [--json]')}     publish from a yaml/json manifest`
-  )
-  info(
-    `  hacklab project ${dim('list [--json]')}                      your projects`
-  )
-  info(
-    `  hacklab project ${dim('view <slug> [--web] [--json]')}       show one`
-  )
-  info(
-    `  hacklab project ${dim('edit <slug> --title/--desc/--url/--repo/--tags')}  change fields`
-  )
-  info(
-    `  hacklab project ${dim('edit <slug> --clear-repo|--clear-live')}   drop a URL`
-  )
-  info(
-    `  hacklab project ${dim('delete <slug> [--yes] [--json]')}     remove one`
-  )
+  printHelp()
   process.exit(exitCode)
-}
-
-async function requireSession(json: boolean): Promise<Session> {
-  const session = await loadSession()
-  if (!session) {
-    if (json) emitJsonError('unauthorized', 'not logged in')
-    error('not logged in')
-    info(`run ${dim('hacklab login')} first`)
-    process.exit(1)
-  }
-  return session
-}
-
-async function readEnvelopeError(
-  res: Response,
-  session: Session
-): Promise<string> {
-  if (res.status === 401) return unauthorizedHint(session)
-  const data = (await res.json().catch(() => null)) as {
-    error?: { message?: string } | string
-  } | null
-  if (typeof data?.error === 'string') return data.error
-  return data?.error?.message ?? `request failed (${res.status})`
-}
-
-async function fetchProjects(session: Session): Promise<ProjectList> {
-  const res = await fetchApi(session, PROJECTS_PATH, {
-    headers: { Authorization: `Bearer ${session.token}` },
-  })
-  if (!res.ok) throw new Error(await readEnvelopeError(res, session))
-  const data = (await res.json().catch(() => null)) as ProjectList | null
-  if (!data?.projects) throw new Error('got a malformed response from hacklab')
-  return data
 }
 
 function flagValue(args: string[], ...names: string[]): string | undefined {
@@ -138,710 +85,108 @@ function flagValue(args: string[], ...names: string[]): string | undefined {
   return undefined
 }
 
-/** Split a `--tags a,b,c` value into clean tag names. */
-export function parseTags(value: string): string[] {
-  return value
-    .split(',')
-    .map((t) => t.trim().toLowerCase())
-    .filter(Boolean)
-    .slice(0, 20)
-}
+// Flags that take a following value. Every arg-walker has to skip that value,
+// or a legitimate `--title "-30 days"` reads as a flag of its own.
+const VALUE_FLAGS = new Set([
+  '--title',
+  '--repo',
+  '--url',
+  '--desc',
+  '--description',
+])
 
-// og:image discovery: one GET of the live page, one regex. Both content-first
-// and property-first attribute orders appear in the wild.
-const OG_IMAGE_PATTERNS = [
-  /<meta[^>]+(?:property|name)=["']og:image["'][^>]*content=["']([^"']+)["']/i,
-  /<meta[^>]+content=["']([^"']+)["'][^>]*(?:property|name)=["']og:image["']/i,
-]
+const ADD_FLAGS = new Set([...VALUE_FLAGS, '--private', '--public', '--json'])
 
-export function extractOgImage(html: string, baseUrl: string): string | null {
-  for (const pattern of OG_IMAGE_PATTERNS) {
-    const match = html.match(pattern)
-    if (match?.[1]) {
-      try {
-        return new URL(match[1], baseUrl).toString()
-      } catch {
-        return null
-      }
+const EDIT_FLAGS = new Set([...ADD_FLAGS, '--yes', '-y'])
+
+function unknownFlag(
+  args: string[],
+  allowed: Set<string>,
+  valueFlags: Set<string>
+): string | undefined {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]
+    if (!arg) continue
+    if (valueFlags.has(arg)) {
+      i++
+      continue
     }
+    if (!arg.startsWith('-')) continue
+    const name = arg.split('=')[0]
+    if (!name) continue
+    if (!allowed.has(name)) return name
   }
-  return null
+  return undefined
 }
 
-const SCREENSHOT_MAX_BYTES = 4 * 1024 * 1024
+/** The single non-flag argument, skipping the values that belong to a flag. */
+function positional(
+  args: string[],
+  valueFlags: Set<string>
+): string | undefined {
+  const found: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]
+    if (!arg || arg === '--json') continue
+    if (valueFlags.has(arg)) {
+      i++
+      continue
+    }
+    if ([...valueFlags].some((name) => arg.startsWith(`${name}=`))) continue
+    if (arg.startsWith('-')) continue
+    found.push(arg)
+  }
+  return found.length === 1 ? found[0] : undefined
+}
 
-/**
- * Best-effort screenshot from the live site's og:image. Any failure —
- * unreachable site, no tag, oversized or non-png/jpeg image, upload error —
- * returns null and costs nothing but the attempt.
- */
-async function captureOgScreenshot(
-  session: Session,
-  liveUrl: string
-): Promise<{ url: string; caption: string } | null> {
+function parseHttpUrl(value: string): string | null {
   try {
-    const page = await fetch(liveUrl, {
-      signal: AbortSignal.timeout(8000),
-      headers: { 'User-Agent': 'HacklabCLI (+https://hacklab.so)' },
-    })
-    if (!page.ok) return null
-    const imageUrl = extractOgImage(await page.text(), liveUrl)
-    if (!imageUrl) return null
-
-    const image = await fetch(imageUrl, {
-      signal: AbortSignal.timeout(8000),
-      headers: { 'User-Agent': 'HacklabCLI (+https://hacklab.so)' },
-    })
-    if (!image.ok) return null
-    const contentType = image.headers.get('content-type')?.split(';')[0]
-    if (contentType !== 'image/png' && contentType !== 'image/jpeg') return null
-    const bytes = Buffer.from(await image.arrayBuffer())
-    if (bytes.length === 0 || bytes.length > SCREENSHOT_MAX_BYTES) return null
-
-    const upload = await fetchApi(session, '/api/screenshots', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${session.token}`,
-      },
-      body: JSON.stringify({
-        image: bytes.toString('base64'),
-        filename: contentType === 'image/png' ? 'og.png' : 'og.jpg',
-        contentType,
-      }),
-    })
-    const data = (await upload.json().catch(() => null)) as {
-      url?: string
-    } | null
-    if (!upload.ok || !data?.url) return null
-    return { url: data.url, caption: '' }
+    const url = new URL(value)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+    return value.trim()
   } catch {
     return null
   }
 }
 
+async function readError(res: Response, session: Session): Promise<string> {
+  const body = (await res.json().catch(() => null)) as {
+    error?: { message?: string } | string
+  } | null
+  const message =
+    typeof body?.error === 'string' ? body.error : body?.error?.message
+  return apiErrorMessage(res.status, { error: { message } }, session)
+}
+
 function summarize(value: string | null, max = 72): string {
-  if (!value) return dim('(none)')
+  if (!value) return ''
   const oneLine = value.replace(/\s+/g, ' ').trim()
   return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine
 }
 
-// ── `project apply <file>` — declarative YAML/JSON manifest ──────────────────
-// `add` reads flags; `apply` reads a manifest, giving agents a one-shot path
-// for long-form content and explicit screenshots. The raw source is stored as
-// `sourceYaml` so a later `edit` can round-trip it.
-
-type ProjectScreenshot = { url: string; caption: string }
-
-type ProjectDraft = ProjectFields & {
-  screenshots?: ProjectScreenshot[]
-  sourceYaml?: string
+async function fetchOwnProjects(session: Session): Promise<OwnList> {
+  const res = await fetchApi(session, PROJECTS_PATH, {
+    headers: { Authorization: `Bearer ${session.token}` },
+  })
+  if (!res.ok) throw new Error(await readError(res, session))
+  const data = (await res.json().catch(() => null)) as OwnList | null
+  if (!data?.projects) throw new Error('got a malformed response from hacklab')
+  return data
 }
 
-export type ParsedProjectDocument =
-  | { ok: true; project: ProjectDraft }
-  | { ok: false; error: string }
-
-// Keep in sync with PROJECT_SCREENSHOT_CONTENT_TYPES in
-// apps/web/app/(app)/api/screenshots/route.ts (server-side counterpart).
-const SCREENSHOT_CONTENT_TYPES = new Map([
-  ['image/png', 'png'],
-  ['image/jpeg', 'jpg'],
-  ['image/webp', 'webp'],
-])
-
-function httpUrl(value: unknown, field: string): string | null {
-  if (value === undefined || value === null || value === '') return null
-  if (typeof value !== 'string') throw new Error(`${field} must be a URL`)
-  const url = new URL(value)
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error(`${field} must use http or https`)
-  }
-  return url.toString()
-}
-
-function requiredHttpUrl(value: unknown, field: string): string {
-  const url = httpUrl(value, field)
-  if (!url) throw new Error(`${field} is required`)
-  return url
-}
-
-/** Parse the agent-friendly project.yaml/json shape before sending it. */
-export function parseProjectDocument(doc: unknown): ParsedProjectDocument {
-  if (typeof doc !== 'object' || doc === null || Array.isArray(doc)) {
-    return { ok: false, error: 'expected a project mapping' }
-  }
-
-  const input = doc as Record<string, unknown>
-  const allowed = new Set([
-    'title',
-    'slug',
-    'description',
-    'tags',
-    'repoUrl',
-    'liveUrl',
-    'content',
-    'screenshots',
-  ])
-  const unknown = Object.keys(input).find((key) => !allowed.has(key))
-  if (unknown) return { ok: false, error: `unknown field "${unknown}"` }
-
-  try {
-    if (
-      input.repoUrl !== undefined &&
-      input.repoUrl !== null &&
-      typeof input.repoUrl !== 'string'
-    ) {
-      throw new Error('repoUrl must be a git URL')
-    }
-    const repo =
-      typeof input.repoUrl === 'string' ? normalizeRepoUrl(input.repoUrl) : null
-    if (input.repoUrl && !repo) {
-      throw new Error('repoUrl is not a valid git URL')
-    }
-
-    const rawTitle = input.title
-    if (rawTitle !== undefined && typeof rawTitle !== 'string') {
-      throw new Error('title must be text')
-    }
-    const title = rawTitle?.trim() || repo?.name
-    if (!title) throw new Error('title is required when repoUrl is missing')
-
-    if (
-      input.description !== undefined &&
-      input.description !== null &&
-      typeof input.description !== 'string'
-    ) {
-      throw new Error('description must be text')
-    }
-    if (
-      input.content !== undefined &&
-      input.content !== null &&
-      typeof input.content !== 'string'
-    ) {
-      throw new Error('content must be text')
-    }
-
-    let tags: string[] = []
-    if (typeof input.tags === 'string') tags = parseTags(input.tags)
-    else if (Array.isArray(input.tags)) {
-      if (!input.tags.every((tag) => typeof tag === 'string')) {
-        throw new Error('tags must contain only text')
-      }
-      tags = input.tags
-        .map((tag) => tag.trim().toLowerCase())
-        .filter(Boolean)
-        .slice(0, 20)
-    } else if (input.tags !== undefined) {
-      throw new Error('tags must be a list or comma-separated text')
-    }
-
-    let screenshots: ProjectScreenshot[] = []
-    if (input.screenshots !== undefined) {
-      if (!Array.isArray(input.screenshots)) {
-        throw new Error('screenshots must be a list')
-      }
-      if (input.screenshots.length > 5) {
-        throw new Error('screenshots supports at most 5 images')
-      }
-      screenshots = input.screenshots.map((shot, index) => {
-        if (typeof shot === 'string') {
-          return {
-            url: requiredHttpUrl(shot, `screenshots[${index}]`),
-            caption: '',
-          }
-        }
-        if (typeof shot !== 'object' || shot === null || Array.isArray(shot)) {
-          throw new Error(`screenshots[${index}] must be a URL or mapping`)
-        }
-        const value = shot as Record<string, unknown>
-        if (typeof value.caption !== 'string' && value.caption !== undefined) {
-          throw new Error(`screenshots[${index}].caption must be text`)
-        }
-        return {
-          url: requiredHttpUrl(value.url, `screenshots[${index}].url`),
-          caption: value.caption?.trim() ?? '',
-        }
-      })
-    }
-
-    const rawSlug = input.slug
-    if (rawSlug !== undefined && typeof rawSlug !== 'string') {
-      throw new Error('slug must be text')
-    }
-
-    return {
-      ok: true,
-      project: {
-        title,
-        slug: slugFromName(rawSlug?.trim() || repo?.name || title),
-        description:
-          typeof input.description === 'string'
-            ? input.description.trim() || null
-            : null,
-        tags,
-        repoUrl: repo?.url ?? null,
-        liveUrl: httpUrl(input.liveUrl, 'liveUrl'),
-        // Manifests don't declare privacy; `publishProject` probes the repo.
-        private: false,
-        content: typeof input.content === 'string' ? input.content : null,
-        ...(input.screenshots !== undefined ? { screenshots } : {}),
-      },
-    }
-  } catch (err) {
-    return {
-      ok: false,
-      error: err instanceof Error ? err.message : String(err),
-    }
-  }
-}
-
-async function uploadScreenshotFromUrl(
+/** Fetch your projects or exit with the mode-appropriate error. */
+async function ownProjectsOrExit(
   session: Session,
-  screenshot: ProjectScreenshot,
-  index: number
-): Promise<ProjectScreenshot> {
-  const sourceUrl = httpUrl(screenshot.url, `screenshots[${index}]`)
-  if (!sourceUrl) throw new Error(`screenshots[${index}] needs a URL`)
-
-  const image = await fetch(sourceUrl, {
-    signal: AbortSignal.timeout(12_000),
-    headers: { 'User-Agent': 'HacklabCLI (+https://hacklab.so)' },
-  })
-  if (!image.ok) {
-    throw new Error(
-      `could not download screenshot ${index + 1} (${image.status})`
-    )
-  }
-  const contentType = image.headers.get('content-type')?.split(';')[0] ?? ''
-  const extension = SCREENSHOT_CONTENT_TYPES.get(contentType)
-  if (!extension) {
-    throw new Error(`screenshot ${index + 1} must be PNG, JPEG, or WebP`)
-  }
-  const bytes = Buffer.from(await image.arrayBuffer())
-  if (!bytes.length) throw new Error(`screenshot ${index + 1} is empty`)
-  if (bytes.length > SCREENSHOT_MAX_BYTES) {
-    throw new Error(`screenshot ${index + 1} is too large`)
-  }
-
-  const sourceName = basename(new URL(sourceUrl).pathname)
-  const filename = sourceName || `screenshot-${index + 1}.${extension}`
-  const upload = await fetchApi(session, '/api/screenshots', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${session.token}`,
-    },
-    body: JSON.stringify({
-      image: bytes.toString('base64'),
-      filename,
-      contentType,
-    }),
-  })
-  const data = (await upload.json().catch(() => null)) as {
-    url?: string
-    error?: string
-  } | null
-  if (!upload.ok || !data?.url) {
-    throw new Error(data?.error ?? `could not upload screenshot ${index + 1}`)
-  }
-  return { url: data.url, caption: screenshot.caption }
-}
-
-// Shared publish path for `apply`: idempotent by slug, keeps the original
-// publish date on refresh, and round-trips `sourceYaml`/`content`.
-async function publishProject(
-  session: Session,
-  draft: ProjectDraft,
-  options: { json: boolean; yes: boolean }
-): Promise<void> {
-  const { json, yes } = options
-
-  let existing: RemoteProject | undefined
+  json: boolean
+): Promise<OwnList> {
   try {
-    existing = (await fetchProjects(session)).projects.find(
-      (project) => project.slug === draft.slug
-    )
+    return await fetchOwnProjects(session)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     if (json) emitJsonError('error', message)
     error(message)
     process.exit(1)
   }
-
-  // Manifests don't declare privacy; probe a github repoUrl like `add` does.
-  const isPrivate = await probeRepoPrivate(draft.repoUrl)
-
-  if (!json) {
-    console.log(
-      `  ${bold(existing ? 'refreshing' : 'publishing')} ${bold(draft.title)} ${dim(`(${draft.slug})`)}`
-    )
-    console.log(`  ${dim('description')}  ${summarize(draft.description)}`)
-    console.log(
-      `  ${dim('repo')}         ${summarize(draft.repoUrl)}${
-        isPrivate ? dim('  (private — hidden on web)') : ''
-      }`
-    )
-    console.log(`  ${dim('live')}         ${summarize(draft.liveUrl)}`)
-    console.log(
-      `  ${dim('tags')}         ${draft.tags.length ? draft.tags.join(', ') : dim('(none)')}`
-    )
-    console.log(
-      `  ${dim('content')}      ${draft.content ? `${draft.content.length} chars` : dim('(none)')}`
-    )
-    console.log(
-      `  ${dim('screenshots')}  ${draft.screenshots?.length ?? existing?.screenshots.length ?? 0}`
-    )
-  }
-
-  if (!json && !yes && process.stdout.isTTY) {
-    const go = await clack.confirm({ message: 'publish it?' })
-    if (clack.isCancel(go) || !go) {
-      clack.outro(dim('cancelled.'))
-      return
-    }
-  }
-
-  let screenshots = existing?.screenshots ?? []
-  try {
-    if (draft.screenshots !== undefined) {
-      if (!json && draft.screenshots.length) {
-        info(dim(`uploading ${draft.screenshots.length} screenshot(s)…`))
-      }
-      screenshots = []
-      for (const [index, screenshot] of draft.screenshots.entries()) {
-        screenshots.push(
-          await uploadScreenshotFromUrl(session, screenshot, index)
-        )
-      }
-    } else if (draft.liveUrl) {
-      if (!json) info(dim('looking for a screenshot (og:image)…'))
-      const shot = await captureOgScreenshot(session, draft.liveUrl)
-      if (shot) screenshots = [shot]
-    }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    if (json) emitJsonError('screenshot_failed', message)
-    error(message)
-    process.exit(1)
-  }
-
-  const payload = {
-    title: draft.title,
-    slug: draft.slug,
-    description: draft.description ?? undefined,
-    tags: draft.tags,
-    repoUrl: draft.repoUrl ?? undefined,
-    liveUrl: draft.liveUrl ?? undefined,
-    private: isPrivate,
-    screenshots,
-    content: draft.content ?? existing?.content ?? undefined,
-    sourceYaml: draft.sourceYaml ?? existing?.sourceYaml ?? undefined,
-    publishedAt: existing?.publishedAt ?? new Date().toISOString(),
-  }
-
-  let res: Response
-  try {
-    res = await fetchApi(session, PROJECTS_PATH, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${session.token}`,
-      },
-      body: JSON.stringify(payload),
-    })
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    if (json) emitJsonError('network', message)
-    error(message)
-    process.exit(1)
-  }
-  if (!res.ok) {
-    const message = await readEnvelopeError(res, session)
-    if (json) emitJsonError('error', message)
-    error(message)
-    process.exit(1)
-  }
-
-  await captureEvent(session.handle, 'cli_project_added', {
-    slug: draft.slug,
-    refreshed: Boolean(existing),
-    private: isPrivate,
-    has_live_url: Boolean(draft.liveUrl),
-    has_screenshot: screenshots.length > 0,
-    tag_count: draft.tags.length,
-    via: 'apply',
-  })
-
-  const path = `/${session.handle}/${draft.slug}`
-  if (json) {
-    printJson({
-      schemaVersion: 1,
-      [existing ? 'refreshed' : 'published']: true,
-      slug: draft.slug,
-      path,
-      screenshots,
-    })
-    return
-  }
-  success(`${existing ? 'refreshed' : 'published'} ${bold(draft.title)}`)
-  info(`${resolveAppUrl(session)}${path}`)
-}
-
-async function projectApply(args: string[]): Promise<void> {
-  const json = args.includes('--json')
-  const yes = args.includes('--yes')
-  const path = args.find((arg) => !arg.startsWith('-'))
-  if (!path) usage()
-
-  let sourceYaml: string
-  try {
-    sourceYaml = await readFile(path, 'utf8')
-  } catch {
-    const message = `could not read ${path}`
-    if (json) emitJsonError('read_failed', message)
-    error(message)
-    process.exit(1)
-  }
-
-  let doc: unknown
-  try {
-    doc = parseYaml(sourceYaml)
-  } catch (err) {
-    const message = `could not parse ${path}: ${err instanceof Error ? err.message : String(err)}`
-    if (json) emitJsonError('parse_failed', message)
-    error(message)
-    process.exit(1)
-  }
-
-  const parsed = parseProjectDocument(doc)
-  if (!parsed.ok) {
-    if (json) emitJsonError('invalid_fields', parsed.error)
-    error(parsed.error)
-    process.exit(1)
-  }
-
-  const session = await requireSession(json)
-  await publishProject(
-    session,
-    { ...parsed.project, sourceYaml },
-    { json, yes }
-  )
-}
-
-async function projectAdd(args: string[]): Promise<void> {
-  const json = args.includes('--json')
-  const yes = args.includes('--yes')
-
-  const fields = {
-    title: flagValue(args, '--title'),
-    description: flagValue(args, '--description', '--desc'),
-    liveUrl: flagValue(args, '--live'),
-    repoUrl: flagValue(args, '--repo'),
-    // `--url` auto-routes: a github.com URL becomes the repo, anything else the
-    // live link — the one flag a "just give it a URL" project needs.
-    url: flagValue(args, '--url'),
-    slug: flagValue(args, '--slug'),
-    tags: flagValue(args, '--tags'),
-    // Long-form project content: `--content` inline, or `--content-file
-    // <path>` to read it from disk.
-    content: flagValue(args, '--content'),
-    contentFile: flagValue(args, '--content-file'),
-  }
-
-  if (fields.content !== undefined && fields.contentFile !== undefined) {
-    const message = 'use either --content or --content-file, not both'
-    if (json) emitJsonError('invalid_fields', message)
-    error(message)
-    process.exit(1)
-  }
-  let content = fields.content
-  if (fields.contentFile) {
-    try {
-      content = await readFile(fields.contentFile, 'utf8')
-    } catch {
-      const message = `could not read ${fields.contentFile}`
-      if (json) emitJsonError('read_failed', message)
-      error(message)
-      process.exit(1)
-    }
-  }
-
-  if (!fields.title) {
-    const message = 'a project needs a title: --title "My Project"'
-    if (json) emitJsonError('missing_title', message)
-    error(message)
-    process.exit(1)
-  }
-
-  const urlIsRepo = fields.url ? isGithubRepoUrl(fields.url) : false
-  const urlAsRepo = urlIsRepo ? fields.url : undefined
-  const urlAsLive = fields.url && !urlIsRepo ? fields.url : undefined
-
-  const draft: ProjectFields = {
-    slug: slugFromName(fields.slug ?? fields.title),
-    title: fields.title,
-    description: fields.description ?? null,
-    tags: fields.tags ? parseTags(fields.tags) : [],
-    repoUrl: fields.repoUrl ?? urlAsRepo ?? null,
-    liveUrl: fields.liveUrl ?? urlAsLive ?? null,
-    private: false,
-    content: content ?? null,
-  }
-
-  // Privacy: explicit --private/--public win; otherwise probe a github repoUrl.
-  // A private repo's link 404s for visitors and it's absent from the public
-  // pinned-repo snapshot, so the web hides its repo link, GitHub button + stats.
-  if (args.includes('--private')) draft.private = true
-  else if (args.includes('--public')) draft.private = false
-  else draft.private = await probeRepoPrivate(draft.repoUrl)
-
-  const session = await requireSession(json)
-
-  // The existing row (if any) decides create-vs-refresh, keeps the original
-  // publish date, and provides fallback screenshots.
-  let existing: RemoteProject | undefined
-  try {
-    existing = (await fetchProjects(session)).projects.find(
-      (p) => p.slug === draft.slug
-    )
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    if (json) emitJsonError('error', message)
-    error(message)
-    process.exit(1)
-  }
-
-  if (!json) {
-    console.log(
-      `  ${bold(existing ? 'refreshing' : 'publishing')} ${bold(draft.title)} ${dim(`(${draft.slug})`)}`
-    )
-    console.log(`  ${dim('description')}  ${summarize(draft.description)}`)
-    console.log(
-      `  ${dim('repo')}         ${summarize(draft.repoUrl)}${
-        draft.private ? dim('  (private — hidden on web)') : ''
-      }`
-    )
-    console.log(`  ${dim('live')}         ${summarize(draft.liveUrl)}`)
-    console.log(
-      `  ${dim('tags')}         ${draft.tags.length ? draft.tags.join(', ') : dim('(none)')}`
-    )
-    console.log(
-      `  ${dim('content')}      ${draft.content ? `${draft.content.length} chars` : dim('(none)')}`
-    )
-  }
-
-  if (!json && !yes && process.stdout.isTTY) {
-    const go = await clack.confirm({ message: 'publish it?' })
-    if (clack.isCancel(go) || !go) {
-      clack.outro(dim('cancelled.'))
-      return
-    }
-  }
-
-  // Fresh og:image capture when the site has one; otherwise whatever the
-  // project already shows keeps showing (POST overwrites screenshots).
-  let screenshots = existing?.screenshots ?? []
-  if (draft.liveUrl) {
-    if (!json) info(dim('looking for a screenshot (og:image)…'))
-    const shot = await captureOgScreenshot(session, draft.liveUrl)
-    if (shot) screenshots = [shot]
-  }
-
-  const payload = {
-    title: draft.title,
-    slug: draft.slug,
-    description: draft.description ?? undefined,
-    tags: draft.tags,
-    repoUrl: draft.repoUrl ?? undefined,
-    liveUrl: draft.liveUrl ?? undefined,
-    private: draft.private,
-    screenshots,
-    // A flag-less refresh keeps whatever content the project already has.
-    content: draft.content ?? existing?.content ?? undefined,
-    publishedAt: existing?.publishedAt ?? new Date().toISOString(),
-  }
-
-  let res: Response
-  try {
-    res = await fetchApi(session, PROJECTS_PATH, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${session.token}`,
-      },
-      body: JSON.stringify(payload),
-    })
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    if (json) emitJsonError('network', message)
-    error(message)
-    process.exit(1)
-  }
-  if (!res.ok) {
-    const message = await readEnvelopeError(res, session)
-    if (json) emitJsonError('error', message)
-    error(message)
-    process.exit(1)
-  }
-
-  await captureEvent(session.handle, 'cli_project_added', {
-    slug: draft.slug,
-    refreshed: Boolean(existing),
-    has_repo: Boolean(draft.repoUrl),
-    private: draft.private,
-    has_live_url: Boolean(draft.liveUrl),
-    has_screenshot: screenshots.length > 0,
-    tag_count: draft.tags.length,
-  })
-
-  const path = `/${session.handle}/${draft.slug}`
-  if (json) {
-    printJson({
-      schemaVersion: 1,
-      [existing ? 'refreshed' : 'published']: true,
-      slug: draft.slug,
-      path,
-    })
-    return
-  }
-  success(`${existing ? 'refreshed' : 'published'} ${bold(draft.title)}`)
-  info(`${resolveAppUrl(session)}${path}`)
-}
-
-async function projectList(args: string[]): Promise<void> {
-  const json = args.includes('--json')
-  const session = await requireSession(json)
-
-  let list: ProjectList
-  try {
-    list = await fetchProjects(session)
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    if (json) emitJsonError('error', message)
-    error(message)
-    process.exit(1)
-  }
-
-  if (json) {
-    printJson({ schemaVersion: 1, ...list })
-    return
-  }
-
-  if (list.projects.length === 0) {
-    info('no projects yet')
-    info(`run ${dim('hacklab project add --title "…"')} to publish one`)
-    return
-  }
-
-  const width = Math.max(...list.projects.map((p) => p.slug.length))
-  for (const p of list.projects) {
-    console.log(
-      `  ${bold(p.slug.padEnd(width))}  ${summarize(p.title, 48)} ${dim(`(${p.source})`)}`
-    )
-  }
-  console.log('')
-  info(dim(`${resolveAppUrl(session)}/${list.handle}`))
 }
 
 /** Nearest slug for a "did you mean" hint: prefix/substring match, else null. */
@@ -853,195 +198,315 @@ function nearestSlug(projects: RemoteProject[], slug: string): string | null {
   return hit?.slug ?? null
 }
 
-function renderProjectCard(project: RemoteProject, session: Session): void {
-  console.log('')
-  console.log(`  ${bold(project.title)} ${dim(`(${project.slug})`)}`)
-  if (project.description) {
-    console.log(`  ${summarize(project.description, 96)}`)
-  }
-  console.log('')
-  if (project.tags.length) {
-    console.log(`  ${dim('tags')}    ${project.tags.join(', ')}`)
-  }
-  if (project.repoUrl) {
-    console.log(
-      `  ${dim('repo')}    ${project.repoUrl}${
-        project.private ? dim('  (private — hidden on web)') : ''
-      }`
-    )
-  }
-  if (project.liveUrl) console.log(`  ${dim('live')}    ${project.liveUrl}`)
-  console.log(
-    `  ${dim('source')}  ${project.source}${
-      project.content
-        ? dim(`  ·  README (${project.content.length} chars)`)
-        : ''
-    }`
-  )
-  console.log('')
-  info(dim(`${resolveAppUrl(session)}${project.path}`))
+/**
+ * An explicit `--private`/`--public`, or undefined to fall back to the probe.
+ * A private repo's link 404s for visitors and it's absent from the public
+ * pinned-repo snapshot, so the web hides its repo link, button, and stats.
+ */
+function explicitPrivacy(args: string[]): boolean | undefined {
+  if (args.includes('--private')) return true
+  if (args.includes('--public')) return false
+  return undefined
 }
 
-async function projectView(args: string[]): Promise<void> {
+/**
+ * Split the two link flags. `--repo` takes any git host; `--url` is the live
+ * site, except that a github.com `--url` with no `--repo` routes to the repo —
+ * the one flag a "just give it a URL" project needs.
+ */
+function resolveLinks(
+  args: string[],
+  json: boolean
+): { repoUrl: string | null; liveUrl: string | null; touchedRepo: boolean } {
+  const repoFlag = flagValue(args, '--repo')
+  const urlFlag = flagValue(args, '--url')
+  const urlIsRepo =
+    repoFlag === undefined && urlFlag !== undefined && isGithubRepoUrl(urlFlag)
+
+  const rawRepo = repoFlag ?? (urlIsRepo ? urlFlag : undefined)
+  let repoUrl: string | null = null
+  if (rawRepo !== undefined) {
+    const repo = normalizeRepoUrl(rawRepo)
+    if (!repo) {
+      const message = `${repoFlag !== undefined ? '--repo' : '--url'} is not a valid git URL`
+      if (json) emitJsonError('invalid_fields', message)
+      error(message)
+      process.exit(1)
+    }
+    repoUrl = repo.url
+  }
+
+  let liveUrl: string | null = null
+  if (urlFlag !== undefined && !urlIsRepo) {
+    liveUrl = parseHttpUrl(urlFlag)
+    if (!liveUrl) {
+      const message = '--url must be an http(s) URL'
+      if (json) emitJsonError('invalid_fields', message)
+      error(message)
+      process.exit(1)
+    }
+  }
+
+  return { repoUrl, liveUrl, touchedRepo: rawRepo !== undefined }
+}
+
+async function projectAdd(args: string[]): Promise<void> {
   const json = args.includes('--json')
-  const web = args.includes('--web')
-  const slug = args.find((a) => !a.startsWith('-'))
-  if (!slug) {
-    if (json) emitJsonError('usage', 'usage: hacklab project view <slug>')
-    error('usage: hacklab project view <slug>')
+  const unknown = unknownFlag(args, ADD_FLAGS, VALUE_FLAGS)
+  if (unknown) {
+    if (json) emitJsonError('invalid_fields', `unknown flag: ${unknown}`)
+    error(`unknown flag: ${unknown}`)
     process.exit(1)
   }
 
+  const title = flagValue(args, '--title')
+  const description = flagValue(args, '--description', '--desc')
+
+  if (!title) {
+    const message = 'a project needs a title: --title "My Project"'
+    if (json) emitJsonError('missing_title', message)
+    error(message)
+    process.exit(1)
+  }
+  if (!flagValue(args, '--repo') && !flagValue(args, '--url')) {
+    const message =
+      'a project needs a link: --repo <git url> or --url https://…'
+    if (json) emitJsonError('missing_url', message)
+    error(message)
+    process.exit(1)
+  }
+
+  const links = resolveLinks(args, json)
+  const slug = slugFromName(title)
   const session = await requireSession(json)
 
-  let list: ProjectList
+  const existing = (await ownProjectsOrExit(session, json)).projects.find(
+    (p) => p.slug === slug
+  )
+
+  const repoUrl = links.repoUrl ?? existing?.repoUrl ?? null
+  const liveUrl = links.liveUrl ?? existing?.liveUrl ?? null
+  const isPrivate = explicitPrivacy(args) ?? (await probeRepoPrivate(repoUrl))
+
+  const payload = {
+    title,
+    slug,
+    description: description ?? existing?.description ?? undefined,
+    tags: existing?.tags ?? [],
+    repoUrl: repoUrl ?? undefined,
+    liveUrl: liveUrl ?? undefined,
+    private: isPrivate,
+    screenshots: existing?.screenshots ?? [],
+    content: existing?.content ?? undefined,
+    sourceYaml: existing?.sourceYaml ?? undefined,
+    publishedAt: existing?.publishedAt ?? new Date().toISOString(),
+  }
+
+  let res: Response
   try {
-    list = await fetchProjects(session)
+    res = await fetchApi(session, PROJECTS_PATH, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.token}`,
+      },
+      body: JSON.stringify(payload),
+    })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
+    if (json) emitJsonError('network', message)
+    error(message)
+    process.exit(1)
+  }
+  if (!res.ok) {
+    const message = await readError(res, session)
     if (json) emitJsonError('error', message)
     error(message)
     process.exit(1)
   }
 
-  const project = list.projects.find((p) => p.slug === slug)
-  if (!project) {
-    if (json) emitJsonError('not_found', `no project named "${slug}"`)
-    error(`no project named "${slug}"`)
+  await captureEvent(session.handle, 'cli_project_added', {
+    slug,
+    refreshed: Boolean(existing),
+    has_repo: Boolean(repoUrl),
+    has_live_url: Boolean(liveUrl),
+    private: isPrivate,
+  })
+
+  const path = `/${session.handle}/${slug}`
+  if (json) {
+    printJson({
+      schemaVersion: 1,
+      [existing ? 'refreshed' : 'published']: true,
+      slug,
+      path,
+    })
+    return
+  }
+  success(`${existing ? 'refreshed' : 'published'} ${bold(title)}`)
+  info(link(`${resolveAppUrl(session)}${path}`))
+}
+
+function renderList(handle: string, projects: RemoteProject[], appUrl: string) {
+  if (projects.length === 0) {
+    info('no projects yet')
+    info(
+      `run ${dim('hacklab project add --title "…" --repo <url>')} to publish one`
+    )
+    return
+  }
+  const width = Math.max(...projects.map((p) => p.slug.length))
+  for (const p of projects) {
+    const desc = summarize(p.description, 56)
+    console.log(
+      `  ${bold(stripControl(p.slug).padEnd(width))}${desc ? `  ${stripControl(desc)}` : ''}`
+    )
+  }
+  console.log('')
+  info(link(`${appUrl}/${handle}`))
+}
+
+function renderProject(project: RemoteProject, appUrl: string) {
+  console.log(`  ${bold(stripControl(project.title))}`)
+  if (project.description) console.log(`  ${stripControl(project.description)}`)
+  if (project.liveUrl) console.log(`  ${link(project.liveUrl)}`)
+  else if (project.repoUrl) console.log(`  ${link(project.repoUrl)}`)
+  if (project.content) {
+    console.log('')
+    console.log(stripControl(project.content).trimEnd())
+  }
+  console.log('')
+  info(link(`${appUrl}${project.path}`))
+}
+
+async function projectList(args: string[]): Promise<void> {
+  const json = args.includes('--json')
+  const unknown = unknownFlag(args, new Set(['--json']), new Set())
+  if (unknown) {
+    if (json) emitJsonError('invalid_fields', `unknown flag: ${unknown}`)
+    error(`unknown flag: ${unknown}`)
+    process.exit(1)
+  }
+
+  const session = await requireSession(json)
+  const list = await ownProjectsOrExit(session, json)
+
+  if (json) {
+    printJson({ schemaVersion: 1, ...list })
+    return
+  }
+  renderList(list.handle, list.projects, resolveAppUrl(session))
+}
+
+async function projectView(args: string[]): Promise<void> {
+  const json = args.includes('--json')
+  const slug = positional(args, VALUE_FLAGS)
+  if (!slug || slug.includes('/')) {
+    const message = 'usage: hacklab project view <slug> (one of your own)'
+    if (json) emitJsonError('usage', message)
+    error(message)
+    process.exit(1)
+  }
+
+  const session = await requireSession(json)
+  const list = await ownProjectsOrExit(session, json)
+
+  const found = list.projects.find((p) => p.slug === slug)
+  if (!found) {
+    const message = `no project named "${slug}"`
+    if (json) emitJsonError('not_found', message)
+    error(message)
     const near = nearestSlug(list.projects, slug)
     if (near) info(`did you mean ${dim(`hacklab project view ${near}`)}?`)
     process.exit(1)
   }
 
-  const url = `${resolveAppUrl(session)}${project.path}`
-  if (web) {
-    const opened = await openBrowser(url)
-    info(
-      opened
-        ? `opened ${linkBlue(url)}`
-        : `could not open a browser — ${linkBlue(url)}`
-    )
-    return
-  }
-
   if (json) {
-    printJson({ schemaVersion: 1, project })
+    printJson({ schemaVersion: 1, project: found })
     return
   }
-
-  renderProjectCard(project, session)
+  renderProject(found, resolveAppUrl(session))
 }
 
 async function projectEdit(args: string[]): Promise<void> {
   const json = args.includes('--json')
-  const yes = args.includes('--yes')
-  const slug = args.find((a) => !a.startsWith('-'))
+  const unknown = unknownFlag(args, EDIT_FLAGS, VALUE_FLAGS)
+  if (unknown) {
+    if (json) emitJsonError('invalid_fields', `unknown flag: ${unknown}`)
+    error(`unknown flag: ${unknown}`)
+    process.exit(1)
+  }
+
+  const yes = args.includes('--yes') || args.includes('-y')
+  const slug = positional(args, VALUE_FLAGS)
   if (!slug) {
-    if (json)
-      emitJsonError('usage', 'usage: hacklab project edit <slug> [--title …]')
-    error(
-      'usage: hacklab project edit <slug> [--title/--desc/--url/--repo/--tags]'
-    )
+    const message = 'usage: hacklab project edit <slug> [--title …]'
+    if (json) emitJsonError('usage', message)
+    error(message)
     process.exit(1)
   }
 
   const titleFlag = flagValue(args, '--title')
   const descFlag = flagValue(args, '--description', '--desc')
-  const liveFlag = flagValue(args, '--live')
   const repoFlag = flagValue(args, '--repo')
   const urlFlag = flagValue(args, '--url')
-  const tagsFlag = flagValue(args, '--tags')
-  const clearRepo = args.includes('--clear-repo')
-  const clearLive = args.includes('--clear-live')
-
-  const urlIsRepo = urlFlag ? isGithubRepoUrl(urlFlag) : false
-  const changed =
-    [titleFlag, descFlag, liveFlag, repoFlag, urlFlag, tagsFlag].some(
-      (v) => v !== undefined
-    ) ||
-    clearRepo ||
-    clearLive
-  if (!changed) {
+  const explicit = explicitPrivacy(args)
+  if (
+    [titleFlag, descFlag, repoFlag, urlFlag].every((v) => v === undefined) &&
+    explicit === undefined
+  ) {
     const message =
-      'nothing to edit — pass --title, --desc, --url, --repo, --live, --tags, --clear-repo or --clear-live'
+      'nothing to edit — pass --title, --desc, --repo, --url, --private or --public'
     if (json) emitJsonError('no_change', message)
     error(message)
     process.exit(1)
   }
 
+  const links = resolveLinks(args, json)
   const session = await requireSession(json)
-
-  let list: ProjectList
-  try {
-    list = await fetchProjects(session)
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    if (json) emitJsonError('error', message)
-    error(message)
-    process.exit(1)
-  }
+  const list = await ownProjectsOrExit(session, json)
 
   const existing = list.projects.find((p) => p.slug === slug)
   if (!existing) {
-    if (json) emitJsonError('not_found', `no project named "${slug}"`)
-    error(`no project named "${slug}"`)
+    const message = `no project named "${slug}"`
+    if (json) emitJsonError('not_found', message)
+    error(message)
     const near = nearestSlug(list.projects, slug)
     if (near) info(`did you mean ${dim(`hacklab project edit ${near}`)}?`)
     process.exit(1)
   }
 
-  // Editing a GitHub-synced project converts it to a manual one (the POST route
-  // relabels it `cli`), so it stops updating from GitHub. Confirm first.
-  if (existing.source === 'github') {
-    if (!json && !yes && process.stdout.isTTY) {
-      const go = await clack.confirm({
-        message: `${bold(slug)} is synced from GitHub — editing stops that sync. continue?`,
-      })
-      if (clack.isCancel(go) || !go) {
-        clack.outro(dim('cancelled.'))
-        return
-      }
-    } else if (!json && !yes) {
-      error(
-        `${slug} is synced from GitHub — re-run with --yes to edit it anyway`
-      )
-      process.exit(1)
-    }
+  // The POST route relabels an edited project `cli`, so editing one that
+  // GitHub syncs silently ends that sync. Make the trade explicit.
+  if (existing.source === 'github' && !yes) {
+    const message = `${slug} is synced from GitHub — re-run with --yes to edit it anyway`
+    if (json) emitJsonError('synced', message)
+    error(message)
+    process.exit(1)
   }
 
-  // Merge: only passed fields change; everything else round-trips unchanged.
-  let repoUrl = existing.repoUrl
-  let liveUrl = existing.liveUrl
-  if (repoFlag !== undefined) repoUrl = repoFlag
-  if (liveFlag !== undefined) liveUrl = liveFlag
-  if (urlFlag !== undefined) {
-    if (urlIsRepo) repoUrl = urlFlag
-    else liveUrl = urlFlag
-  }
-  if (clearRepo) repoUrl = null
-  if (clearLive) liveUrl = null
+  // Only the passed fields change; everything else round-trips unchanged, so
+  // editing one field never wipes the rest.
+  const repoUrl = links.touchedRepo ? links.repoUrl : existing.repoUrl
+  const liveUrl = links.liveUrl ?? existing.liveUrl
 
-  // Re-probe privacy only when the repo URL itself changed.
-  const repoChanged =
-    repoFlag !== undefined || (urlFlag !== undefined && urlIsRepo) || clearRepo
-  let isPrivate = existing.private
-  if (args.includes('--private')) isPrivate = true
-  else if (args.includes('--public')) isPrivate = false
-  else if (repoChanged) isPrivate = await probeRepoPrivate(repoUrl)
+  // Re-probe only when the repo URL itself moved; otherwise the stored
+  // visibility stands.
+  let isPrivate = existing.private ?? false
+  if (explicit !== undefined) isPrivate = explicit
+  else if (links.touchedRepo) isPrivate = await probeRepoPrivate(repoUrl)
 
   const payload = {
     title: titleFlag ?? existing.title,
     slug: existing.slug,
     description:
       descFlag !== undefined ? descFlag : (existing.description ?? undefined),
-    tags: tagsFlag !== undefined ? parseTags(tagsFlag) : existing.tags,
+    tags: existing.tags,
     repoUrl: repoUrl ?? undefined,
     liveUrl: liveUrl ?? undefined,
     private: isPrivate,
-    screenshots: existing.screenshots,
+    screenshots: existing.screenshots ?? [],
     content: existing.content ?? undefined,
-    // A partial edit round-trips everything it doesn't touch — including the
-    // `apply` manifest source — so editing one field never wipes the rest.
     sourceYaml: existing.sourceYaml ?? undefined,
     publishedAt: existing.publishedAt ?? new Date().toISOString(),
   }
@@ -1063,7 +528,7 @@ async function projectEdit(args: string[]): Promise<void> {
     process.exit(1)
   }
   if (!res.ok) {
-    const message = await readEnvelopeError(res, session)
+    const message = await readError(res, session)
     if (json) emitJsonError('error', message)
     error(message)
     process.exit(1)
@@ -1071,34 +536,47 @@ async function projectEdit(args: string[]): Promise<void> {
 
   await captureEvent(session.handle, 'cli_project_edited', {
     slug,
-    private: isPrivate,
     changed_title: titleFlag !== undefined,
-    changed_repo: repoChanged,
+    changed_repo: links.touchedRepo,
+    private: isPrivate,
   })
 
-  const path = existing.path
   if (json) {
-    printJson({ schemaVersion: 1, edited: true, slug, path })
+    printJson({ schemaVersion: 1, edited: true, slug, path: existing.path })
     return
   }
-  success(`edited ${bold(payload.title)}`)
-  info(`${resolveAppUrl(session)}${path}`)
+  success(`edited ${bold(stripControl(payload.title))}`)
+  info(link(`${resolveAppUrl(session)}${existing.path}`))
 }
 
 async function projectDelete(args: string[]): Promise<void> {
   const json = args.includes('--json')
-  const yes = args.includes('--yes')
+  const yes = args.includes('--yes') || args.includes('-y')
   const slug = args.find((a) => !a.startsWith('-'))
-  if (!slug) usage()
+  if (!slug) {
+    const message = 'usage: hacklab project delete <slug> [--yes]'
+    if (json) emitJsonError('usage', message)
+    error(message)
+    process.exit(1)
+  }
 
   const session = await requireSession(json)
 
-  if (!json && !yes && process.stdout.isTTY) {
-    const go = await clack.confirm({
-      message: `delete ${bold(slug)} from your profile?`,
+  // Deletion is irreversible and `project d <slug>` resolves here by prefix, so
+  // a typo must not be enough on its own.
+  if (!yes) {
+    if (json || !process.stdin.isTTY) {
+      const message = 'refusing to delete without confirmation — pass --yes'
+      if (json) emitJsonError('confirm', message)
+      error(message)
+      process.exit(1)
+    }
+    const ok = await clack.confirm({
+      message: `delete ${bold(slug)} from your profile? this cannot be undone.`,
+      initialValue: false,
     })
-    if (clack.isCancel(go) || !go) {
-      clack.outro(dim('cancelled.'))
+    if (clack.isCancel(ok) || !ok) {
+      info('kept.')
       return
     }
   }
@@ -1120,7 +598,13 @@ async function projectDelete(args: string[]): Promise<void> {
     process.exit(1)
   }
   if (!res.ok) {
-    const message = await readEnvelopeError(res, session)
+    if (res.status === 404) {
+      const message = `no project named "${slug}"`
+      if (json) emitJsonError('not_found', message)
+      error(message)
+      process.exit(1)
+    }
+    const message = await readError(res, session)
     if (json) emitJsonError('error', message)
     error(message)
     process.exit(1)
@@ -1136,7 +620,7 @@ async function projectDelete(args: string[]): Promise<void> {
   })
 
   if (json) {
-    printJson({ schemaVersion: 1, deleted: data?.deleted ?? { slug } })
+    printJson({ schemaVersion: 1, deleted: true, slug })
     return
   }
   success(`deleted ${bold(slug)}`)
@@ -1150,18 +634,15 @@ async function projectDelete(args: string[]): Promise<void> {
 export async function project(args: string[]): Promise<void> {
   const [subToken, ...rest] = args
 
-  if (subToken === '--help' || subToken === '-h' || subToken === 'help') {
+  if (
+    !subToken ||
+    subToken === '--help' ||
+    subToken === '-h' ||
+    subToken === 'help'
+  ) {
     usage(0)
   }
-
-  // Bare `hacklab project` prints the help — publishing is an explicit
-  // `add` away.
-  if (!subToken) {
-    usage(0)
-  }
-  if (subToken.startsWith('-')) {
-    usage()
-  }
+  if (subToken.startsWith('-')) usage()
 
   const resolved = resolveCommand(subToken, SUBCOMMANDS)
   if (resolved.kind === 'ambiguous') {
@@ -1174,7 +655,6 @@ export async function project(args: string[]): Promise<void> {
   }
 
   if (resolved.name === 'add') return projectAdd(rest)
-  if (resolved.name === 'apply') return projectApply(rest)
   if (resolved.name === 'list') return projectList(rest)
   if (resolved.name === 'view') return projectView(rest)
   if (resolved.name === 'edit') return projectEdit(rest)

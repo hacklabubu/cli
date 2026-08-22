@@ -36,7 +36,7 @@
   },
   {
     "event_name": "cli_essay_published",
-    "event_description": "A user published a new essay from a local markdown file to their profile.",
+    "event_description": "A user published a new essay to their profile via the CLI.",
     "file": "src/commands/essay.ts"
   },
   {
@@ -61,7 +61,12 @@
   },
   {
     "event_name": "cli_project_added",
-    "event_description": "A user published or refreshed a project inferred from a local repo.",
+    "event_description": "A user published or refreshed a project on their profile via the CLI.",
+    "file": "src/commands/project.ts"
+  },
+  {
+    "event_name": "cli_project_edited",
+    "event_description": "A user changed fields on an existing project via `hacklab project edit`.",
     "file": "src/commands/project.ts"
   },
   {
