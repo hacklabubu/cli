@@ -42,8 +42,11 @@ async function summon(): Promise<void> {
 
   const result = await installDailySync()
   if (result.ok) {
+    // The tick can be refused (a Windows policy capping task frequency) while
+    // the daily job installs fine — the headline has to match what's actually
+    // scheduled, the way `detail` already does.
     success(
-      `daemon summoned — token tick every minute, full sync daily, via ${result.mechanism}`
+      `daemon summoned — ${result.tick ? 'token tick every minute, ' : ''}full sync daily, via ${result.mechanism}`
     )
     info(dim(`  ${result.detail}`))
     info(dim(`  log: ${syncLogPath()}`))

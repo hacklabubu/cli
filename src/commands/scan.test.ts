@@ -13,7 +13,8 @@ const m = vi.hoisted(() => ({
   renderShareCard: vi.fn(),
   promptShareOnX: vi.fn(),
   installDailySync: vi.fn(),
-  dailySyncInstalled: vi.fn(),
+  dailySyncState: vi.fn(),
+  captureEvent: vi.fn(),
   password: vi.fn(),
   error: vi.fn(),
   info: vi.fn(),
@@ -57,7 +58,7 @@ vi.mock('../share.js', () => ({
 }))
 vi.mock('../daily-sync.js', () => ({
   installDailySync: m.installDailySync,
-  dailySyncInstalled: m.dailySyncInstalled,
+  dailySyncState: m.dailySyncState,
 }))
 vi.mock('../ui.js', () => ({
   bold: (s: string) => s,
@@ -67,7 +68,7 @@ vi.mock('../ui.js', () => ({
   info: m.info,
 }))
 vi.mock('../posthog.js', () => ({
-  captureEvent: vi.fn(),
+  captureEvent: m.captureEvent,
 }))
 
 import { beltForTokens } from '../belt.js'
@@ -75,6 +76,18 @@ import type { ShareCardData } from '../share-card.js'
 import { formatScanReceipt, scan } from './scan.js'
 
 class ExitError extends Error {}
+
+/** Properties of every event of one name fired this run. */
+const events = (name: string) =>
+  m.captureEvent.mock.calls.filter((c) => c[1] === name).map((c) => c[2])
+
+const installEvents = () => events('cli_daily_sync_installed')
+
+const FAILED_INSTALL = {
+  ok: false,
+  mechanism: 'manual',
+  instructions: 'schedule this with cron: node cli sync --quiet',
+}
 
 const SESSION = {
   token: 't',
@@ -150,11 +163,13 @@ beforeEach(() => {
   m.uploadTokenScan.mockResolvedValue(SERVER)
   m.rebuildScanState.mockResolvedValue(undefined)
   m.renderShareCard.mockResolvedValue('/tmp/hacklab-card.png')
-  m.dailySyncInstalled.mockResolvedValue(false)
+  m.dailySyncState.mockResolvedValue('current')
   m.installDailySync.mockResolvedValue({
     ok: true,
     mechanism: 'launchd',
     detail: 'tick every minute',
+    tick: true,
+    recorded: true,
   })
 })
 
@@ -283,29 +298,96 @@ describe('hacklab scan', () => {
     expect(card.handle).not.toBe('hacker')
   })
 
-  it('arms the daemon quietly when it was not scheduled', async () => {
+  it('arms the daemon and says so when nothing was scheduled', async () => {
+    m.dailySyncState.mockResolvedValue('missing')
+
     await scan()
 
     expect(m.installDailySync).toHaveBeenCalledOnce()
-    expect(m.logs).not.toContain('daemon on')
+    expect(m.logs).toContain('daily sync scheduled (launchd)')
+    expect(installEvents()).toEqual([{ mechanism: 'launchd', source: 'scan' }])
   })
 
-  it('refreshes the daemon silently when it is already scheduled', async () => {
-    m.dailySyncInstalled.mockResolvedValue(true)
+  it('leaves an up-to-date schedule alone', async () => {
+    // The reinstall rewrites the jobs and bounces them, so a scan that has
+    // nothing to fix must not touch the scheduler at all.
+    await scan()
+
+    expect(m.installDailySync).not.toHaveBeenCalled()
+    expect(m.logs.join('\n')).not.toMatch(/daily sync/)
+    expect(installEvents()).toEqual([])
+  })
+
+  it('repairs a stale schedule quietly', async () => {
+    // The command moved (e.g. a new node): reinstall, but this is a repair, not
+    // a new install — no announcement, no install event.
+    m.dailySyncState.mockResolvedValue('stale')
 
     await scan()
 
     expect(m.installDailySync).toHaveBeenCalledOnce()
-    expect(m.logs).not.toContain('daemon on')
+    expect(m.logs.join('\n')).not.toMatch(/daily sync scheduled/)
+    expect(installEvents()).toEqual([])
+  })
+
+  it('prints the manual instructions when nothing could be scheduled', async () => {
+    m.dailySyncState.mockResolvedValue('missing')
+    m.installDailySync.mockResolvedValue(FAILED_INSTALL)
+
+    await scan()
+
+    expect(m.logs).toContain('schedule this with cron: node cli sync --quiet')
+    expect(installEvents()).toEqual([])
+    expect(events('cli_daily_sync_manual')).toEqual([
+      { mechanism: 'manual', source: 'scan' },
+    ])
+  })
+
+  it('stays quiet when a repair of an existing schedule fails', async () => {
+    // Over SSH there's no user D-Bus, so the systemd probe fails every time
+    // while the desktop session's timers keep running. Printing the cron
+    // fallback here would spam every scan — and following it would leave the
+    // user with two schedules.
+    m.dailySyncState.mockResolvedValue('stale')
+    m.installDailySync.mockResolvedValue(FAILED_INSTALL)
+
+    await scan()
+
+    expect(m.logs.join('\n')).not.toMatch(/cron/)
+    expect(events('cli_daily_sync_manual')).toEqual([])
+    expect(installEvents()).toEqual([])
+  })
+
+  it('says so when the install could not be recorded', async () => {
+    // Unwritable config: nothing will remember this install, so every later scan
+    // reinstalls. Explain it once instead of re-announcing (and re-reporting) a
+    // fresh install forever.
+    m.dailySyncState.mockResolvedValue('missing')
+    m.installDailySync.mockResolvedValue({
+      ok: true,
+      mechanism: 'launchd',
+      detail: 'tick every minute',
+      tick: true,
+      recorded: false,
+    })
+
+    await scan()
+
+    expect(m.logs.join('\n')).toMatch(/could not record daily-sync state/)
+    expect(m.logs.join('\n')).not.toMatch(/daily sync scheduled/)
+    expect(installEvents()).toEqual([])
   })
 
   it('skips the daemon when --no-daemon is passed', async () => {
+    m.dailySyncState.mockResolvedValue('missing')
+
     await scan(['--no-daemon'])
 
     expect(m.uploadTokenScan).toHaveBeenCalledOnce()
     expect(m.renderShareCard).toHaveBeenCalledOnce()
+    expect(m.dailySyncState).not.toHaveBeenCalled()
     expect(m.installDailySync).not.toHaveBeenCalled()
-    expect(m.logs).not.toContain('daemon on')
+    expect(m.logs.join('\n')).not.toMatch(/daily sync/)
   })
 
   it('does not draw a card or arm the daemon when the upload fails', async () => {
