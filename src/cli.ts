@@ -144,10 +144,6 @@ const HELP_GROUPS: Array<{
         summary:
           'print the manual: exact commands, prereqs, done-when criteria',
       },
-      {
-        label: 'wtf',
-        summary: 'what hacklab is and how to use this cli (alias: rtfm wtf)',
-      },
     ],
   },
   {
