@@ -90,6 +90,15 @@ const HELP_GROUPS: Array<{
   rows: Array<{ label: string; summary: string }>
 }> = [
   {
+    title: 'start here',
+    rows: [
+      {
+        label: 'setup',
+        summary: 'first run: scan, sign in, start the background sync',
+      },
+    ],
+  },
+  {
     title: 'auth',
     rows: [
       { label: 'login', summary: 'sign in with github' },

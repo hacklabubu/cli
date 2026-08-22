@@ -19,6 +19,7 @@ import { referral } from './commands/referral.js'
 import { rtfm } from './commands/rtfm.js'
 import { scan } from './commands/scan.js'
 import { scout } from './commands/scout.js'
+import { setup } from './commands/setup.js'
 import { sync } from './commands/sync.js'
 import { update } from './commands/update.js'
 import { whoami } from './commands/whoami.js'
@@ -39,6 +40,11 @@ export type CommandSpec = {
 }
 
 export const COMMANDS: CommandSpec[] = [
+  {
+    name: 'setup',
+    summary: 'first run: scan, sign in, and start the background sync',
+    run: () => setup(),
+  },
   {
     name: 'scan',
     args: '[--no-daemon]',

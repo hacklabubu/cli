@@ -24,6 +24,8 @@ describe('resolveCommand', () => {
     expect(resolveCommand('jo')).toEqual({ kind: 'match', name: 'jobs' })
     expect(resolveCommand('sca')).toEqual({ kind: 'match', name: 'scan' })
     expect(resolveCommand('sco')).toEqual({ kind: 'match', name: 'scout' })
+    // `setup` is the only `se…` command, so two letters reach the front door.
+    expect(resolveCommand('se')).toEqual({ kind: 'match', name: 'setup' })
     expect(resolveCommand('w')).toEqual({ kind: 'match', name: 'whoami' })
     expect(resolveCommand('sy')).toEqual({ kind: 'match', name: 'sync' })
     expect(resolveCommand('o')).toEqual({ kind: 'match', name: 'org' })
@@ -54,10 +56,10 @@ describe('resolveCommand', () => {
       matches: ['config', 'chat'],
     })
     // `s` stopped being sync shorthand when scout landed — ambiguity is the
-    // honest answer, not a silent guess.
+    // honest answer, not a silent guess. `setup` joined the pile-up since.
     expect(resolveCommand('s')).toEqual({
       kind: 'ambiguous',
-      matches: ['scan', 'sync', 'scout'],
+      matches: ['setup', 'scan', 'sync', 'scout'],
     })
     expect(resolveCommand('sc')).toEqual({
       kind: 'ambiguous',
