@@ -88,19 +88,41 @@ async function loginViaDevice(appUrl: string): Promise<Credentials> {
     interval: number
   }
 
-  // Code first, then Enter, then the browser — they have to have read the
-  // code before a new window steals focus. The URL is printed in full so it
-  // is copyable if Enter doesn't open a browser; OSC-8 makes it clickable.
+  // Show the code and URL first. Poll starts immediately so clicking the
+  // link (instead of Enter) still finishes login. Enter only opens a browser.
+  const openUrl = start.verificationUriComplete ?? start.verificationUri
   console.log(dim('copy code'))
-  console.log('')
   console.log(bold(start.userCode))
   console.log('')
   console.log(link(start.verificationUri))
-  await waitForEnter('(press enter) ')
-  void openBrowser(start.verificationUriComplete ?? start.verificationUri)
 
-  const intervalMs = Math.max(1000, (Number(start.interval) || 5) * 1000)
-  const deadline = Date.now() + (Number(start.expiresIn) || 900) * 1000
+  const abort = new AbortController()
+  if (!process.stdin.isTTY) void openBrowser(openUrl)
+  const enter = waitForEnter('(press enter) ', abort.signal).then((pressed) => {
+    if (pressed) void openBrowser(openUrl)
+  })
+
+  try {
+    return await pollDevice(
+      appUrl,
+      start.deviceCode,
+      start.expiresIn,
+      start.interval
+    )
+  } finally {
+    abort.abort()
+    await enter
+  }
+}
+
+async function pollDevice(
+  appUrl: string,
+  deviceCode: string,
+  expiresIn: number,
+  interval: number
+): Promise<Credentials> {
+  const intervalMs = Math.max(1000, (Number(interval) || 5) * 1000)
+  const deadline = Date.now() + (Number(expiresIn) || 900) * 1000
 
   while (Date.now() < deadline) {
     let data: {
@@ -117,7 +139,7 @@ async function loginViaDevice(appUrl: string): Promise<Credentials> {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          deviceCode: start.deviceCode,
+          deviceCode,
           allowSignup: true,
         }),
         signal: AbortSignal.timeout(10_000),
