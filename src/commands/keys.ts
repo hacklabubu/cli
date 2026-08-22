@@ -4,8 +4,8 @@ import { fetchApi, LOGIN_EXPIRED_MESSAGE } from '../sync.js'
 import { bold, dim, error, info, mint, success } from '../ui.js'
 
 // `hacklab keys` — manage personal API keys that authenticate the agent-friendly
-// profile endpoint (GET /api/v1/me). Noun-verb like `hacker view`; subcommands
-// resolve by shortest unambiguous prefix (`k c "name"` == create).
+// profile endpoint (GET /api/v1/me). Subcommands resolve by shortest
+// unambiguous prefix (`k c "name"` == create).
 
 const SUBCOMMANDS = ['create', 'list', 'revoke'] as const
 

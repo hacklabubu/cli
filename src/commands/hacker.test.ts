@@ -76,91 +76,60 @@ beforeEach(() => {
 
 const output = () => out.join('\n')
 
-describe('hacker command — dispatch', () => {
-  it('exits 1 with usage when no subcommand is given', async () => {
+describe('hacker', () => {
+  it('exits 1 with usage when no username is given', async () => {
     await expect(hacker([])).rejects.toThrow('__exit__')
     expect(exitCode).toBe(1)
-    expect(output()).toContain('usage: hacklab hacker [view|list]')
+    expect(output()).toContain('usage: hacklab hacker <username>')
+    expect(fetchApi).not.toHaveBeenCalled()
   })
 
-  it('exits 1 on an unknown subcommand', async () => {
-    await expect(hacker(['frobnicate', 'isomiki'])).rejects.toThrow('__exit__')
+  it('--json with no username emits an error envelope without fetching', async () => {
+    await expect(hacker(['--json'])).rejects.toThrow('__exit__')
     expect(exitCode).toBe(1)
-    expect(output()).toContain('unknown subcommand')
+    expect(JSON.parse(output())).toEqual({
+      schemaVersion: 1,
+      error: { code: 'invalid_fields', message: 'pass a username' },
+    })
+    expect(fetchApi).not.toHaveBeenCalled()
   })
 
-  it('resolves the "v" prefix to "view"', async () => {
-    await hacker(['v', 'isomiki'])
+  it('exits 1 "not logged in" when there is no session', async () => {
+    vi.mocked(loadSession).mockResolvedValue(null)
+    await expect(hacker(['isomiki'])).rejects.toThrow('__exit__')
+    expect(output()).toContain('not logged in')
+  })
+
+  it('renders the card on 200', async () => {
+    await hacker(['isomiki'])
     expect(fetchApi).toHaveBeenCalledWith(
       expect.anything(),
       expect.stringContaining('/api/hackers/isomiki'),
       expect.anything()
     )
+    expect(output()).toContain('isomiki')
+    expect(output()).toContain('L32 SHINOBI')
   })
 
-  it('dispatches list --newest', async () => {
-    vi.mocked(fetchApi).mockResolvedValue(
-      jsonResponse({ schemaVersion: 1, hackers: [] })
-    )
-    await hacker(['list', '--newest'])
+  it('sends ?src=cli', async () => {
+    await hacker(['isomiki'])
     expect(fetchApi).toHaveBeenCalledWith(
       expect.anything(),
-      expect.stringContaining('/api/hackers/newest'),
-      expect.anything()
-    )
-  })
-})
-
-describe('hacker list', () => {
-  it('prints newest hackers as JSON', async () => {
-    vi.mocked(fetchApi).mockResolvedValue(
-      jsonResponse({
-        schemaVersion: 1,
-        hackers: [
-          {
-            handle: 'newhacker',
-            displayName: 'New Hacker',
-            bio: 'building',
-            claimedAt: '2026-07-23T10:00:00.000Z',
-            openToWork: false,
-            path: '/newhacker',
-            url: 'https://hacklab.so/newhacker',
-          },
-        ],
-      })
-    )
-
-    await hacker(['list', '--newest', '--limit', '10', '--json'])
-    expect(JSON.parse(output()).hackers[0].handle).toBe('newhacker')
-    expect(fetchApi).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.stringContaining('limit=10'),
+      expect.stringContaining('src=cli'),
       expect.anything()
     )
   })
 
-  it.each([
-    ['0', ['list', '--newest', '--limit', '0']],
-    ['abc', ['list', '--newest', '--limit', 'abc']],
-    ['(no value)', ['list', '--newest', '--limit']],
-    ['51', ['list', '--newest', '--limit', '51']],
-  ])('--limit %s → "--limit must be 1-50", no fetch', async (_label, argv) => {
-    await expect(hacker(argv)).rejects.toThrow('__exit__')
-    expect(exitCode).toBe(1)
-    expect(output()).toContain('--limit must be 1-50')
-    expect(fetchApi).not.toHaveBeenCalled()
-  })
-
-  it('--json --limit 0 emits an invalid_fields envelope without fetching', async () => {
-    await expect(
-      hacker(['list', '--newest', '--limit', '0', '--json'])
-    ).rejects.toThrow('__exit__')
-    expect(exitCode).toBe(1)
-    expect(JSON.parse(output())).toEqual({
-      schemaVersion: 1,
-      error: { code: 'invalid_fields', message: '--limit must be 1-50' },
-    })
-    expect(fetchApi).not.toHaveBeenCalled()
+  it('--json prints the envelope and does not render a card', async () => {
+    await hacker(['isomiki', '--json'])
+    const printed = JSON.parse(output())
+    expect(printed.hacker.handle).toBe('isomiki')
+    expect(output()).not.toContain('L32 SHINOBI')
+    expect(fetchApi).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining('format=agent'),
+      expect.anything()
+    )
   })
 
   it('--json on a non-JSON response body → bad_response envelope', async () => {
@@ -171,9 +140,7 @@ describe('hacker list', () => {
         throw new SyntaxError('Unexpected token < in JSON')
       },
     } as never)
-    await expect(hacker(['list', '--newest', '--json'])).rejects.toThrow(
-      '__exit__'
-    )
+    await expect(hacker(['isomiki', '--json'])).rejects.toThrow('__exit__')
     expect(exitCode).toBe(1)
     expect(JSON.parse(output())).toEqual({
       schemaVersion: 1,
@@ -189,85 +156,16 @@ describe('hacker list', () => {
         throw new SyntaxError('Unexpected token < in JSON')
       },
     } as never)
-    await expect(hacker(['list', '--newest'])).rejects.toThrow('__exit__')
+    await expect(hacker(['isomiki'])).rejects.toThrow('__exit__')
     expect(exitCode).toBe(1)
     expect(output()).toContain('got a malformed response from hacklab')
-  })
-})
-
-describe('hacker view', () => {
-  it('views your own profile when no handle is given', async () => {
-    vi.mocked(loadSession).mockResolvedValue({
-      token: 't',
-      appUrl: 'https://hacklab.so',
-      handle: 'isomiki',
-    } as never)
-    await hacker(['view'])
-    expect(fetchApi).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.stringContaining('/api/hackers/isomiki'),
-      expect.anything()
-    )
-    expect(output()).toContain('L32 SHINOBI')
-  })
-
-  it('exits 1 when no handle is given and the session has no username', async () => {
-    // default mocked session has no handle (unclaimed profile)
-    await expect(hacker(['view'])).rejects.toThrow('__exit__')
-    expect(exitCode).toBe(1)
-    expect(output()).toContain("haven't claimed a username")
-  })
-
-  it('--json with no handle and no username emits an error envelope', async () => {
-    await expect(hacker(['view', '--json'])).rejects.toThrow('__exit__')
-    expect(exitCode).toBe(1)
-    expect(JSON.parse(output()).error.code).toBe('no_handle')
-  })
-
-  it('exits 1 "not logged in" with no handle and no session', async () => {
-    vi.mocked(loadSession).mockResolvedValue(null)
-    await expect(hacker(['view'])).rejects.toThrow('__exit__')
-    expect(output()).toContain('not logged in')
-  })
-
-  it('exits 1 "not logged in" when there is no session', async () => {
-    vi.mocked(loadSession).mockResolvedValue(null)
-    await expect(hacker(['view', 'isomiki'])).rejects.toThrow('__exit__')
-    expect(output()).toContain('not logged in')
-  })
-
-  it('renders the card on 200', async () => {
-    await hacker(['view', 'isomiki'])
-    expect(output()).toContain('isomiki')
-    expect(output()).toContain('L32 SHINOBI')
-  })
-
-  it('sends ?src=cli', async () => {
-    await hacker(['view', 'isomiki'])
-    expect(fetchApi).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.stringContaining('src=cli'),
-      expect.anything()
-    )
-  })
-
-  it('--json prints the envelope and does not render a card', async () => {
-    await hacker(['view', 'isomiki', '--json'])
-    const printed = JSON.parse(output())
-    expect(printed.hacker.handle).toBe('isomiki')
-    expect(output()).not.toContain('L32 SHINOBI')
-    expect(fetchApi).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.stringContaining('format=agent'),
-      expect.anything()
-    )
   })
 
   it('401 → per-backend unauthorized hint, exit 1', async () => {
     vi.mocked(fetchApi).mockResolvedValue(
       jsonResponse({ schemaVersion: 1, error: { code: 'unauthorized' } }, 401)
     )
-    await expect(hacker(['view', 'isomiki'])).rejects.toThrow('__exit__')
+    await expect(hacker(['isomiki'])).rejects.toThrow('__exit__')
     expect(exitCode).toBe(1)
     expect(output()).toContain('unauthorized')
     expect(output()).toContain('hacklab login')
@@ -281,16 +179,16 @@ describe('hacker view', () => {
             { schemaVersion: 1, error: { code: 'not_found' } },
             404
           )) as never)
-    await expect(hacker(['view', 'isomik'])).rejects.toThrow('__exit__')
+    await expect(hacker(['isomik'])).rejects.toThrow('__exit__')
     expect(output()).toContain('no hacker named "isomik"')
-    expect(output()).toContain('hacklab hacker view isomiki')
+    expect(output()).toContain('hacklab hacker isomiki')
   })
 
   it('429 → slow-down copy, exit 1', async () => {
     vi.mocked(fetchApi).mockResolvedValue(
       jsonResponse({ schemaVersion: 1, error: { code: 'rate_limited' } }, 429)
     )
-    await expect(hacker(['view', 'isomiki'])).rejects.toThrow('__exit__')
+    await expect(hacker(['isomiki'])).rejects.toThrow('__exit__')
     expect(output()).toContain('slow down')
   })
 
@@ -301,9 +199,7 @@ describe('hacker view', () => {
         404
       )
     )
-    await expect(hacker(['view', 'ghost', '--json'])).rejects.toThrow(
-      '__exit__'
-    )
+    await expect(hacker(['ghost', '--json'])).rejects.toThrow('__exit__')
     expect(exitCode).toBe(1)
     expect(JSON.parse(output())).toEqual({
       schemaVersion: 1,
@@ -317,7 +213,7 @@ describe('hacker view', () => {
       appUrl: 'https://hacklab.so',
       handle: 'isomiki',
     } as never)
-    await hacker(['view', 'isomiki'])
+    await hacker(['isomiki'])
     expect(output()).toContain('this is you')
     expect(output()).toContain('hacklab profile')
   })
@@ -328,13 +224,13 @@ describe('hacker view', () => {
       appUrl: 'https://hacklab.so',
       handle: 'mattbratos',
     } as never)
-    await hacker(['view', 'isomiki'])
+    await hacker(['isomiki'])
     expect(output()).not.toContain('this is you')
   })
 
   it('network failure → friendly message, exit 1', async () => {
     vi.mocked(fetchApi).mockRejectedValue(new Error("couldn't reach hacklab"))
-    await expect(hacker(['view', 'isomiki'])).rejects.toThrow('__exit__')
+    await expect(hacker(['isomiki'])).rejects.toThrow('__exit__')
     expect(output()).toContain("couldn't reach hacklab")
   })
 })
