@@ -749,6 +749,8 @@ export type AggregateScan = {
   dailyTotals: DailyToolEntry[]
   hourlyTotals: HourlyEntry[]
   modelTotals: Record<string, number>
+  /** Per-tool model breakdown. Optional on older incremental payloads. */
+  modelsByTool?: Record<string, Record<string, number>>
   grandTotal: number
   cursorStats: CursorStats | null
   cursorScanStatus: CursorScanStatus
@@ -819,6 +821,7 @@ export function mergeToolScans(results: ScanResult[]): AggregateScan {
   const dailyTotals: DailyToolEntry[] = []
   const hourlyTotals: HourlyEntry[] = []
   const modelTotals: Record<string, number> = {}
+  const modelsByTool: Record<string, Record<string, number>> = {}
   let grandTotal = 0
 
   for (const r of results) {
@@ -830,8 +833,14 @@ export function mergeToolScans(results: ScanResult[]): AggregateScan {
     toolTotals[r.tool] = (toolTotals[r.tool] ?? 0) + toolSum
     grandTotal += toolSum
     hourlyTotals.push(...r.hourly)
+    let byTool = modelsByTool[r.tool]
+    if (!byTool) {
+      byTool = {}
+      modelsByTool[r.tool] = byTool
+    }
     for (const [model, tokens] of Object.entries(r.models)) {
       modelTotals[model] = (modelTotals[model] ?? 0) + tokens
+      byTool[model] = (byTool[model] ?? 0) + tokens
     }
   }
 
@@ -841,6 +850,7 @@ export function mergeToolScans(results: ScanResult[]): AggregateScan {
     dailyTotals,
     hourlyTotals,
     modelTotals,
+    modelsByTool,
     grandTotal,
     cursorStats: cursor?.cursorStats ?? null,
     cursorScanStatus: cursor?.cursorScanStatus ?? { source: 'none' },

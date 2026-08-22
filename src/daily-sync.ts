@@ -462,6 +462,29 @@ async function installSchtasks(cmd: SyncCommand): Promise<InstallResult> {
   }
 }
 
+/** True when the OS scheduler already has the daily job. */
+export async function dailySyncInstalled(): Promise<boolean> {
+  const os = platform()
+  try {
+    if (os === 'darwin') {
+      await stat(launchAgentPath(LAUNCHD_LABEL))
+      return true
+    }
+    if (os === 'linux') {
+      await stat(
+        join(homedir(), '.config', 'systemd', 'user', `${SYSTEMD_UNIT}.timer`)
+      )
+      return true
+    }
+    if (os === 'win32') {
+      return (await run('schtasks', ['/Query', '/TN', SCHTASKS_TASK])) === 0
+    }
+  } catch {
+    // missing file / scheduler
+  }
+  return false
+}
+
 /** Install (or refresh) both background jobs (tick + daily) for the current OS. */
 export async function installDailySync(): Promise<InstallResult> {
   const cmd = resolveSyncCommand()

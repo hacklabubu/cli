@@ -5,6 +5,8 @@ import { fetchApi } from '../sync.js'
 
 vi.mock('../session.js', () => ({
   loadSession: vi.fn(),
+  resolveAppUrl: (s?: { appUrl?: string } | null) =>
+    (s?.appUrl ?? 'https://hacklab.so').replace(/\/$/, ''),
   unauthorizedHint: () =>
     'unauthorized — your session may have expired. run `hacklab login` to sign in again.',
 }))
@@ -12,26 +14,41 @@ vi.mock('../sync.js', () => ({ fetchApi: vi.fn() }))
 
 import { hacker } from './hacker.js'
 
-const CARD = {
+const AGENT = {
   handle: 'isomiki',
   displayName: 'Marin Belec',
-  bio: null,
+  bio: 'building hacklab',
+  url: 'https://hacklab.so/isomiki',
   joinedAt: '2026-04-02T00:00:00.000Z',
   claimedAt: '2026-04-02T00:00:00.000Z',
-  level: 32,
-  tokensTotal: 2_500_000_000,
-  tokens30d: 0,
-  estimatedCost: 1240,
-  rank: 3,
-  topModels30d: [],
-  currentStreak: 14,
-  longestStreak: 31,
-  activeDays30: 0,
-  activity30: Array(30).fill(0),
-  counts: { projects: 0, essays: 0, drops: 0, followers: 0 },
-  recent: { projects: [], essays: [], drops: [] },
-  links: { profile: '', website: null, github: null, x: null },
   openToWork: false,
+  belt: { level: 32, title: 'shinobi', color: 'blue' },
+  xp: { pyro: 2_000_000, hacker: 500_000, mason: 0, total: 2_500_000 },
+  tokens: {
+    total: 2_500_000_000,
+    last30Days: 86_000_000,
+    estimatedCostUsd: 1240,
+    byModel: { opus: 53_000_000 },
+  },
+  rank: 3,
+  streak: { current: 14, longest: 31 },
+  stats: { projects: 1, essays: 0, drops: 0, followers: 9, following: 2 },
+  skills: [{ class: 'hacker', skill: 'TypeScript', level: 25 }],
+  links: {
+    profile: 'https://hacklab.so/isomiki',
+    website: null,
+    github: 'https://github.com/isomiki',
+    x: null,
+    linkedin: null,
+    youtube: null,
+    instagram: null,
+    blog: null,
+  },
+  recent: {
+    projects: [{ title: 'hacklab', description: 'the lab' }],
+    essays: [],
+    drops: [],
+  },
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -68,9 +85,9 @@ beforeEach(() => {
     path.startsWith('/api/hackers/search')
       ? jsonResponse({ hackers: [] })
       : jsonResponse({
-          schemaVersion: 1,
+          schemaVersion: 2,
           generatedAt: 'x',
-          hacker: CARD,
+          hacker: AGENT,
         })) as never)
 })
 
@@ -100,15 +117,16 @@ describe('hacker', () => {
     expect(output()).toContain('not logged in')
   })
 
-  it('renders the card on 200', async () => {
+  it('renders the dossier on 200', async () => {
     await hacker(['isomiki'])
     expect(fetchApi).toHaveBeenCalledWith(
       expect.anything(),
-      expect.stringContaining('/api/hackers/isomiki'),
+      expect.stringContaining('/api/hackers/isomiki?src=cli&format=agent'),
       expect.anything()
     )
-    expect(output()).toContain('isomiki')
-    expect(output()).toContain('L32 SHINOBI')
+    expect(output()).toContain('Marin Belec')
+    expect(output()).toContain('@isomiki')
+    expect(output()).toContain('L32 shinobi')
   })
 
   it('sends ?src=cli', async () => {
@@ -124,7 +142,7 @@ describe('hacker', () => {
     await hacker(['isomiki', '--json'])
     const printed = JSON.parse(output())
     expect(printed.hacker.handle).toBe('isomiki')
-    expect(output()).not.toContain('L32 SHINOBI')
+    expect(output()).not.toContain('L32 shinobi')
     expect(fetchApi).toHaveBeenCalledWith(
       expect.anything(),
       expect.stringContaining('format=agent'),
@@ -207,15 +225,14 @@ describe('hacker', () => {
     })
   })
 
-  it('viewing your own handle appends the edit-with-profile note', async () => {
+  it('viewing your own handle appends the profile set hint', async () => {
     vi.mocked(loadSession).mockResolvedValue({
       token: 't',
       appUrl: 'https://hacklab.so',
       handle: 'isomiki',
     } as never)
     await hacker(['isomiki'])
-    expect(output()).toContain('this is you')
-    expect(output()).toContain('hacklab profile')
+    expect(output()).toContain('hacklab profile set <field> <value>')
   })
 
   it("viewing someone else's handle has no self note", async () => {
@@ -225,7 +242,7 @@ describe('hacker', () => {
       handle: 'mattbratos',
     } as never)
     await hacker(['isomiki'])
-    expect(output()).not.toContain('this is you')
+    expect(output()).not.toContain('hacklab profile set')
   })
 
   it('network failure → friendly message, exit 1', async () => {

@@ -89,6 +89,29 @@ export function formatTokens(n: number): string {
   return String(n)
 }
 
+/** Fold a raw model id into a short display label, keeping the version. */
+export function shortModelName(raw: string): string {
+  const s = raw.trim().toLowerCase()
+  if (!s) return ''
+  const t = s.replace(/[-_]?\d{8}$/, '')
+  const tier = t.includes('opus')
+    ? 'opus'
+    : t.includes('sonnet')
+      ? 'sonnet'
+      : t.includes('haiku')
+        ? 'haiku'
+        : null
+  if (tier) {
+    const ver = t
+      .split(/[-_.\s]+/)
+      .filter((p) => /^\d+$/.test(p))
+      .slice(0, 2)
+      .join('.')
+    return (ver ? `${tier} ${ver}` : tier).toUpperCase()
+  }
+  return t.toUpperCase().slice(0, 16)
+}
+
 export function formatBytes(n: number): string {
   if (n >= 1_073_741_824) return `${(n / 1_073_741_824).toFixed(1)}GB`
   if (n >= 1_048_576) return `${(n / 1_048_576).toFixed(1)}MB`
