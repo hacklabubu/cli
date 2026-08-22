@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const m = vi.hoisted(() => ({
-  waitForEnter: vi.fn(),
+  bareEnter: vi.fn(),
   success: vi.fn(),
   info: vi.fn(),
   readFile: vi.fn(),
@@ -26,7 +26,7 @@ vi.mock('./share-card.js', () => ({
   copyToClipboard: m.copyToClipboard,
 }))
 vi.mock('./utils/openBrowser.js', () => ({ openBrowser: m.openBrowser }))
-vi.mock('./utils/waitForEnter.js', () => ({ waitForEnter: m.waitForEnter }))
+vi.mock('./utils/waitForEnter.js', () => ({ waitForBareEnter: m.bareEnter }))
 vi.mock('./ui.js', () => ({
   bold: (value: string) => value,
   dim: (value: string) => value,
@@ -67,59 +67,89 @@ beforeEach(() => {
   m.readFile.mockResolvedValue(Buffer.from('image'))
   m.displayInTerminal.mockReturnValue(true)
   m.copyToClipboard.mockResolvedValue(true)
-  m.waitForEnter.mockResolvedValue(false)
+  m.bareEnter.mockResolvedValue(false)
 })
 
+const DESKTOP_CARD = join('/home/hacker', 'Desktop', 'hacklab-card.png')
+
 describe('renderShareCard', () => {
-  it('shows the png and saves it to the desktop', async () => {
+  it('shows the png and touches nothing outside ~/.hacklab', async () => {
     expect(await renderShareCard(card)).toBe('/tmp/card.png')
     expect(m.displayInTerminal).toHaveBeenCalled()
-    expect(m.copyFile).toHaveBeenCalledWith(
-      '/tmp/card.png',
-      join('/home/hacker', 'Desktop', 'hacklab-card.png')
-    )
+    expect(m.copyFile).not.toHaveBeenCalled()
     expect(m.copyToClipboard).not.toHaveBeenCalled()
-    expect(m.waitForEnter).not.toHaveBeenCalled()
+    expect(m.bareEnter).not.toHaveBeenCalled()
   })
 
   it('keeps the png path and skips a text fallback when inline images are unsupported', async () => {
     m.displayInTerminal.mockReturnValue(false)
     expect(await renderShareCard(card)).toBe('/tmp/card.png')
-    expect(m.copyFile).toHaveBeenCalledWith(
-      '/tmp/card.png',
-      join('/home/hacker', 'Desktop', 'hacklab-card.png')
-    )
+    expect(m.copyFile).not.toHaveBeenCalled()
   })
 })
 
 describe('promptShareOnX', () => {
-  it('does nothing when they skip enter', async () => {
-    m.waitForEnter.mockResolvedValue(false)
+  it('gates on a bare enter and says so in the prompt', async () => {
+    m.bareEnter.mockResolvedValue(false)
     await promptShareOnX(card, '/tmp/card.png')
-    expect(m.waitForEnter).toHaveBeenCalledWith('(press enter to share) ')
+    expect(m.bareEnter).toHaveBeenCalledWith(
+      '(press enter to share) · anything else skips '
+    )
     expect(m.copyFile).not.toHaveBeenCalled()
     expect(m.copyToClipboard).not.toHaveBeenCalled()
     expect(m.openBrowser).not.toHaveBeenCalled()
   })
 
-  it('copies the image and opens X after enter — desktop save already happened', async () => {
-    m.waitForEnter.mockResolvedValue(true)
+  it('saves to the desktop, copies the image, and opens X after enter', async () => {
+    m.bareEnter.mockResolvedValue(true)
     await promptShareOnX(card, '/tmp/card.png')
-    expect(m.copyFile).not.toHaveBeenCalled()
+    expect(m.copyFile).toHaveBeenCalledWith('/tmp/card.png', DESKTOP_CARD)
+    expect(m.success).toHaveBeenCalledWith(`saved to ${DESKTOP_CARD}`)
     expect(m.copyToClipboard).toHaveBeenCalledWith('/tmp/card.png')
     expect(m.openBrowser).toHaveBeenCalledWith(
-      `https://x.com/intent/tweet?text=${encodeURIComponent(shareTweetText(card))}`
+      `https://x.com/intent/tweet?text=${encodeURIComponent(shareTweetText(card, true))}`
     )
+  })
+
+  it('drops the cmd+v line from the tweet when the clipboard copy failed', async () => {
+    m.bareEnter.mockResolvedValue(true)
+    m.copyToClipboard.mockResolvedValue(false)
+    await promptShareOnX(card, '/tmp/card.png')
+    expect(m.success).not.toHaveBeenCalledWith('image copied to clipboard')
+    const url = m.openBrowser.mock.calls[0]?.[0] as string
+    expect(decodeURIComponent(url)).not.toContain('cmd+v')
+  })
+
+  it('says so instead of failing when the desktop copy cannot be written', async () => {
+    m.bareEnter.mockResolvedValue(true)
+    m.copyFile.mockRejectedValue(new Error('ENOENT'))
+    await promptShareOnX(card, '/tmp/card.png')
+    expect(m.success).not.toHaveBeenCalledWith(`saved to ${DESKTOP_CARD}`)
+    expect(m.info).toHaveBeenCalledWith(`could not save ${DESKTOP_CARD}`)
+    expect(m.openBrowser).toHaveBeenCalled()
   })
 })
 
 describe('shareTweetText', () => {
-  it('is tokens, paste hint, profile, then campaign tags', () => {
-    expect(shareTweetText(card)).toBe(
+  it('is tokens, paste hint, profile, then campaign tags when the image is on the clipboard', () => {
+    expect(shareTweetText(card, true)).toBe(
       [
         'I burned 1.5B tokens 🔥',
         '',
         '(press cmd+v)',
+        '',
+        'https://hacklab.so/bratos',
+        '',
+        '',
+        '#joinhacklab #riplinkedin',
+      ].join('\n')
+    )
+  })
+
+  it('leaves out the paste hint when nothing was copied', () => {
+    expect(shareTweetText(card)).toBe(
+      [
+        'I burned 1.5B tokens 🔥',
         '',
         'https://hacklab.so/bratos',
         '',

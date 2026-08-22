@@ -70,6 +70,8 @@ vi.mock('../posthog.js', () => ({
   captureEvent: vi.fn(),
 }))
 
+import { beltForTokens } from '../belt.js'
+import type { ShareCardData } from '../share-card.js'
 import { formatScanReceipt, scan } from './scan.js'
 
 class ExitError extends Error {}
@@ -229,12 +231,49 @@ describe('hacklab scan', () => {
         rank: 7,
         streak: 4,
         longestStreak: 9,
+        progressPercent: 40,
       })
     )
     expect(m.promptShareOnX).toHaveBeenCalledWith(
       expect.objectContaining({ handle: 'mattbratos', rank: 7 }),
       '/tmp/hacklab-card.png'
     )
+  })
+
+  it('computes belt, streaks and rank locally when the server omits them', async () => {
+    const today = new Date().toISOString().slice(0, 10)
+    const yesterday = new Date(Date.now() - 86_400_000)
+      .toISOString()
+      .slice(0, 10)
+    m.mergeToolScans.mockReturnValue({
+      ...LOCAL_SCAN,
+      dailyTotals: [
+        { date: yesterday, tool: 'claude_code', tokens: 100 },
+        { date: today, tool: 'claude_code', tokens: 100 },
+      ],
+    })
+    m.uploadTokenScan.mockResolvedValue({
+      level: 12,
+      title: 'student',
+      tokensTotal: 2_400_000_000,
+    })
+
+    await scan()
+
+    const belt = beltForTokens(2_400_000_000)
+    const card = m.renderShareCard.mock.calls[0]?.[0] as ShareCardData
+    expect(card).toEqual(
+      expect.objectContaining({
+        level: 12,
+        title: 'student',
+        beltColor: belt.beltColor,
+        progressPercent: belt.progressPercent,
+        streak: 2,
+        longestStreak: 2,
+      })
+    )
+    expect(card.beltColor).not.toBe('white')
+    expect(card.rank).toBeUndefined()
   })
 
   it('never draws an anonymous @hacker card', async () => {
