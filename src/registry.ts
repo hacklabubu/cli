@@ -91,8 +91,8 @@ export const COMMANDS: CommandSpec[] = [
   },
   {
     name: 'project',
-    args: '[add|apply|list|view|edit|delete]',
-    summary: 'publish & manage your projects (--json for agents)',
+    args: '[add|view|delete]',
+    summary: 'add a project to your profile (--json for agents)',
     run: (args) => project(args),
   },
   {
@@ -122,8 +122,8 @@ export const COMMANDS: CommandSpec[] = [
   },
   {
     name: 'essay',
-    args: '[sub]',
-    summary: 'post and manage essays (post/list/view/update/delete)',
+    args: '[post|update|view|delete]',
+    summary: 'post an essay to your profile (--json for agents)',
     run: (args) => essay(args),
   },
   {
