@@ -29,6 +29,7 @@ type SyncResult = {
   level?: number
   beltColor?: string
   rankAfter?: number
+  tokensTotal?: number
 }
 
 const TOOL_LABELS: Record<string, string> = {
@@ -289,6 +290,8 @@ export async function join(opts: { browser?: boolean } = {}) {
         typeof result.beltColor === 'string' ? result.beltColor : undefined,
       rankAfter:
         typeof result.rankAfter === 'number' ? result.rankAfter : undefined,
+      tokensTotal:
+        typeof result.tokensTotal === 'number' ? result.tokensTotal : undefined,
     }
   } catch {
     // A failed usage upload does not undo the claimed handle. `hacklab sync`
@@ -298,8 +301,11 @@ export async function join(opts: { browser?: boolean } = {}) {
   const base = appUrl.replace(/\/$/, '')
   if (syncResult?.title && syncResult.level != null) {
     spin.stop('usage saved')
+    // The total here is the server's account-wide figure (all machines, full
+    // history) — the same number `hacklab sync` reports — not this machine's
+    // scan, so the two commands never show a different total.
     info(
-      `${bold(syncResult.title)} lv.${syncResult.level}${syncResult.beltColor ? ` (${syncResult.beltColor} belt)` : ''}`
+      `${bold(syncResult.title)} lv.${syncResult.level}${syncResult.beltColor ? ` (${syncResult.beltColor} belt)` : ''}${syncResult.tokensTotal != null ? ` — ${formatTokens(syncResult.tokensTotal)} total` : ''}`
     )
     if (syncResult.rankAfter) info(`rank: #${syncResult.rankAfter}`)
   } else {
@@ -329,20 +335,25 @@ export async function join(opts: { browser?: boolean } = {}) {
       $set_once: { joined_at: new Date().toISOString() },
     })
   }
+  // Account-wide total from the upload response when it succeeded (the figure
+  // `hacklab sync` and the profile show), else this machine's scan. The card
+  // and analytics use it so every surface reports the same number.
+  const tokensTotal = syncResult?.tokensTotal ?? scan.grandTotal
+
   await captureEvent(claimedHandle, 'cli_join_completed', {
-    tokens_total: scan.grandTotal,
+    tokens_total: tokensTotal,
     rank: syncResult?.rankAfter ?? previewRank ?? undefined,
   })
 
   // ── Stage 7: show the reward, then offer one sharing action ───────────────
-  const belt = beltForTokens(scan.grandTotal)
+  const belt = beltForTokens(tokensTotal)
   const streaks = computeStreaks(scan.dailyTotals.map((entry) => entry.date))
   const card: ShareCardData = {
     handle: claimedHandle,
-    level: belt.level,
-    title: belt.title,
-    beltColor: belt.beltColor,
-    tokensTotal: scan.grandTotal,
+    level: syncResult?.level ?? belt.level,
+    title: syncResult?.title ?? belt.title,
+    beltColor: syncResult?.beltColor ?? belt.beltColor,
+    tokensTotal,
     rank: syncResult?.rankAfter ?? previewRank ?? 0,
     streak: streaks.current,
     longestStreak: streaks.longest,
@@ -383,7 +394,7 @@ function printToolTotals(scan: AggregateScan): void {
       )
     }
   }
-  info(bold(`total: ${formatTokens(scan.grandTotal)} tokens`))
+  info(bold(`total: ${formatTokens(scan.grandTotal)} tokens on this machine`))
 }
 
 /**

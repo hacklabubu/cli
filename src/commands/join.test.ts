@@ -248,6 +248,55 @@ describe('join — existing GitHub account', () => {
     )
   })
 
+  it('shows the account-wide total from the upload, not the local scan', async () => {
+    // The upload response carries the server's account-wide figure (all
+    // machines, full history) — join must surface that one, so it never
+    // disagrees with what `hacklab sync` reports for the same account.
+    m.uploadTokenScan.mockResolvedValue({
+      title: 'pyro',
+      level: 2,
+      beltColor: 'blue',
+      rankAfter: 3,
+      tokensTotal: 5000,
+    })
+    m.loadSession.mockResolvedValueOnce(null).mockResolvedValue({
+      token: 't',
+      email: 'new@example.com',
+      handle: undefined,
+      appUrl: 'https://hacklab.so',
+      savedAt: '2026-06-20T00:00:00.000Z',
+    })
+
+    await join({})
+
+    expect(
+      m.info.mock.calls.some((c) => String(c[0]).includes('5000 total'))
+    ).toBe(true)
+    const card = m.renderShareCard.mock.calls[0]?.[0]
+    expect(card.tokensTotal).toBe(5000)
+    expect(card.level).toBe(2)
+    expect(card.title).toBe('pyro')
+    expect(card.beltColor).toBe('blue')
+  })
+
+  it('falls back to the local scan total when the upload fails', async () => {
+    m.uploadTokenScan.mockRejectedValue(new Error('server down'))
+    m.loadSession.mockResolvedValueOnce(null).mockResolvedValue({
+      token: 't',
+      email: 'new@example.com',
+      handle: undefined,
+      appUrl: 'https://hacklab.so',
+      savedAt: '2026-06-20T00:00:00.000Z',
+    })
+
+    await join({})
+
+    // scan.grandTotal from the mocked merge — the join still completes and the
+    // card still renders with the machine-local number.
+    const card = m.renderShareCard.mock.calls[0]?.[0]
+    expect(card.tokensTotal).toBe(100)
+  })
+
   it('still shows the card when a zero-token user chooses to continue', async () => {
     m.mergeToolScans.mockReturnValue({
       grandTotal: 0,
