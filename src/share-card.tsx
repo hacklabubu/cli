@@ -41,7 +41,8 @@ export type ShareCardData = {
   title: string
   beltColor: string
   tokensTotal: number
-  rank: number
+  /** Absent when the caller has no rank to show — the pill is dropped, not zeroed. */
+  rank?: number
   streak: number
   longestStreak: number
   progressPercent: number
@@ -296,6 +297,11 @@ function ShareCard({
   const progress = Math.max(0, Math.min(100, data.progressPercent))
   const initial = (data.handle[0] ?? '?').toUpperCase()
   const accent = accentShades(data.beltColor)
+  const pills = [
+    { value: `${data.longestStreak}D`, label: 'BEST STREAK' },
+    ...(data.rank ? [{ value: `#${data.rank}`, label: 'RANK' }] : []),
+    { value: String(data.followers ?? 0), label: 'FOLLOWERS' },
+  ]
 
   return (
     <div
@@ -469,9 +475,10 @@ function ShareCard({
 
       {/* Pill stats */}
       <div style={{ display: 'flex', height: 42, gap: 17, marginTop: 18 }}>
-        <PillStat value={`${data.longestStreak}D`} label='BEST STREAK' />
-        <PillStat value={`#${data.rank}`} label='RANK' />
-        <PillStat value={String(data.followers ?? 0)} label='FOLLOWERS' />
+        {pills.map((pill) => (
+          // biome-ignore lint/correctness/useJsxKeyInIterable: satori has no keys
+          <PillStat value={pill.value} label={pill.label} />
+        ))}
       </div>
 
       {/* Footer */}

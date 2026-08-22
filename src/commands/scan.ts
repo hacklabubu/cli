@@ -1,5 +1,6 @@
 import * as clack from '@clack/prompts'
 
+import { beltForTokens } from '../belt.js'
 import { loadConfig, resolveCursorAuth, saveConfig } from '../config.js'
 import { dailySyncInstalled, installDailySync } from '../daily-sync.js'
 import { captureEvent } from '../posthog.js'
@@ -12,7 +13,11 @@ import {
   rescanCursorWithApi,
   type ScanResult,
 } from '../scanners/index.js'
-import { formatTokens, shortModelName } from '../scanners/util.js'
+import {
+  computeStreaks,
+  formatTokens,
+  shortModelName,
+} from '../scanners/util.js'
 import { loadSessionState } from '../session.js'
 import {
   promptShareOnX,
@@ -97,16 +102,26 @@ export async function scan(args: string[] = []): Promise<void> {
     process.exit(1)
   }
 
+  // The sync response is the source of truth, but a backend that predates a
+  // field must not silently mint a white belt / 0-day streak: fall back to the
+  // same numbers the profile will show. Rank has no local equivalent, so an
+  // absent rank stays off the card entirely.
+  const tokensTotal = numberField(uploaded.tokensTotal) ?? scanResult.grandTotal
+  const belt = beltForTokens(tokensTotal)
+  const streaks = computeStreaks(scanResult.dailyTotals.map((e) => e.date))
+  const rank = numberField(uploaded.rankAfter)
+
   const card: ShareCardData = {
     handle: session.handle,
-    level: Number(uploaded.level ?? 0),
-    title: String(uploaded.title ?? ''),
-    beltColor: String(uploaded.beltColor ?? 'white'),
-    tokensTotal: Number(uploaded.tokensTotal ?? scanResult.grandTotal),
-    rank: Number(uploaded.rankAfter ?? 0),
-    streak: Number(uploaded.streak ?? 0),
-    longestStreak: Number(uploaded.longestStreak ?? 0),
-    progressPercent: Number(uploaded.progressPercent ?? 0),
+    level: numberField(uploaded.level) ?? belt.level,
+    title: stringField(uploaded.title) ?? belt.title,
+    beltColor: stringField(uploaded.beltColor) ?? belt.beltColor,
+    tokensTotal,
+    rank,
+    streak: numberField(uploaded.streak) ?? streaks.current,
+    longestStreak: numberField(uploaded.longestStreak) ?? streaks.longest,
+    progressPercent:
+      numberField(uploaded.progressPercent) ?? belt.progressPercent,
     estimatedCost: estimateCost(scanResult.toolTotals),
     toolBreakdown: {
       claudeCode: scanResult.toolTotals.claude_code ?? 0,
@@ -139,9 +154,17 @@ export async function scan(args: string[] = []): Promise<void> {
   await promptShareOnX(card, cardPath)
 
   await captureEvent(session.handle, 'cli_scan_completed', {
-    tokens_total: Number(uploaded.tokensTotal ?? scanResult.grandTotal),
-    rank: Number(uploaded.rankAfter ?? 0),
+    tokens_total: tokensTotal,
+    ...(rank !== undefined ? { rank } : {}),
   })
+}
+
+function numberField(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function stringField(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined
 }
 
 export function formatScanReceipt(scan: AggregateScan): string[] {

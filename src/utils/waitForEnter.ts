@@ -1,6 +1,34 @@
 import { createInterface } from 'node:readline'
 
 /**
+ * Print `prompt` and block for one line. Resolves the line as typed, or null if
+ * stdin is not a TTY, the wait was aborted, or the stream closed.
+ */
+async function readLine(
+  prompt: string,
+  signal?: AbortSignal
+): Promise<string | null> {
+  if (!process.stdin.isTTY) return null
+  if (signal?.aborted) return null
+
+  return await new Promise<string | null>((resolve) => {
+    let settled = false
+    const rl = createInterface({ input: process.stdin, output: process.stdout })
+    const finish = (value: string | null) => {
+      if (settled) return
+      settled = true
+      signal?.removeEventListener('abort', onAbort)
+      rl.close()
+      resolve(value)
+    }
+    const onAbort = () => finish(null)
+    rl.question(prompt, (answer) => finish(answer))
+    rl.once('close', () => finish(null))
+    signal?.addEventListener('abort', onAbort)
+  })
+}
+
+/**
  * Print `prompt` and block until Enter. Resolves true if we waited, false if
  * stdin is not a TTY, the wait was aborted, or the stream closed.
  */
@@ -8,22 +36,17 @@ export async function waitForEnter(
   prompt: string,
   signal?: AbortSignal
 ): Promise<boolean> {
-  if (!process.stdin.isTTY) return false
-  if (signal?.aborted) return false
+  return (await readLine(prompt, signal)) !== null
+}
 
-  return await new Promise<boolean>((resolve) => {
-    let settled = false
-    const rl = createInterface({ input: process.stdin, output: process.stdout })
-    const finish = (value: boolean) => {
-      if (settled) return
-      settled = true
-      signal?.removeEventListener('abort', onAbort)
-      rl.close()
-      resolve(value)
-    }
-    const onAbort = () => finish(false)
-    rl.question(prompt, () => finish(true))
-    rl.once('close', () => finish(false))
-    signal?.addEventListener('abort', onAbort)
-  })
+/**
+ * Like `waitForEnter`, but only a bare Enter counts as yes — anything typed
+ * before it is a no. For prompts where Enter opts *in* to something with side
+ * effects, so "n" + Enter can't confirm it.
+ */
+export async function waitForBareEnter(
+  prompt: string,
+  signal?: AbortSignal
+): Promise<boolean> {
+  return (await readLine(prompt, signal)) === ''
 }
