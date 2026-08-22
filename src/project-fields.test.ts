@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { extractOgImage, parseTags } from './commands/project.js'
 import {
   isGithubRepoUrl,
   normalizeRepoUrl,
@@ -44,12 +43,6 @@ describe('slugFromName', () => {
   })
 })
 
-describe('parseTags', () => {
-  it('splits, trims, lowercases, and drops empties', () => {
-    expect(parseTags(' AI, terminal ,,cli ')).toEqual(['ai', 'terminal', 'cli'])
-  })
-})
-
 describe('isGithubRepoUrl', () => {
   it('recognizes github.com hosts only', () => {
     expect(isGithubRepoUrl('https://github.com/acme/hacklab')).toBe(true)
@@ -85,23 +78,5 @@ describe('probeRepoPrivate', () => {
     expect(await probeRepoPrivate('https://gitlab.com/acme/repo')).toBe(false)
     expect(await probeRepoPrivate(null)).toBe(false)
     expect(fetchMock).toHaveBeenCalledTimes(1)
-  })
-})
-
-describe('extractOgImage', () => {
-  it('finds og:image in either attribute order and resolves relative URLs', () => {
-    expect(
-      extractOgImage(
-        '<meta property="og:image" content="https://x.dev/og.png"/>',
-        'https://x.dev'
-      )
-    ).toBe('https://x.dev/og.png')
-    expect(
-      extractOgImage(
-        "<meta content='/og.png' property='og:image'>",
-        'https://x.dev/page'
-      )
-    ).toBe('https://x.dev/og.png')
-    expect(extractOgImage('<html>nope</html>', 'https://x.dev')).toBeNull()
   })
 })

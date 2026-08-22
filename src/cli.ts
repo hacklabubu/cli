@@ -117,8 +117,8 @@ const HELP_GROUPS: Array<{
     rows: [
       { label: 'drop <message>', summary: 'post a drop' },
       { label: 'drops', summary: 'your drops' },
-      { label: 'project', summary: 'add a project to your profile' },
-      { label: 'essay', summary: 'post and manage essays' },
+      { label: 'project', summary: 'add, list, and edit your projects' },
+      { label: 'essay', summary: 'post, list, and update your essays' },
     ],
   },
   {
