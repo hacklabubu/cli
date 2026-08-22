@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { Resvg } from '@resvg/resvg-js'
 import satori from 'satori'
+import { shortModelName } from './scanners/util.js'
 import { type Accent, accentShades } from './share-card-colors.js'
 
 // ── Design tokens (DESIGN.md) ──────────────────────────────────────────────
@@ -32,33 +33,6 @@ function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`
   return String(n)
-}
-
-// Fold a raw model id into a short display label, keeping the version:
-//   "claude-opus-4-1-20250805" → "OPUS 4.1"
-//   "claude-3-5-sonnet-latest" → "SONNET 3.5"
-//   "gpt-5.3-codex"            → "GPT-5.3-CODEX"
-export function shortModelName(raw: string): string {
-  const s = raw.trim().toLowerCase()
-  if (!s) return ''
-  // Drop a trailing release date (…-20250805) so it doesn't crowd the label.
-  const t = s.replace(/[-_]?\d{8}$/, '')
-  const tier = t.includes('opus')
-    ? 'opus'
-    : t.includes('sonnet')
-      ? 'sonnet'
-      : t.includes('haiku')
-        ? 'haiku'
-        : null
-  if (tier) {
-    const ver = t
-      .split(/[-_.\s]+/)
-      .filter((p) => /^\d+$/.test(p))
-      .slice(0, 2)
-      .join('.')
-    return (ver ? `${tier} ${ver}` : tier).toUpperCase()
-  }
-  return t.toUpperCase().slice(0, 16)
 }
 
 export type ShareCardData = {
@@ -514,7 +488,7 @@ function ShareCard({
           hacklab.so/{data.handle}
         </div>
         <div style={{ display: 'flex', fontSize: 15, color: FOOTER_FG }}>
-          #sweatysunday
+          #joinhacklab
         </div>
       </div>
     </div>

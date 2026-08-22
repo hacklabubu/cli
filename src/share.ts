@@ -2,28 +2,37 @@ import { copyFile, readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-import * as clack from '@clack/prompts'
-
 import { formatTokens } from './scanners/util.js'
 import type { ShareCardData } from './share-card.js'
-import { bold, dim, info, success } from './ui.js'
+import { dim, info, success } from './ui.js'
 import { openBrowser } from './utils/openBrowser.js'
+import { waitForEnter } from './utils/waitForEnter.js'
 
 export type { ShareCardData } from './share-card.js'
 
-function displayTextCard(card: ShareCardData) {
-  const rank = card.rank > 0 ? `rank #${card.rank}` : 'unranked'
-  clack.log.step('your hacklab card')
-  clack.log.message(
-    `${bold(`@${card.handle}`)} · lv.${card.level} ${card.title} (${card.beltColor} belt)`
-  )
-  clack.log.message(
-    `${formatTokens(card.tokensTotal)} tokens · ${rank} · ${card.streak}d streak`
-  )
-  clack.log.message(`https://hacklab.so/${card.handle}`)
+const SHARE_ORIGIN = 'https://hacklab.so'
+
+/** Prefill for the X compose window. The png is already on the clipboard. */
+export function shareTweetText(
+  card: Pick<ShareCardData, 'handle' | 'tokensTotal'>
+): string {
+  return [
+    `I burned ${formatTokens(card.tokensTotal)} tokens 🔥`,
+    '',
+    '(press cmd+v)',
+    '',
+    `${SHARE_ORIGIN}/${card.handle}`,
+    '',
+    '',
+    '#joinhacklab #riplinkedin',
+  ].join('\n')
 }
 
-/** Generate the stats card and show it inline, with a text fallback. */
+function desktopCardPath(): string {
+  return join(homedir(), 'Desktop', 'hacklab-card.png')
+}
+
+/** Generate the stats card and show it inline. Text fallback is the scan receipt. */
 export async function renderShareCard(
   card: ShareCardData
 ): Promise<string | null> {
@@ -33,37 +42,29 @@ export async function renderShareCard(
     )
 
     const cardPath = await generateShareCard(card)
-
     const imgBuf = Buffer.from(await readFile(cardPath))
-    if (!displayInTerminal(imgBuf)) {
-      displayTextCard(card)
+    displayInTerminal(imgBuf)
+    try {
+      await copyFile(cardPath, desktopCardPath())
+    } catch {
+      // Desktop missing (headless/CI) — the working copy still lives in ~/.hacklab
     }
-
     return cardPath
   } catch {
-    displayTextCard(card)
     return null
   }
 }
 
-/** One opt-in gates every sharing side effect: copy, save, and opening X. */
+/** Enter opens X with the card; skip (or non-TTY) does nothing. */
 export async function promptShareOnX(
   card: ShareCardData,
   cardPath: string | null
 ): Promise<void> {
-  const shareOnX = await clack.confirm({
-    message: 'Share this card on X?',
-  })
-  if (!shareOnX || clack.isCancel(shareOnX)) return
+  console.log('')
+  const shareOnX = await waitForEnter('(press enter to share) ')
+  if (!shareOnX) return
 
   if (cardPath) {
-    const dest = join(homedir(), 'hacklab-card.png')
-    try {
-      await copyFile(cardPath, dest)
-      success(`saved to ${dest}`)
-    } catch {
-      info(dim(`could not save ${dest}`))
-    }
     try {
       const { copyToClipboard } = await import('./share-card.js')
       if (await copyToClipboard(cardPath)) {
@@ -76,8 +77,7 @@ export async function promptShareOnX(
     info(dim('image unavailable — opening X with the post text only.'))
   }
 
-  const text = encodeURIComponent(
-    `I'm a lv.${card.level} ${card.title} (${card.beltColor} belt) on @hacklab_so with ${formatTokens(card.tokensTotal)} tokens burned.\n\nWhat's your power level?\nhacklab.so/${card.handle}`
+  await openBrowser(
+    `https://x.com/intent/tweet?text=${encodeURIComponent(shareTweetText(card))}`
   )
-  await openBrowser(`https://x.com/intent/tweet?text=${text}`)
 }

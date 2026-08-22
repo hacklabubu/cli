@@ -40,8 +40,9 @@ export type CommandSpec = {
 export const COMMANDS: CommandSpec[] = [
   {
     name: 'scan',
-    summary: 'scan local AI usage and generate a share card',
-    run: () => scan(),
+    args: '[--no-daemon]',
+    summary: 'scan this machine, share the card, keep it updating',
+    run: (args) => scan(args),
   },
   {
     name: 'sync',

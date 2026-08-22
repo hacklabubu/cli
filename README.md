@@ -6,29 +6,31 @@ a card.
 
 ## Install
 
-Install, sign in, then summon the daemon:
+Install, sign in, then scan this machine:
 
 ```bash
 curl -fsSL https://hacklab.so/install | sh
 hacklab login
-hacklab daemon
+hacklab scan
 ```
 
 The script checks for Node 20+ and installs the CLI globally — that's all it
 does. After it, `hacklab` is a real command on your PATH; `login` creates or
-restores your account and `daemon` schedules the background sync. If you already
-have Node 20 or newer (including a version manager), you can skip the script:
+restores your account and `scan` uploads this machine's usage, shares the card,
+and turns on the background daemon. If you already have Node 20 or newer
+(including a version manager), you can skip the script:
 
 ```bash
 npm i -g hacklab@latest
 hacklab login
-hacklab daemon
+hacklab scan
 ```
 
 ### Windows
 
 On native Windows (PowerShell), use the `.ps1` installer instead — it checks
-for Node 20+ and installs the CLI globally, then points you at `hacklab login`:
+for Node 20+ and installs the CLI globally, then points you at `hacklab login`
+and `hacklab scan`:
 
 ```powershell
 irm https://hacklab.so/install.ps1 | iex
@@ -54,18 +56,23 @@ most once a day); update with `npm i -g hacklab@latest`.
 ## Scan
 
 ```
-scan local AI usage → card → optional X share
+login → scan this machine → upload → card → share on X → daemon on
 ```
 
-`hacklab scan` reads your local AI token usage from Claude Code, Codex, Cursor,
-OpenClaw, Hermes, OpenCode, and Grok Build. Nothing leaves your machine unless
-you share the card. Cursor users with no API key are offered one (local Cursor
-data is only an estimate). Then it renders the belt/level/token card in the
-terminal and asks whether to share it on X.
+`hacklab scan` requires `hacklab login`. It reads local AI token usage from
+Claude Code, Codex, Cursor, OpenClaw, Hermes, OpenCode, and Grok Build, uploads
+it to your profile, and draws the card from the live account (real rank, belt,
+streak — not a local postcard). Then it asks whether to share that card on X.
+A successful scan summons the daemon so the card stays current; `hacklab scan
+--no-daemon` skips the schedule, and `hacklab daemon off` tears it down.
+Skip the whole command if this computer isn't yours — it would upload that
+machine's usage to your profile. Cursor users with no API key are offered one
+(local Cursor data is only an estimate).
 
 ## Commands
 
-- `hacklab scan` — scan local AI usage and generate a share card.
+- `hacklab scan` — scan this machine, upload to your profile, share the card.
+  Requires login. Summons the daemon afterwards (`--no-daemon` to skip).
 - `hacklab sync` — re-scan local AI usage and sync it to your profile.
 - `hacklab daemon` — summon the daemon: two OS-native background jobs (launchd on
   macOS, systemd user timers on Linux, Task Scheduler tasks on Windows) so your

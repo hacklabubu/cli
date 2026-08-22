@@ -1,82 +1,112 @@
 import * as clack from '@clack/prompts'
 
-import { beltForTokens } from '../belt.js'
 import { loadConfig, resolveCursorAuth, saveConfig } from '../config.js'
+import { dailySyncInstalled, installDailySync } from '../daily-sync.js'
 import { captureEvent } from '../posthog.js'
+import { rebuildScanState } from '../scanners/incremental.js'
 import {
   type AggregateScan,
   collectToolScans,
-  computeStreaks,
   detectCursorUsage,
-  formatTokens,
   mergeToolScans,
   rescanCursorWithApi,
   type ScanResult,
 } from '../scanners/index.js'
-import { loadSession } from '../session.js'
+import { formatTokens, shortModelName } from '../scanners/util.js'
+import { loadSessionState } from '../session.js'
 import {
   promptShareOnX,
   renderShareCard,
   type ShareCardData,
 } from '../share.js'
-import { bold, dim } from '../ui.js'
+import { checkSession, ensureFreshSession, uploadTokenScan } from '../sync.js'
+import { bold, dim, error, info } from '../ui.js'
+
+const MAX_MODELS = 8
 
 const TOOL_LABELS: Record<string, string> = {
-  claude_code: 'Claude Code',
-  codex: 'Codex',
-  cursor: 'Cursor',
-  openclaw: 'OpenClaw',
-  hermes: 'Hermes',
-  opencode: 'OpenCode',
-  grok: 'Grok Build',
+  claude_code: 'claude',
+  codex: 'codex',
+  cursor: 'cursor',
+  openclaw: 'openclaw',
+  hermes: 'hermes',
+  opencode: 'opencode',
+  grok: 'grok',
 }
 
 /**
- * Scan local AI usage, render the share card, and optionally post it to X.
- * Local-only unless they choose to share. Login is optional: a handle on the
- * session goes on the card; without one the card still renders.
+ * Scan this machine, upload to the logged-in profile, draw the real card,
+ * offer the X share, and arm the daemon so the card stays true.
+ *
+ * Login is required: an anonymous card says @hacker and points at the wrong
+ * URL, which is how the viral loop dies. `--no-daemon` skips the schedule for
+ * a one-shot flex on a machine you don't want ticking.
  */
-export async function scan(): Promise<void> {
-  const spin = clack.spinner()
-  spin.start('scanning local AI tool usage')
+export async function scan(args: string[] = []): Promise<void> {
+  const noDaemon = args.includes('--no-daemon')
+
+  const sessionState = await loadSessionState()
+  if (!sessionState.session) {
+    error(sessionState.status === 'expired' ? 'login expired' : 'not logged in')
+    info(`run ${dim('hacklab login')} first`)
+    process.exit(1)
+  }
+
+  const sessionCheck = await checkSession(sessionState.session)
+  if (sessionCheck.status === 'unauthorized') {
+    error('login expired')
+    info(`run ${dim('hacklab login')} again`)
+    process.exit(1)
+  }
+  if (sessionCheck.status === 'failed') {
+    error(sessionCheck.message)
+    process.exit(1)
+  }
+
+  const session = await ensureFreshSession(sessionState.session)
+  if (!session.handle) {
+    error('no handle on this session')
+    info(`run ${dim('hacklab login')} again`)
+    process.exit(1)
+  }
+
   let results: ScanResult[]
   try {
     results = await collectToolScans()
   } catch (err) {
-    spin.stop('scan failed')
-    clack.cancel(
+    error(
       `couldn't read local AI usage: ${err instanceof Error ? err.message : String(err)}`
     )
     process.exit(1)
   }
-  spin.stop('scan complete')
 
   let scanResult = mergeToolScans(results)
-  printToolTotals(scanResult)
 
-  const rescanned = await offerCursorApiKey(results, spin)
+  const rescanned = await offerCursorApiKey(results)
   if (rescanned) {
     results = rescanned
     scanResult = mergeToolScans(results)
-    printToolTotals(scanResult)
   }
 
-  const session = await loadSession()
-  const handle = session?.handle ?? 'hacker'
-  const belt = beltForTokens(scanResult.grandTotal)
-  const streaks = computeStreaks(
-    scanResult.dailyTotals.map((entry) => entry.date)
-  )
+  let uploaded: Record<string, unknown>
+  try {
+    uploaded = await uploadTokenScan(session, scanResult, { interactive: true })
+    await rebuildScanState(results)
+  } catch (err) {
+    error(err instanceof Error ? err.message : 'sync failed')
+    process.exit(1)
+  }
+
   const card: ShareCardData = {
-    handle,
-    level: belt.level,
-    title: belt.title,
-    beltColor: belt.beltColor,
-    tokensTotal: scanResult.grandTotal,
-    rank: 0,
-    streak: streaks.current,
-    longestStreak: streaks.longest,
-    progressPercent: belt.progressPercent,
+    handle: session.handle,
+    level: Number(uploaded.level ?? 0),
+    title: String(uploaded.title ?? ''),
+    beltColor: String(uploaded.beltColor ?? 'white'),
+    tokensTotal: Number(uploaded.tokensTotal ?? scanResult.grandTotal),
+    rank: Number(uploaded.rankAfter ?? 0),
+    streak: Number(uploaded.streak ?? 0),
+    longestStreak: Number(uploaded.longestStreak ?? 0),
+    progressPercent: Number(uploaded.progressPercent ?? 0),
     estimatedCost: estimateCost(scanResult.toolTotals),
     toolBreakdown: {
       claudeCode: scanResult.toolTotals.claude_code ?? 0,
@@ -88,53 +118,95 @@ export async function scan(): Promise<void> {
       .sort((a, b) => b.tokens - a.tokens),
     dailyActivity: aggregateDailyActivity(scanResult.dailyTotals),
   }
-  const cardPath = await renderShareCard(card)
-  if (session?.handle) {
-    await promptShareOnX(card, cardPath)
-  } else {
-    clack.log.message(dim('hacklab login to put your name on the card'))
+
+  for (const line of formatScanReceipt(scanResult)) {
+    console.log(line)
   }
+  console.log('')
 
-  if (session?.handle) {
-    await captureEvent(session.handle, 'cli_scan_completed', {
-      tokens_total: scanResult.grandTotal,
-    })
-  }
-
-  clack.outro(dim('done.'))
-}
-
-function printToolTotals(scan: AggregateScan): void {
-  for (const [tool, total] of Object.entries(scan.toolTotals)) {
-    if (total > 0) {
-      clack.log.message(
-        `${(TOOL_LABELS[tool] ?? tool).padEnd(12)} ${formatTokens(total)} tokens`
-      )
+  if (!noDaemon) {
+    const existed = await dailySyncInstalled()
+    const result = await installDailySync()
+    if (result.ok && !existed) {
+      await captureEvent(session.handle, 'cli_daily_sync_installed', {
+        mechanism: result.mechanism,
+        source: 'scan',
+      })
     }
   }
-  clack.log.message(bold(`total: ${formatTokens(scan.grandTotal)} tokens`))
+
+  const cardPath = await renderShareCard(card)
+  await promptShareOnX(card, cardPath)
+
+  await captureEvent(session.handle, 'cli_scan_completed', {
+    tokens_total: Number(uploaded.tokensTotal ?? scanResult.grandTotal),
+    rank: Number(uploaded.rankAfter ?? 0),
+  })
+}
+
+export function formatScanReceipt(scan: AggregateScan): string[] {
+  const groups = Object.entries(scan.toolTotals)
+    .filter(([, total]) => total > 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([tool, total]) => ({
+      label: TOOL_LABELS[tool] ?? tool,
+      value: formatTokens(total),
+      models: Object.entries(scan.modelsByTool?.[tool] ?? {})
+        .filter(([, tokens]) => tokens > 0)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, MAX_MODELS)
+        .map(([name, tokens]) => ({
+          label: shortModelName(name).toLowerCase(),
+          value: formatTokens(tokens),
+        }))
+        .filter((row) => row.label.length > 0),
+    }))
+
+  const rows = groups.flatMap((group) => [
+    { label: group.label, value: group.value },
+    ...group.models.map((model) => ({
+      label: `  ${model.label}`,
+      value: model.value,
+    })),
+  ])
+  const aligned = alignRows(rows)
+
+  const lines = [
+    `you burned ${bold(`${formatTokens(scan.grandTotal)} tokens`)}`,
+  ]
+  let offset = 0
+  for (const group of groups) {
+    lines.push('')
+    const n = 1 + group.models.length
+    lines.push(...aligned.slice(offset, offset + n))
+    offset += n
+  }
+  return lines
+}
+
+function alignRows(rows: Array<{ label: string; value: string }>): string[] {
+  if (rows.length === 0) return []
+  const labelWidth = Math.max(...rows.map((r) => r.label.length))
+  const valueWidth = Math.max(...rows.map((r) => r.value.length))
+  return rows.map(
+    (row) =>
+      `${dim(row.label.padEnd(labelWidth))}  ${bold(row.value.padStart(valueWidth))}`
+  )
 }
 
 async function offerCursorApiKey(
-  results: ScanResult[],
-  spin: ReturnType<typeof clack.spinner>
+  results: ScanResult[]
 ): Promise<ScanResult[] | null> {
   const { apiKey } = await resolveCursorAuth()
   if (apiKey) return null
   if (!(await detectCursorUsage())) return null
-
-  clack.log.step('cursor detected')
-  clack.log.message(dim('a cursor api key gets exact counts. enter to skip.'))
 
   const entered = await clack.password({
     message: 'cursor api key (enter to skip)',
   })
   if (clack.isCancel(entered)) return null
   const key = String(entered ?? '').trim()
-  if (!key) {
-    clack.log.message(dim('skipped — cursor tokens will stay estimated.'))
-    return null
-  }
+  if (!key) return null
 
   const emailValue = await clack.text({
     message: 'cursor account email (optional — scopes a team key to just you)',
@@ -151,13 +223,11 @@ async function offerCursorApiKey(
     ...(email ? { cursorEmail: email } : {}),
   })
 
-  spin.start('fetching exact cursor usage')
   let rescanned: ScanResult[]
   try {
     rescanned = await rescanCursorWithApi(results)
   } catch (err) {
-    spin.stop('cursor api scan failed')
-    clack.log.message(
+    console.log(
       dim(
         `keeping the local estimate: ${err instanceof Error ? err.message : String(err)}`
       )
@@ -168,19 +238,15 @@ async function offerCursorApiKey(
   const status = rescanned.find((r) => r.tool === 'cursor')?.cursorScanStatus
   switch (status?.source) {
     case 'api':
-      spin.stop(`cursor: exact counts from ${status.events} usage events`)
       return rescanned
     case 'api-partial':
-      spin.stop(`cursor: ${status.events} usage events (partial)`)
-      clack.log.message(dim(`stopped early: ${status.reason}`))
+      console.log(dim(`stopped early: ${status.reason}`))
       return rescanned
     case 'api-failed':
-      spin.stop('cursor api scan failed')
-      clack.log.message(dim(`${status.reason} — keeping the local estimate.`))
+      console.log(dim(`${status.reason} — keeping the local estimate.`))
       return null
     default:
-      spin.stop('cursor api returned no usage events')
-      clack.log.message(dim('keeping the local estimate.'))
+      console.log(dim('keeping the local estimate.'))
       return null
   }
 }
