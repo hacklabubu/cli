@@ -17,7 +17,7 @@ hacklab daemon
 The script checks for Node 20+ and installs the CLI globally — that's all it
 does. After it, `hacklab` is a real command on your PATH; `login` creates or
 restores your account and `daemon` schedules the background sync. If you already
-have Node 20+ (including through a version manager), you can skip the script:
+have Node 20 or newer (including a version manager), you can skip the script:
 
 ```bash
 npm i -g hacklab@latest

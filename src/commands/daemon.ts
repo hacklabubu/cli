@@ -36,9 +36,7 @@ async function summon(): Promise<void> {
   const session = await loadSession()
   if (!session) {
     error('not logged in')
-    info(
-      `run ${dim('hacklab login')} first`
-    )
+    info(`run ${dim('hacklab login')} first`)
     process.exit(1)
   }
 
