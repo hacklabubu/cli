@@ -276,6 +276,35 @@ function usage(exitCode = 1): never {
   process.exit(exitCode)
 }
 
+// Help for `hacklab profile set` on its own. The field table is derived from
+// PROFILE_FIELDS so the help can't drift from what `set` actually accepts.
+function setUsage(exitCode = 1): never {
+  const line = 'usage: hacklab profile set <field> <value>'
+  if (exitCode === 0) info(line)
+  else error(line)
+
+  info(bold('fields:'))
+  const width = Math.max(...PROFILE_FIELDS.map((f) => f.name.length))
+  for (const field of PROFILE_FIELDS) {
+    info(`  ${dim(field.name.padEnd(width))}  ${field.hint}`)
+  }
+
+  info(bold('flags:'))
+  info(
+    `  ${dim('--file <path>')}  read the value from a file (long ${dim('readme')} content; not with a value or --clear)`
+  )
+  info(`  ${dim('--clear')}        unset the field`)
+  info(`  ${dim('--json')}         machine-readable output`)
+
+  info(bold('examples:'))
+  info(`  ${dim('hacklab profile set bio "building things"')}`)
+  info(`  ${dim('hacklab profile set readme --file profile.md')}`)
+  info(`  ${dim('hacklab profile set open-to-work yes')}`)
+  info(`  ${dim('hacklab profile set blog --clear')}`)
+  info(dim('field names accept prefixes: `set ope yes` sets open-to-work'))
+  process.exit(exitCode)
+}
+
 async function fetchProfile(session: Session): Promise<Profile> {
   const res = await fetchApi(session, ME_PATH, {
     headers: { Authorization: `Bearer ${session.token}` },
@@ -329,6 +358,12 @@ async function profileView(args: string[]): Promise<void> {
 
 async function profileSet(args: string[]): Promise<void> {
   const json = args.includes('--json')
+  // Help first: before any flag parsing or requireSession, so `--help` never
+  // touches the network. A bare `help` only counts in the field slot, so
+  // `--file help` still reads a file called help.
+  if (args[0] === 'help' || args.some((a) => a === '--help' || a === '-h')) {
+    setUsage(0)
+  }
   const clear = args.includes('--clear')
   const fileFlagIndex = args.indexOf('--file')
   const filePath = fileFlagIndex >= 0 ? args[fileFlagIndex + 1] : undefined
@@ -348,7 +383,18 @@ async function profileSet(args: string[]): Promise<void> {
   }
   const rest = args.filter((_, index) => !ignoredIndexes.has(index))
   const [fieldToken, ...valueParts] = rest
-  if (!fieldToken) usage()
+  if (!fieldToken) {
+    // A JSON consumer asked for machine output — a human help page would be
+    // unparseable, so keep the error envelope.
+    if (json) {
+      emitJsonError(
+        'invalid_fields',
+        'usage: hacklab profile set <field> <value>'
+      )
+      process.exit(1)
+    }
+    setUsage(0)
+  }
 
   const resolved = resolveCommand(fieldToken, FIELD_NAMES)
   if (resolved.kind === 'ambiguous') {
