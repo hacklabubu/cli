@@ -19,6 +19,8 @@ web app and the rest of hacklab live in the `hacklabubu/hacklab` monorepo.
 ## Key files
 
 - `CLAUDE.md` — conventions, the compute/offload rule, and shipping.
+- `DESIGN.md` — terminal UI. How new commands should look and behave. `login`
+  is the reference; do not copy old clack trees, boxed notes, or slogans.
 - `docs/offload.md` — full "don't build/test on the shared box" policy + how the
   per-machine sandbox marker works.
 
@@ -29,6 +31,10 @@ web app and the rest of hacklab live in the `hacklabubu/hacklab` monorepo.
 - Branches: feature → PR to `main`. A push to `main` publishes to npm.
 - Telemetry is opt-out (`HACKLAB_NO_TELEMETRY` / `DO_NOT_TRACK`); never collect
   token payloads or scanned content — anonymous usage only.
+- **CLI UI:** follow `DESIGN.md` for any command the user sees. Short flows
+  print with `console.log` + `src/ui.ts` (`bold`, `dim`, `link`). No intro that
+  repeats the command name, no diamond trees, no boxed notes. Commands do one
+  job (`login` = account, `scan` = card, `sync` = upload).
 
 ## Engineering approach
 
