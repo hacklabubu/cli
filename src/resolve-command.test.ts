@@ -44,7 +44,8 @@ describe('resolveCommand', () => {
     expect(resolveCommand('b')).toEqual({ kind: 'match', name: 'book' })
     // `daemon` and `drop` share `d`, so they need two letters apiece.
     expect(resolveCommand('da')).toEqual({ kind: 'match', name: 'daemon' })
-    expect(resolveCommand('dr')).toEqual({ kind: 'match', name: 'drop' })
+    expect(resolveCommand('drop')).toEqual({ kind: 'match', name: 'drop' })
+    expect(resolveCommand('drops')).toEqual({ kind: 'match', name: 'drops' })
   })
 
   it('reports every match for an ambiguous prefix', () => {
@@ -71,7 +72,11 @@ describe('resolveCommand', () => {
     // `d` stopped being drop shorthand when daemon landed.
     expect(resolveCommand('d')).toEqual({
       kind: 'ambiguous',
-      matches: ['daemon', 'drop'],
+      matches: ['daemon', 'drop', 'drops'],
+    })
+    expect(resolveCommand('dr')).toEqual({
+      kind: 'ambiguous',
+      matches: ['drop', 'drops'],
     })
   })
 

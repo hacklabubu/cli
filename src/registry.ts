@@ -3,6 +3,7 @@ import { chat } from './commands/chat.js'
 import { configCommand } from './commands/config.js'
 import { daemon } from './commands/daemon.js'
 import { drop, parseDropArgs } from './commands/drop.js'
+import { drops } from './commands/drops.js'
 import { essay } from './commands/essay.js'
 import { hackathon } from './commands/hackathon.js'
 import { hacker } from './commands/hacker.js'
@@ -73,6 +74,12 @@ export const COMMANDS: CommandSpec[] = [
       const { text, url, json } = parseDropArgs(args)
       return drop(text, url, json)
     },
+  },
+  {
+    name: 'drops',
+    args: '[--json]',
+    summary: 'list your drops (--json for agents)',
+    run: (args) => drops(args),
   },
   {
     name: 'login',
