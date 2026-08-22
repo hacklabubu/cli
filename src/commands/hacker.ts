@@ -3,15 +3,18 @@ import {
   emitJsonError,
   requireSession,
 } from '../api-client.js'
-import { type HackerCardData, renderCard } from '../card.js'
-import type { Session } from '../session.js'
+import {
+  type AgentProfile,
+  agentProfilePath,
+  renderDossier,
+} from '../dossier.js'
+import { resolveAppUrl, type Session } from '../session.js'
 import { fetchApi } from '../sync.js'
 import { dim, error, info } from '../ui.js'
 
-// `hacklab hacker <username>` — an auth-gated terminal card for humans and a
-// rich agent profile in JSON. Viewing is the whole command; managing your own
-// profile is `hacklab profile`'s job — this command is the window, that one is
-// the mirror.
+// `hacklab hacker <username>` — look someone up. Humans get the same dossier
+// as `hacklab profile`; `--json` is the agent envelope. Writing fields is
+// still `hacklab profile set`.
 
 function usage(): never {
   error('usage: hacklab hacker <username>')
@@ -31,14 +34,10 @@ export async function hacker(args: string[]): Promise<void> {
 
   let res: Response
   try {
-    const format = json ? '&format=agent' : ''
-    res = await fetchApi(
-      session,
-      `/api/hackers/${encodeURIComponent(handle)}?src=cli${format}`,
-      { headers: { Authorization: `Bearer ${session.token}` } }
-    )
+    res = await fetchApi(session, agentProfilePath(handle), {
+      headers: { Authorization: `Bearer ${session.token}` },
+    })
   } catch (err) {
-    // fetchApi rethrows a friendly "couldn't reach hacklab" message.
     const message = err instanceof Error ? err.message : String(err)
     if (json) return emitJsonError('network', message)
     error(message)
@@ -48,7 +47,7 @@ export async function hacker(args: string[]): Promise<void> {
   if (!res.ok) return handleError(res, handle, json, session)
 
   const body = (await res.json().catch(() => null)) as {
-    hacker: HackerCardData
+    hacker: AgentProfile
   } | null
   if (!body?.hacker) {
     if (json) return emitJsonError('bad_response', 'malformed response')
@@ -61,15 +60,16 @@ export async function hacker(args: string[]): Promise<void> {
     return
   }
 
+  const self =
+    !!session.handle && session.handle.toLowerCase() === handle.toLowerCase()
   console.log(
-    renderCard(body.hacker, { columns: process.stdout.columns }).join('\n')
+    renderDossier(body.hacker, {
+      self,
+      appUrl: resolveAppUrl(session),
+    }).join('\n')
   )
-  if (session.handle && session.handle.toLowerCase() === handle.toLowerCase()) {
-    info(dim(`this is you — edit with hacklab profile`))
-  }
 }
 
-/** Non-200 handling. In --json mode, relay the server's error envelope verbatim. */
 async function handleError(
   res: Response,
   handle: string,
@@ -81,7 +81,6 @@ async function handleError(
   } | null
 
   if (json) {
-    // The server already returns {schemaVersion, error:{code,message}}; relay it.
     console.log(
       JSON.stringify(
         body ?? {
@@ -105,7 +104,6 @@ async function handleError(
   process.exit(1)
 }
 
-/** Best-effort near-match from the public search endpoint. Never throws. */
 async function nearestHandle(
   session: Session,
   handle: string

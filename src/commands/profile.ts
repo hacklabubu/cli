@@ -4,6 +4,11 @@ import * as clack from '@clack/prompts'
 import { parse as parseYaml } from 'yaml'
 
 import { emitJsonError, readApiError, requireSession } from '../api-client.js'
+import {
+  type AgentProfile,
+  agentProfilePath,
+  renderDossier,
+} from '../dossier.js'
 import { ensureScheme, FALSE_WORDS, TRUE_WORDS } from '../field-normalize.js'
 import { captureEvent } from '../posthog.js'
 import { resolveCommand } from '../resolve-command.js'
@@ -382,21 +387,54 @@ async function profileView(args: string[]): Promise<void> {
   const json = args.includes('--json')
   const session = await requireSession(json)
 
-  let profile: Profile
-  try {
-    profile = await fetchProfile(session)
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    if (json) emitJsonError('error', message)
-    error(message)
-    process.exit(1)
-  }
-
   if (json) {
+    let profile: Profile
+    try {
+      profile = await fetchProfile(session)
+    } catch (err) {
+      emitJsonError('error', err instanceof Error ? err.message : String(err))
+      return
+    }
     printJson({ schemaVersion: 1, profile })
     return
   }
-  console.log(renderProfile(profile, resolveAppUrl(session)).join('\n'))
+
+  let handle = session.handle
+  if (!handle) {
+    try {
+      handle = (await fetchProfile(session)).handle
+    } catch (err) {
+      error(err instanceof Error ? err.message : String(err))
+      process.exit(1)
+    }
+  }
+
+  let res: Response
+  try {
+    res = await fetchApi(session, agentProfilePath(handle), {
+      headers: { Authorization: `Bearer ${session.token}` },
+    })
+  } catch (err) {
+    error(err instanceof Error ? err.message : String(err))
+    process.exit(1)
+  }
+  if (!res.ok) {
+    error(await readApiError(res, session))
+    process.exit(1)
+  }
+  const body = (await res.json().catch(() => null)) as {
+    hacker?: AgentProfile
+  } | null
+  if (!body?.hacker) {
+    error('got a malformed response from hacklab')
+    process.exit(1)
+  }
+  console.log(
+    renderDossier(body.hacker, {
+      self: true,
+      appUrl: resolveAppUrl(session),
+    }).join('\n')
+  )
 }
 
 async function profileSet(args: string[]): Promise<void> {

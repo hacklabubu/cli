@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { shortModelName } from './share-card.js'
+import { shortModelName } from './scanners/util.js'
 
 describe('shortModelName', () => {
   it('folds Claude ids to TIER + version, dropping vendor + date', () => {
