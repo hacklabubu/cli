@@ -9,7 +9,7 @@ import { captureEvent } from '../posthog.js'
 import { resolveCommand } from '../resolve-command.js'
 import { resolveAppUrl, type Session } from '../session.js'
 import { fetchApi } from '../sync.js'
-import { bold, dim, error, info, success } from '../ui.js'
+import { bold, dim, error, info, link, success } from '../ui.js'
 
 // `hacklab profile` — view and edit your own profile. Thin wrapper over
 // GET/PATCH /api/hackers/me: the server owns validation (lengths, URL rules);
@@ -33,15 +33,18 @@ export type ProfileField = {
   /** CLI-facing name (`hacklab profile set <name> …`). */
   name: string
   kind: ProfileFieldKind
-  /** handle kind: URL prepended to a bare handle. */
+  /** handle kind: canonical site origin, with trailing slash. */
   base?: string
+  /** handle kind: path put between `base` and a bare handle (`@`, `user/show/`). */
+  handlePath?: string
   /** handle kind: recognized site prefixes to strip before rebuilding. */
   strip?: RegExp
   hint: string
 }
 
-// Mirrors the server's parseProfilePatch surface (apps/web/lib/profile-fields.ts)
-// — the real validation boundary; this side just shapes input.
+// Mirrors the server's PROFILE_LINK_KEYS (apps/web/lib/profile-fields.ts) —
+// the real validation boundary; this side just shapes input. Same list, same
+// order, so the CLI, the settings form, and the public profile agree.
 export const PROFILE_FIELDS: ProfileField[] = [
   { key: 'displayName', name: 'name', kind: 'text', hint: 'display name' },
   { key: 'bio', name: 'bio', kind: 'text', hint: 'short bio' },
@@ -64,8 +67,11 @@ export const PROFILE_FIELDS: ProfileField[] = [
   {
     key: 'youtubeUrl',
     name: 'youtube',
-    kind: 'url',
-    hint: 'youtube.com/@channel',
+    kind: 'handle',
+    base: 'https://youtube.com/',
+    handlePath: '@',
+    strip: /^(?:https?:\/\/)?(?:www\.|m\.)?youtube\.com\//i,
+    hint: '@channel or youtube url',
   },
   {
     key: 'instagramUrl',
@@ -73,7 +79,16 @@ export const PROFILE_FIELDS: ProfileField[] = [
     kind: 'handle',
     base: 'https://instagram.com/',
     strip: /^(?:https?:\/\/)?(?:www\.)?instagram\.com\//i,
-    hint: 'handle or instagram.com url',
+    hint: 'handle or instagram url',
+  },
+  {
+    key: 'goodreadsUrl',
+    name: 'goodreads',
+    kind: 'handle',
+    base: 'https://www.goodreads.com/',
+    handlePath: 'user/show/',
+    strip: /^(?:https?:\/\/)?(?:www\.)?goodreads\.com\//i,
+    hint: 'user id or goodreads url',
   },
   {
     key: 'rssFeedUrl',
@@ -101,6 +116,7 @@ type Profile = {
   xUrl: string | null
   youtubeUrl: string | null
   instagramUrl: string | null
+  goodreadsUrl: string | null
   rssFeedUrl: string | null
   githubUsername: string | null
   openToWork: boolean
@@ -128,7 +144,9 @@ function stripAll(pattern: RegExp, value: string): string {
  * Shape one raw CLI string into the value the API expects. Empty clears the
  * field. URLs get https:// prepended when the scheme is missing; handle fields
  * additionally accept a bare handle (`@mattbratos`, `mattbratos`) or a pasted
- * profile URL and rebuild the canonical link. Real validation stays server-side.
+ * profile URL and rebuild the canonical link. A pasted URL on the canonical
+ * host keeps its path (`x.com/me/status/1`, `youtube.com/channel/UC…`) — only
+ * a bare handle gets the handle path. Real validation stays server-side.
  */
 export function normalizeFieldValue(
   field: ProfileField,
@@ -149,15 +167,21 @@ export function normalizeFieldValue(
   }
 
   if (field.kind === 'handle' && field.base && field.strip) {
-    const cleaned = stripAll(field.strip, trimmed).replace(/^@/, '')
-    if (!cleaned) return { ok: true, value: null }
-    // Anything still URL-shaped passes through as a URL; a bare handle gets
+    const onSite = field.strip.test(trimmed)
+    const cleaned = stripAll(field.strip, trimmed)
+    const handle = cleaned.replace(/^@/, '')
+    if (!handle) return { ok: true, value: null }
+    // A path on the canonical site is kept as-is under the canonical origin.
+    if (onSite && handle.includes('/')) {
+      return { ok: true, value: field.base + cleaned }
+    }
+    // Anything else URL-shaped passes through as a URL; a bare handle gets
     // the canonical base. Dots alone don't make it a URL — instagram handles
     // can contain them.
-    if (/^https?:\/\//i.test(cleaned) || cleaned.includes('/')) {
-      return { ok: true, value: ensureScheme(cleaned) }
+    if (!onSite && (/^https?:\/\//i.test(handle) || handle.includes('/'))) {
+      return { ok: true, value: ensureScheme(handle) }
     }
-    return { ok: true, value: field.base + cleaned }
+    return { ok: true, value: field.base + (field.handlePath ?? '') + handle }
   }
 
   return { ok: true, value: ensureScheme(trimmed) }
@@ -221,37 +245,45 @@ export function displayValue(field: ProfileField, value: unknown): string {
   return String(value)
 }
 
+// Login-shaped (DESIGN.md): only what's set, dim label + value, full
+// clickable URLs. No `(not set)` spreadsheet — an empty field is silence.
 export function renderProfile(profile: Profile, appUrl: string): string[] {
   const lines: string[] = []
   const title = profile.displayName
     ? `${bold(profile.displayName)} ${dim(`@${profile.handle}`)}`
     : bold(`@${profile.handle}`)
-  lines.push(`  ${title}`)
-  lines.push('')
+  lines.push(title)
 
-  const rows: { label: string; value: string; note?: string }[] =
-    PROFILE_FIELDS.filter((f) => f.name !== 'name').map((f) => ({
+  const rows: { label: string; value: string; isUrl: boolean }[] = []
+  for (const f of PROFILE_FIELDS) {
+    if (f.name === 'name') continue
+    const raw = profile[f.key as keyof Profile]
+    if (f.kind === 'boolean' ? !raw : raw == null || raw === '') continue
+    rows.push({
       label: f.name,
-      value: displayValue(f, profile[f.key as keyof Profile]),
-    }))
-  rows.push({
-    label: 'github',
-    value: profile.githubUsername
-      ? `https://github.com/${profile.githubUsername}`
-      : '',
-    note: 'from github login',
-  })
+      value: displayValue(f, raw),
+      isUrl: f.kind === 'url' || f.kind === 'handle',
+    })
+  }
+  if (profile.githubUsername) {
+    rows.push({
+      label: 'github',
+      value: `https://github.com/${profile.githubUsername}`,
+      isUrl: true,
+    })
+  }
 
-  const width = Math.max(...rows.map((r) => r.label.length))
-  for (const row of rows) {
-    const label = dim(row.label.padEnd(width))
-    const value = row.value || dim('(not set)')
-    const note = row.note ? ` ${dim(`(${row.note})`)}` : ''
-    lines.push(`  ${label}  ${value}${note}`)
+  if (rows.length > 0) {
+    lines.push('')
+    const width = Math.max(...rows.map((r) => r.label.length))
+    for (const row of rows) {
+      const value = row.isUrl ? link(row.value) : row.value
+      lines.push(`${dim(row.label.padEnd(width))}  ${value}`)
+    }
   }
 
   lines.push('')
-  lines.push(`  ${dim(`${appUrl}/${profile.handle}`)}`)
+  lines.push(link(`${appUrl}/${profile.handle}`))
   return lines
 }
 
@@ -259,50 +291,61 @@ function printJson(data: unknown) {
   console.log(JSON.stringify(data, null, 2))
 }
 
+// Help is plain console.log (DESIGN.md): no arrows, no echo of what they
+// typed, no example dump. A table of the real surface, nothing else.
+function table(rows: [string, string][]): string[] {
+  const width = Math.max(...rows.map(([k]) => k.length))
+  return rows.map(([k, v]) => `${dim(k.padEnd(width))}  ${v}`)
+}
+
 function usage(exitCode = 1): never {
-  if (exitCode === 0) info('usage: hacklab profile [view|set|edit|apply]')
-  else error('usage: hacklab profile [view|set|edit|apply]')
-  info(`  hacklab profile ${dim('view [--json]')}            show your profile`)
-  info(
-    `  hacklab profile ${dim('set <field> <value>')}      set one field (--file for long content, --clear to unset)`
-  )
-  info(
-    `  hacklab profile ${dim('edit')}                     interactive editor`
-  )
-  info(
-    `  hacklab profile ${dim('apply <file> [--json]')}    apply fields from a yaml/json file`
-  )
-  info(`  fields: ${dim(FIELD_NAMES.join(', '))}`)
+  const lines = [
+    'profile [view|set|edit|apply]',
+    '',
+    ...table([
+      ['view', 'show your profile'],
+      ['set <field> <value>', 'set one field'],
+      ['set <url>', 'x, youtube, instagram, goodreads — field from the host'],
+      ['edit', 'interactive editor'],
+      ['apply <file>', 'fields from a yaml/json file'],
+    ]),
+    '',
+    ...table([['--json', 'machine-readable (view, set, apply)']]),
+  ]
+  console.log(lines.join('\n'))
   process.exit(exitCode)
 }
 
 // Help for `hacklab profile set` on its own. The field table is derived from
 // PROFILE_FIELDS so the help can't drift from what `set` actually accepts.
-function setUsage(exitCode = 1): never {
-  const line = 'usage: hacklab profile set <field> <value>'
-  if (exitCode === 0) info(line)
-  else error(line)
+function setUsage(): never {
+  const lines = [
+    'profile set <field> <value>',
+    'profile set <url>',
+    '',
+    ...table(PROFILE_FIELDS.map((f) => [f.name, f.hint])),
+    '',
+    ...table([
+      ['--clear', 'unset'],
+      ['--file <path>', 'readme from a file'],
+      ['--json', 'machine-readable'],
+    ]),
+  ]
+  console.log(lines.join('\n'))
+  process.exit(0)
+}
 
-  info(bold('fields:'))
-  const width = Math.max(...PROFILE_FIELDS.map((f) => f.name.length))
-  for (const field of PROFILE_FIELDS) {
-    info(`  ${dim(field.name.padEnd(width))}  ${field.hint}`)
-  }
-
-  info(bold('flags:'))
-  info(
-    `  ${dim('--file <path>')}  read the value from a file (long ${dim('readme')} content; not with a value or --clear)`
+/**
+ * `hacklab profile set https://x.com/mattbratos` — no field named, so pick it
+ * from the host. Only handle fields are inferable: website, blog, and rss all
+ * live on your own domain, so a bare URL there stays explicit.
+ */
+export function inferFieldFromUrl(token: string): ProfileField | null {
+  if (!/^(?:https?:\/\/|www\.)|\.[a-z]{2,}(?:\/|$)/i.test(token)) return null
+  return (
+    PROFILE_FIELDS.find((f) => f.kind === 'handle' && f.strip?.test(token)) ??
+    null
   )
-  info(`  ${dim('--clear')}        unset the field`)
-  info(`  ${dim('--json')}         machine-readable output`)
-
-  info(bold('examples:'))
-  info(`  ${dim('hacklab profile set bio "building things"')}`)
-  info(`  ${dim('hacklab profile set readme --file profile.md')}`)
-  info(`  ${dim('hacklab profile set open-to-work yes')}`)
-  info(`  ${dim('hacklab profile set blog --clear')}`)
-  info(dim('field names accept prefixes: `set ope yes` sets open-to-work'))
-  process.exit(exitCode)
 }
 
 async function fetchProfile(session: Session): Promise<Profile> {
@@ -362,7 +405,7 @@ async function profileSet(args: string[]): Promise<void> {
   // touches the network. A bare `help` only counts in the field slot, so
   // `--file help` still reads a file called help.
   if (args[0] === 'help' || args.some((a) => a === '--help' || a === '-h')) {
-    setUsage(0)
+    setUsage()
   }
   const clear = args.includes('--clear')
   const fileFlagIndex = args.indexOf('--file')
@@ -393,10 +436,30 @@ async function profileSet(args: string[]): Promise<void> {
       )
       process.exit(1)
     }
-    setUsage(0)
+    setUsage()
   }
 
-  const resolved = resolveCommand(fieldToken, FIELD_NAMES)
+  let resolved = resolveCommand(fieldToken, FIELD_NAMES)
+  // Pasted a URL instead of a field name? Infer the field from its host and
+  // treat the URL as the value.
+  if (resolved.kind === 'unknown') {
+    const inferred = inferFieldFromUrl(fieldToken)
+    if (inferred) {
+      if (valueParts.length > 0 || filePath || clear) {
+        const message = `${fieldToken} is a value — pass the field too: profile set ${inferred.name} ${fieldToken}`
+        if (json) emitJsonError('invalid_fields', message)
+        error(message)
+        process.exit(1)
+      }
+      resolved = { kind: 'match', name: inferred.name }
+      valueParts.push(fieldToken)
+    } else if (/^(?:https?:\/\/|www\.)/i.test(fieldToken)) {
+      const message = `can't tell which field ${fieldToken} is — profile set website|blog|rss ${fieldToken}`
+      if (json) emitJsonError('invalid_fields', message)
+      error(message)
+      process.exit(1)
+    }
+  }
   if (resolved.kind === 'ambiguous') {
     if (json)
       emitJsonError(
@@ -412,8 +475,7 @@ async function profileSet(args: string[]): Promise<void> {
         'invalid_fields',
         `unknown field "${fieldToken}" (fields: ${FIELD_NAMES.join(', ')})`
       )
-    error(`unknown field: ${fieldToken}`)
-    info(`fields: ${dim(FIELD_NAMES.join(', '))}`)
+    error(`unknown field: ${fieldToken} ${dim(`(${FIELD_NAMES.join(', ')})`)}`)
     process.exit(1)
   }
   const field = PROFILE_FIELDS.find((f) => f.name === resolved.name)
@@ -449,7 +511,6 @@ async function profileSet(args: string[]): Promise<void> {
   if (!clear && !rawValue.trim()) {
     if (json) emitJsonError('invalid_fields', 'pass a value, or --clear')
     error(`pass a value, or ${dim('--clear')} to unset`)
-    info(`usage: hacklab profile set ${field.name} <${field.hint}>`)
     process.exit(1)
   }
 
@@ -483,8 +544,12 @@ async function profileSet(args: string[]): Promise<void> {
     return
   }
   const saved = displayValue(field, result.profile[field.key as keyof Profile])
-  success(`saved ${field.name}${saved ? `: ${saved}` : ' (cleared)'}`)
-  info(dim(`${resolveAppUrl(session)}/${result.profile.handle}`))
+  const shown =
+    saved && (field.kind === 'url' || field.kind === 'handle')
+      ? link(saved)
+      : saved
+  success(`saved ${field.name}${shown ? `: ${shown}` : ' (cleared)'}`)
+  console.log(link(`${resolveAppUrl(session)}/${result.profile.handle}`))
 }
 
 async function profileApply(args: string[]): Promise<void> {

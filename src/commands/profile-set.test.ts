@@ -22,6 +22,7 @@ vi.mock('../session.js', () => ({
 vi.mock('../ui.js', () => ({
   bold: (value: string) => value,
   dim: (value: string) => value,
+  link: (value: string) => value,
   error: vi.fn(),
   info: vi.fn(),
   success: vi.fn(),
@@ -176,25 +177,23 @@ describe('profile set help', () => {
     vi.clearAllMocks()
     exitCode = undefined
     lines = []
-    vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    // Help is plain console.log (no → arrows, DESIGN.md); capture it.
+    vi.spyOn(console, 'log').mockImplementation((msg: string) => {
+      lines.push(...String(msg).split('\n'))
+    })
     vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
       exitCode = code
       throw new Error('__exit__')
     }) as never)
-    const ui = await import('../ui.js')
-    vi.mocked(ui.info).mockImplementation((msg: string) => {
-      lines.push(msg)
-    })
-    vi.mocked(ui.error).mockImplementation((msg: string) => {
-      lines.push(msg)
-    })
   })
 
   it('bare `set` prints the help and exits 0', async () => {
     await expect(profile(['set'])).rejects.toThrow('__exit__')
     expect(exitCode).toBe(0)
-    expect(lines[0]).toBe('usage: hacklab profile set <field> <value>')
+    expect(lines[0]).toBe('profile set <field> <value>')
     expect(lines.join('\n')).toContain('--clear')
+    expect(lines.join('\n')).not.toContain('usage:')
+    expect(lines.join('\n')).not.toContain('example')
     expect(m.requireSession).not.toHaveBeenCalled()
     expect(m.fetchApi).not.toHaveBeenCalled()
   })
@@ -203,7 +202,7 @@ describe('profile set help', () => {
     it(`\`set ${flag}\` prints the help, exits 0, hits no network`, async () => {
       await expect(profile(['set', flag])).rejects.toThrow('__exit__')
       expect(exitCode).toBe(0)
-      expect(lines[0]).toBe('usage: hacklab profile set <field> <value>')
+      expect(lines[0]).toBe('profile set <field> <value>')
       expect(m.requireSession).not.toHaveBeenCalled()
       expect(m.fetchApi).not.toHaveBeenCalled()
     })
@@ -227,6 +226,90 @@ describe('profile set help', () => {
       'usage: hacklab profile set <field> <value>'
     )
     expect(m.requireSession).not.toHaveBeenCalled()
+    expect(m.fetchApi).not.toHaveBeenCalled()
+  })
+})
+
+// `set <url>` with no field name: the host picks the field. Website/blog/rss
+// live on your own domain, so those stay explicit.
+describe('profile set <url>', () => {
+  let exitCode: number | undefined
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    exitCode = undefined
+    vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      exitCode = code
+      throw new Error('__exit__')
+    }) as never)
+    m.requireSession.mockResolvedValue({
+      token: 'token',
+      handle: 'ada',
+      appUrl: 'https://hacklab.so',
+    })
+    m.fetchApi.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          updated: ['xUrl'],
+          profile: { handle: 'ada', xUrl: 'https://x.com/ada' },
+        })
+      )
+    )
+  })
+
+  it('infers x from an x.com URL and saves it', async () => {
+    await profile(['set', 'https://x.com/ada', '--json'])
+    expect(m.fetchApi).toHaveBeenCalledWith(
+      expect.anything(),
+      '/api/hackers/me?src=cli',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ xUrl: 'https://x.com/ada' }),
+      })
+    )
+  })
+
+  it('infers youtube from a youtube.com URL', async () => {
+    await profile(['set', 'youtube.com/@ada', '--json'])
+    expect(m.fetchApi).toHaveBeenCalledWith(
+      expect.anything(),
+      '/api/hackers/me?src=cli',
+      expect.objectContaining({
+        body: JSON.stringify({ youtubeUrl: 'https://youtube.com/@ada' }),
+      })
+    )
+  })
+
+  it('refuses to guess for an own-domain URL', async () => {
+    await expect(
+      profile(['set', 'https://bratos.xyz', '--json'])
+    ).rejects.toThrow('__exit__')
+    expect(exitCode).toBe(1)
+    expect(m.emitJsonError).toHaveBeenCalledWith(
+      'invalid_fields',
+      expect.stringContaining('website|blog|rss')
+    )
+    expect(m.fetchApi).not.toHaveBeenCalled()
+  })
+
+  it('refuses a URL token plus a value', async () => {
+    await expect(
+      profile(['set', 'https://x.com/ada', 'extra', '--json'])
+    ).rejects.toThrow('__exit__')
+    expect(exitCode).toBe(1)
+    expect(m.fetchApi).not.toHaveBeenCalled()
+  })
+
+  it('still rejects a plain unknown field name', async () => {
+    await expect(profile(['set', 'twitter', 'ada', '--json'])).rejects.toThrow(
+      '__exit__'
+    )
+    expect(exitCode).toBe(1)
+    expect(m.emitJsonError).toHaveBeenCalledWith(
+      'invalid_fields',
+      expect.stringContaining('unknown field "twitter"')
+    )
     expect(m.fetchApi).not.toHaveBeenCalled()
   })
 })
