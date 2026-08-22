@@ -165,7 +165,7 @@ describe('referral failures', () => {
       schemaVersion: 1,
       error: {
         code: 'no_handle',
-        message: 'claim a username first with `hacklab join`',
+        message: 'claim a username first with `hacklab login`',
       },
     })
     expect(captureEvent).not.toHaveBeenCalled()

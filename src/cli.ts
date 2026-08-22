@@ -8,7 +8,7 @@ import {
   maybePrintTelemetryNotice,
   shutdownTelemetry,
 } from './posthog.js'
-import { COMMANDS, findCommand } from './registry.js'
+import { findCommand } from './registry.js'
 import { resolveCommand } from './resolve-command.js'
 import {
   HACKLAB_ENVIRONMENTS,
@@ -79,35 +79,118 @@ function applyGlobalFlags(argv: string[]): string[] {
 
 const [cmd, ...args] = applyGlobalFlags(process.argv.slice(2))
 
+// The help page is a curated, hand-grouped tour of the CLI — not a dump of the
+// registry. That's deliberate: the registry stays the source of truth for
+// dispatch, while this listing groups commands by what the user is trying to do
+// and leaves out the niche ones (book, jobs, keys, scout) that would drown the
+// core flow. Adding a command to the registry does NOT add it here — decide
+// whether it belongs on the front page.
+const HELP_GROUPS: Array<{
+  title: string
+  rows: Array<{ label: string; summary: string }>
+}> = [
+  {
+    title: 'auth',
+    rows: [
+      { label: 'login', summary: 'sign in with github' },
+      { label: 'logout', summary: "clear this machine's session" },
+      { label: 'whoami', summary: "who you're logged in as" },
+    ],
+  },
+  {
+    title: 'you',
+    rows: [
+      { label: 'profile', summary: 'view and edit your profile' },
+      { label: 'referral', summary: 'your invite link' },
+    ],
+  },
+  {
+    title: 'game',
+    rows: [
+      { label: 'rules', summary: 'understand how the ranking works' },
+      { label: 'scan', summary: 'scan local AI usage and share a card' },
+      { label: 'sync', summary: 'upload local AI usage to your profile' },
+    ],
+  },
+  {
+    title: 'posting',
+    rows: [
+      { label: 'drop <message>', summary: 'post to your feed' },
+      { label: 'project', summary: 'add a project to your profile' },
+      { label: 'essay', summary: 'post and manage essays' },
+    ],
+  },
+  {
+    title: 'people',
+    rows: [
+      { label: 'chat', summary: 'the live public chat channel' },
+      { label: 'hacker', summary: 'view hacker profiles' },
+    ],
+  },
+  {
+    title: 'organisations',
+    rows: [{ label: 'org', summary: 'create and edit your organisations' }],
+  },
+  {
+    title: 'hackathons',
+    rows: [{ label: 'hackathon', summary: 'RSVP, team up, and submit' }],
+  },
+  {
+    title: 'manuals',
+    rows: [
+      { label: 'rtfm', summary: 'list all manuals' },
+      {
+        label: 'rtfm <topic>',
+        summary:
+          'print the manual: exact commands, prereqs, done-when criteria',
+      },
+      {
+        label: 'wtf',
+        summary: 'what hacklab is and how to use this cli (alias: rtfm wtf)',
+      },
+    ],
+  },
+  {
+    title: 'settings',
+    rows: [
+      { label: 'update', summary: 'update this CLI' },
+      {
+        label: 'daemon [off]',
+        summary: 'summon the background sync (off tears it down)',
+      },
+      {
+        label: 'config <key> <val>',
+        summary: 'cursor key, email, prompt-stats',
+      },
+    ],
+  },
+  {
+    title: 'flags',
+    rows: [
+      {
+        label: '--json',
+        summary: 'machine-readable output (agents: always use this)',
+      },
+      { label: '--help / -h', summary: 'show help for a command' },
+      { label: '--version / -v', summary: 'show CLI version' },
+    ],
+  },
+]
+
 function printHelp() {
   banner()
-  console.log('')
-  console.log(bold('usage:'))
-  // Align the descriptions: pad to the widest `name + args` so the summaries
-  // line up no matter how the registry grows.
-  const rows = COMMANDS.map((c) => ({
-    label: c.args ? `${c.name} ${c.args}` : c.name,
-    summary: c.summary,
-  }))
-  const width = Math.max(...rows.map((r) => r.label.length))
-  for (const { label, summary } of rows) {
-    console.log(
-      `  hacklab ${dim(label)}${' '.repeat(width - label.length)}  ${summary}`
-    )
+  // Align the summaries: pad every label to the widest one across all groups so
+  // the whole page reads as one table.
+  const width = Math.max(
+    ...HELP_GROUPS.flatMap((g) => g.rows.map((r) => r.label.length))
+  )
+  for (const { title, rows } of HELP_GROUPS) {
+    console.log('')
+    console.log(bold(`  ${title}`))
+    for (const { label, summary } of rows) {
+      console.log(`    ${dim(label.padEnd(width))}  ${summary}`)
+    }
   }
-  console.log('')
-  console.log(
-    `  ${dim('--env')} ${dim('<production|development>')}          pick the backend (default: production)`
-  )
-  console.log(
-    `  ${dim('--cursor-api-key')} ${dim('<key>')}                  exact Cursor usage (or ${dim('CURSOR_API_KEY')})`
-  )
-  console.log(
-    `  ${dim('--cursor-email')} ${dim('<email>')}                  scope a Cursor team key to you (or ${dim('CURSOR_EMAIL')})`
-  )
-  console.log(
-    `  ${dim('--share-prompt-stats')}${dim('[=stats|full]')}          answer the prompt-stats consent up front`
-  )
   console.log('')
 }
 
@@ -158,12 +241,8 @@ async function main() {
 
   // Surface a paused daily background sync (e.g. the session expired while the
   // machine was off) once, then clear the marker. Skipped for the auth commands
-  // that fix it (login/join), so we never nag mid-fix.
-  if (
-    process.stdout.isTTY &&
-    command.name !== 'login' &&
-    command.name !== 'join'
-  ) {
+  // that fix it (login), so we never nag mid-fix.
+  if (process.stdout.isTTY && command.name !== 'login') {
     const paused = await readSyncPaused()
     if (paused) {
       console.error(dim(`paused: daily background sync — ${paused}`))

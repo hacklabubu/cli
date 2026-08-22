@@ -4,7 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const m = vi.hoisted(() => ({
   confirm: vi.fn(),
-  note: vi.fn(),
+  step: vi.fn(),
+  message: vi.fn(),
   success: vi.fn(),
   info: vi.fn(),
   readFile: vi.fn(),
@@ -17,8 +18,8 @@ const m = vi.hoisted(() => ({
 
 vi.mock('@clack/prompts', () => ({
   confirm: m.confirm,
-  note: m.note,
   isCancel: () => false,
+  log: { step: m.step, message: m.message },
 }))
 vi.mock('node:fs/promises', () => ({
   readFile: m.readFile,
@@ -77,10 +78,8 @@ describe('renderShareCard', () => {
   it('shows a text card when inline images are unsupported', async () => {
     m.displayInTerminal.mockReturnValue(false)
     await renderShareCard(card)
-    expect(m.note).toHaveBeenCalledWith(
-      expect.stringContaining('@bratos'),
-      'your hacklab card'
-    )
+    expect(m.step).toHaveBeenCalledWith('your hacklab card')
+    expect(m.message).toHaveBeenCalledWith(expect.stringContaining('@bratos'))
   })
 })
 

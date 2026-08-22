@@ -88,7 +88,7 @@ describe('hacklab daemon', () => {
 
     expect(m.installDailySync).not.toHaveBeenCalled()
     expect(said(m.error, 'not logged in')).toBe(true)
-    expect(said(m.info, 'hacklab join')).toBe(true)
+    expect(said(m.info, 'hacklab login')).toBe(true)
   })
 
   it('reports a failure as a failure and prints the manual fallback', async () => {

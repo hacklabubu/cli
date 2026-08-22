@@ -281,7 +281,7 @@ export function accessErrorHint(code: string): string | null {
     return 'make someone else an admin first: `hacklab org access grant <handle> --role admin`'
   }
   if (code === 'no_such_account') {
-    return 'handles are hacklab usernames — check one with `hacklab hacker view <handle>`'
+    return 'handles are hacklab usernames — check one with `hacklab hacker <handle>`'
   }
   if (code === 'not_a_claimant') {
     return 'see who controls it with `hacklab org access list`'

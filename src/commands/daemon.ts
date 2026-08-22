@@ -18,7 +18,7 @@ import { dim, error, info, success } from '../ui.js'
  * only what your tools appended since the last run) and a full sync once a day
  * that re-scans everything and repairs whatever the tick got wrong.
  *
- * This used to be a side effect of `join` (and a flag on `sync`), which made it
+ * This used to be a side effect of signup (and a flag on `sync`), which made it
  * invisible: users couldn't tell whether anything was scheduled, and the web
  * onboarding had no step to point at. Now it's a command the onboarding flow
  * tells people to run, so arming the daemon is a thing you *did*, not a thing
@@ -36,9 +36,7 @@ async function summon(): Promise<void> {
   const session = await loadSession()
   if (!session) {
     error('not logged in')
-    info(
-      `run ${dim('hacklab join')} first (or ${dim('hacklab login')} if you already have an account)`
-    )
+    info(`run ${dim('hacklab login')} first`)
     process.exit(1)
   }
 

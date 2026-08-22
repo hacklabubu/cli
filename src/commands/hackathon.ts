@@ -33,10 +33,11 @@ const TEAM_SUBCOMMANDS = ['create', 'join', 'accept', 'reject', 'list'] as const
 
 const BASE = '/api/hackathons'
 
-function usage(): never {
-  error(
+function usage(exitCode = 1): never {
+  const header =
     'usage: hacklab hackathon <list|view|rsvp|invite|team|track|tracks|submit|export>'
-  )
+  if (exitCode === 0) info(header)
+  else error(header)
   info(`  hacklab hackathon ${dim('list [--past] [--json]')}`)
   info(`  hacklab hackathon ${dim('view <slug> [--json]')}`)
   info(`  hacklab hackathon ${dim('rsvp <slug> [--token <t>] [--json]')}`)
@@ -61,7 +62,7 @@ function usage(): never {
   info(
     `  hacklab hackathon ${dim('export <slug> [--format csv|json] [--out <path>] [--json]')}`
   )
-  process.exit(1)
+  process.exit(exitCode)
 }
 
 function teamUsage(): never {
@@ -1062,10 +1063,27 @@ async function hackathonExport(args: string[]): Promise<void> {
 export async function hackathon(args: string[] = []): Promise<void> {
   const [subToken, ...rest] = args
 
-  // Bare `hacklab hackathon` (or a lone `--json`) is a safe read-only default:
-  // list the events, same spirit as `hacklab org`/`hacklab hacker`'s bare mode.
-  if (!subToken || subToken.startsWith('-')) {
-    return hackathonList(args)
+  // Bare `hacklab hackathon` prints the help — listing the events is an
+  // explicit `list` away. `help`/`--help`/`-h` land here too, exiting 0.
+  if (
+    !subToken ||
+    subToken === 'help' ||
+    subToken === '--help' ||
+    subToken === '-h'
+  ) {
+    usage(0)
+  }
+  // Any other flag with no subcommand (e.g. a lone `--json`) is a usage error.
+  if (subToken.startsWith('-')) {
+    usage()
+  }
+
+  // `teams` is a natural slip for `team list`, and nothing else resolves from
+  // it, so point straight there instead of a bare "unknown subcommand".
+  if (subToken === 'teams') {
+    error('unknown subcommand: hackathon teams')
+    hint(`did you mean ${dim('hacklab hackathon team list')}?`)
+    process.exit(1)
   }
 
   const resolved = resolveCommand(subToken, SUBCOMMANDS)

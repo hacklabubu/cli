@@ -1,27 +1,29 @@
 import { createInterface } from 'node:readline'
 
 /**
- * Print `prompt` and block until the user presses Enter. Resolves true if we
- * actually waited for the keypress, false if we didn't (and the caller should
- * just carry on).
- *
- * Never hangs an unattended run: a non-TTY stdin (CI, piped input, a `< /dev/null`
- * invocation) returns immediately, as does an EOF/close on the stream. Callers
- * treat this as a courtesy pause, not a gate — whatever comes next must still
- * happen when the answer is false.
+ * Print `prompt` and block until Enter. Resolves true if we waited, false if
+ * stdin is not a TTY, the wait was aborted, or the stream closed.
  */
-export async function waitForEnter(prompt: string): Promise<boolean> {
+export async function waitForEnter(
+  prompt: string,
+  signal?: AbortSignal
+): Promise<boolean> {
   if (!process.stdin.isTTY) return false
+  if (signal?.aborted) return false
 
   return await new Promise<boolean>((resolve) => {
+    let settled = false
     const rl = createInterface({ input: process.stdin, output: process.stdout })
-    rl.question(prompt, () => {
+    const finish = (value: boolean) => {
+      if (settled) return
+      settled = true
+      signal?.removeEventListener('abort', onAbort)
       rl.close()
-      resolve(true)
-    })
-    // EOF (or the stream closing under us) fires 'close' without ever answering
-    // the question. The first resolve wins, so the normal path above is
-    // unaffected — this only rescues the flow from waiting forever.
-    rl.once('close', () => resolve(false))
+      resolve(value)
+    }
+    const onAbort = () => finish(false)
+    rl.question(prompt, () => finish(true))
+    rl.once('close', () => finish(false))
+    signal?.addEventListener('abort', onAbort)
   })
 }

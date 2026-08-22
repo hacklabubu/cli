@@ -27,7 +27,7 @@ vi.mock('../ui.js', () => ({
   success: vi.fn(),
 }))
 
-import { profile } from './profile.js'
+import { PROFILE_FIELDS, profile } from './profile.js'
 
 describe('profile set readme --file', () => {
   beforeEach(() => {
@@ -162,6 +162,71 @@ describe('profile set --file negative paths', () => {
       'read_failed',
       'could not read locked.md'
     )
+    expect(m.fetchApi).not.toHaveBeenCalled()
+  })
+})
+
+// `set` with nothing to set is a help request, not a failure — except under
+// --json, where a consumer needs an error envelope, not a human help page.
+describe('profile set help', () => {
+  let exitCode: number | undefined
+  let lines: string[]
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    exitCode = undefined
+    lines = []
+    vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      exitCode = code
+      throw new Error('__exit__')
+    }) as never)
+    const ui = await import('../ui.js')
+    vi.mocked(ui.info).mockImplementation((msg: string) => {
+      lines.push(msg)
+    })
+    vi.mocked(ui.error).mockImplementation((msg: string) => {
+      lines.push(msg)
+    })
+  })
+
+  it('bare `set` prints the help and exits 0', async () => {
+    await expect(profile(['set'])).rejects.toThrow('__exit__')
+    expect(exitCode).toBe(0)
+    expect(lines[0]).toBe('usage: hacklab profile set <field> <value>')
+    expect(lines.join('\n')).toContain('--clear')
+    expect(m.requireSession).not.toHaveBeenCalled()
+    expect(m.fetchApi).not.toHaveBeenCalled()
+  })
+
+  for (const flag of ['--help', '-h', 'help']) {
+    it(`\`set ${flag}\` prints the help, exits 0, hits no network`, async () => {
+      await expect(profile(['set', flag])).rejects.toThrow('__exit__')
+      expect(exitCode).toBe(0)
+      expect(lines[0]).toBe('usage: hacklab profile set <field> <value>')
+      expect(m.requireSession).not.toHaveBeenCalled()
+      expect(m.fetchApi).not.toHaveBeenCalled()
+    })
+  }
+
+  // Loop over the table so a new field needs no test edit.
+  it('lists every field with its hint', async () => {
+    await expect(profile(['set'])).rejects.toThrow('__exit__')
+    const output = lines.join('\n')
+    for (const field of PROFILE_FIELDS) {
+      expect(output).toContain(field.name)
+      expect(output).toContain(field.hint)
+    }
+  })
+
+  it('--json with no field → invalid_fields, exits 1', async () => {
+    await expect(profile(['set', '--json'])).rejects.toThrow('__exit__')
+    expect(exitCode).toBe(1)
+    expect(m.emitJsonError).toHaveBeenCalledWith(
+      'invalid_fields',
+      'usage: hacklab profile set <field> <value>'
+    )
+    expect(m.requireSession).not.toHaveBeenCalled()
     expect(m.fetchApi).not.toHaveBeenCalled()
   })
 })

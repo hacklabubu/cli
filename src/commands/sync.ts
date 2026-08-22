@@ -309,7 +309,7 @@ async function interactiveSync() {
   let result: Awaited<ReturnType<typeof runSync>>
   try {
     // Manual `hacklab sync` — tag the upload as interactive so the backend counts
-    // it as user activity (the daily background job and join's upload don't).
+    // it as user activity (the daily background job doesn't).
     result = await runSync(session, { interactive: true, promptConsent })
   } catch (e) {
     error(e instanceof Error ? e.message : 'sync failed')
@@ -379,7 +379,7 @@ async function interactiveSync() {
     if (reported > 0 && matched === 0) {
       info(
         dim(
-          `  none of your ${reported} local repos matched a hacklab project — run \`hacklab brag\` in one`
+          `  none of your ${reported} local repos matched a hacklab project — run \`hacklab project add\` in one`
         )
       )
     } else if (matched > 0) {

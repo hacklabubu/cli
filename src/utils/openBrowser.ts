@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process'
  * reported by `spawn` as an asynchronous `'error'` event — NOT a thrown
  * exception — so a try/catch alone doesn't catch it, and with no listener Node
  * escalates it to a fatal unhandled error. On a headless box that would kill the
- * whole login/join flow right after we've printed the URL to visit manually.
+ * whole login flow right after we've printed the URL to visit manually.
  * We listen for `'error'` (failure) and `'spawn'` (success) so exactly one
  * settles the promise and the ENOENT is swallowed.
  */

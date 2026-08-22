@@ -4,7 +4,7 @@
 // (drizzle/pg/etc.), so we copy the small, stable curve here.
 //
 // One curve: xp(level) = 23 × level^3.32 up to level 100, exponential above.
-// Pyro XP = tokens / 1000. For a brand-new join, hacker + mason XP are 0, so
+// Pyro XP = tokens / 1000. For a brand-new account, hacker + mason XP are 0, so
 // belt XP == pyro XP — which is exactly what the server computes right after
 // the first sync. Kept in sync via belt.test.ts (anchored to the known points).
 
@@ -151,7 +151,7 @@ export type BeltProgress = {
   progressPercent: number
 }
 
-/** Belt info for a raw token total (pyro-only — correct for a fresh join). */
+/** Belt info for a raw token total (pyro-only — correct for a fresh account). */
 export function beltForTokens(tokensTotal: number): BeltProgress {
   const xp = tokensToXp(tokensTotal)
   const level = getLevel(xp)
