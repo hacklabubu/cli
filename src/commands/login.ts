@@ -18,6 +18,41 @@ type Credentials = {
   expiresAt?: string
 }
 
+/**
+ * How the device-code beat is drawn.
+ *
+ * There is one device flow, and two commands that wear it: bare `login`, whose
+ * output is DESIGN.md's reference block, and `setup`, which draws the same code
+ * and URL on its step rail and rubs the block out once auth lands. Only the
+ * drawing is swappable — the Enter-wait ↔ poll race below is identical either
+ * way, because "authorize on your phone and never touch Enter" has to keep
+ * working.
+ */
+export type DeviceCodeRenderer = {
+  /** Draw the code + URL beat. Returns the prompt for the Enter pause. */
+  show(code: { userCode: string; verificationUri: string }): string
+  /**
+   * Called once the poll settles, success or failure. A renderer that redraws
+   * cleans up here; `enterPressed` tells it whether the user's Enter already
+   * moved the cursor off the prompt row.
+   */
+  done(outcome: { enterPressed: boolean }): void
+}
+
+/** DESIGN.md's reference block: dim label, bold code, blank beat, URL. */
+const plainDeviceCode: DeviceCodeRenderer = {
+  show({ userCode, verificationUri }) {
+    console.log(dim('copy code'))
+    console.log(bold(userCode))
+    console.log('')
+    console.log(link(verificationUri))
+    return '(press enter) '
+  },
+  done() {
+    // Nothing to undo: the block is meant to stay on screen.
+  },
+}
+
 export type LoginOutcome = {
   /** The session as it now stands (already persisted by `performLogin`). */
   session: Session
@@ -37,13 +72,14 @@ export type LoginOutcome = {
  * The shared implementation behind both `hacklab login` and `hacklab setup` —
  * there is exactly one device flow (the code/URL beat with the parallel
  * Enter-wait ↔ poll race), and both front doors go through it. `claimAttempts`
- * is how hard the handle claim tries before giving up.
+ * is how hard the handle claim tries before giving up, and `deviceCode` swaps
+ * the code/URL presentation without touching the race behind it.
  */
 export async function performLogin(
-  opts: { claimAttempts?: number } = {}
+  opts: { claimAttempts?: number; deviceCode?: DeviceCodeRenderer } = {}
 ): Promise<LoginOutcome> {
   const appUrl = getAppUrl()
-  const creds = await loginViaDevice(appUrl)
+  const creds = await loginViaDevice(appUrl, opts.deviceCode)
 
   const outcome = await ensureHandleClaimed(
     {
@@ -128,7 +164,10 @@ export async function login(): Promise<void> {
   }
 }
 
-async function loginViaDevice(appUrl: string): Promise<Credentials> {
+async function loginViaDevice(
+  appUrl: string,
+  render: DeviceCodeRenderer = plainDeviceCode
+): Promise<Credentials> {
   let startRes: Response
   try {
     startRes = await fetch(`${appUrl}/api/cli/device/start`, {
@@ -156,15 +195,16 @@ async function loginViaDevice(appUrl: string): Promise<Credentials> {
   // Show the code and URL first. Poll starts immediately so clicking the
   // link (instead of Enter) still finishes login. Enter only opens a browser.
   const openUrl = start.verificationUriComplete ?? start.verificationUri
-  console.log(dim('copy code'))
-  console.log(bold(start.userCode))
-  console.log('')
-  console.log(link(start.verificationUri))
+  const enterPrompt = render.show({
+    userCode: start.userCode,
+    verificationUri: start.verificationUri,
+  })
 
   const abort = new AbortController()
   if (!process.stdin.isTTY) void openBrowser(openUrl)
-  const enter = waitForEnter('(press enter) ', abort.signal).then((pressed) => {
+  const enter = waitForEnter(enterPrompt, abort.signal).then((pressed) => {
     if (pressed) void openBrowser(openUrl)
+    return pressed
   })
 
   try {
@@ -176,7 +216,7 @@ async function loginViaDevice(appUrl: string): Promise<Credentials> {
     )
   } finally {
     abort.abort()
-    await enter
+    render.done({ enterPressed: await enter })
   }
 }
 

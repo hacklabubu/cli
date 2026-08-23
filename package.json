@@ -1,6 +1,6 @@
 {
   "name": "hacklab",
-  "version": "0.15.1",
+  "version": "0.16.0",
   "private": false,
   "publishConfig": {
     "access": "public"
@@ -17,9 +17,7 @@
   "bin": {
     "hacklab": "./dist/index.js"
   },
-  "files": [
-    "dist"
-  ],
+  "files": ["dist"],
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.json && chmod +x dist/index.js",
     "prepack": "npm run build",
