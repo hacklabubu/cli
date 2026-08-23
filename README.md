@@ -288,6 +288,9 @@ you logged in.
   the full precedence.
 - `HACKLAB_SESSION_PATH` — custom path for the session file
   (default `~/.hacklab/session.json`).
+- `HACKLAB_DEV` — set to `1` to mark this as a developer run. `hacklab whoami`
+  then always prints the backend host, including production (which it otherwise
+  leaves out as noise). `0`, `false`, empty and unset are off.
 - `HACKLAB_NO_UPDATE_CHECK` — set to any value to disable the once-a-day
   "newer version available" nudge. The check is already skipped for piped /
   scripted / `--json` runs; this turns it off for interactive runs too.

@@ -33,8 +33,13 @@ const PROD = {
   savedAt: '2026-06-20T00:00:00.000Z',
 }
 
+const originalDev = process.env.HACKLAB_DEV
+
 beforeEach(() => {
   vi.clearAllMocks()
+  // Every test starts as a plain user run — a developer's shell may export
+  // HACKLAB_DEV, and that must not change what these tests see.
+  delete process.env.HACKLAB_DEV
   m.resolveAppUrl.mockImplementation(
     (session?: { appUrl?: string } | null) =>
       session?.appUrl?.replace(/\/$/, '') ?? 'https://hacklab.so'
@@ -43,6 +48,8 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  if (originalDev === undefined) delete process.env.HACKLAB_DEV
+  else process.env.HACKLAB_DEV = originalDev
 })
 
 describe('whoami', () => {
@@ -59,7 +66,7 @@ describe('whoami', () => {
     )
   })
 
-  it('omits the server on production', async () => {
+  it('omits the server on production when HACKLAB_DEV is unset', async () => {
     m.loadSession.mockResolvedValue(PROD)
     m.resolveAppUrl.mockReturnValue('https://hacklab.so')
 
@@ -68,6 +75,32 @@ describe('whoami', () => {
     expect(
       m.info.mock.calls.some((c) => String(c[0]).includes('hacklab.so'))
     ).toBe(false)
+  })
+
+  it('omits the server on production when HACKLAB_DEV is off', async () => {
+    m.loadSession.mockResolvedValue(PROD)
+    m.resolveAppUrl.mockReturnValue('https://hacklab.so')
+
+    for (const value of ['0', 'false', '']) {
+      m.info.mockClear()
+      process.env.HACKLAB_DEV = value
+
+      await whoami()
+
+      expect(
+        m.info.mock.calls.some((c) => String(c[0]).includes('hacklab.so'))
+      ).toBe(false)
+    }
+  })
+
+  it('shows the production server when HACKLAB_DEV is set', async () => {
+    process.env.HACKLAB_DEV = '1'
+    m.loadSession.mockResolvedValue(PROD)
+    m.resolveAppUrl.mockReturnValue('https://hacklab.so')
+
+    await whoami()
+
+    expect(m.info).toHaveBeenCalledWith('https://hacklab.so')
   })
 
   it('shows the server when talking to local development', async () => {
