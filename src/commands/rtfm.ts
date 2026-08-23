@@ -1,5 +1,14 @@
 import { bold, dim, error, info } from '../ui.js'
 
+/**
+ * The one line a user (or `hacklab setup`) hands an agent to start profile
+ * setup. Everything the agent needs is behind `hacklab rtfm profile-setup`, so
+ * this stays short enough to read and retype. The web onboarding shows the same
+ * sentence verbatim (hacklabubu/hacklab) — change both together.
+ */
+export const PROFILE_SETUP_PROMPT =
+  'yo setup my profile on hacklab. to see how, run hacklab rtfm profile-setup'
+
 type Manual = {
   name: string
   summary: string

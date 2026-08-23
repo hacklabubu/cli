@@ -5,6 +5,11 @@
     "file": "src/commands/setup.ts"
   },
   {
+    "event_name": "cli_agent_handoff",
+    "event_description": "How the end of `hacklab setup` handed off profile setup to a coding agent. Props: agent (the CLI binary found: claude|codex|grok; absent when none was), outcome — launched (the agent was started interactively), declined (an agent was offered and the user skipped it), unavailable (no agent CLI on PATH, or a non-TTY run), spawn_failed (the agent was found but would not start).",
+    "file": "src/commands/setup.ts"
+  },
+  {
     "event_name": "cli_login_completed",
     "event_description": "A user successfully authenticated via GitHub device flow and a session was saved.",
     "file": "src/commands/login.ts"

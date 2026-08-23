@@ -1,5 +1,10 @@
 import * as clack from '@clack/prompts'
 
+import {
+  findAgentCli,
+  launchAgentCli,
+  notifyAgentHandoff,
+} from '../agent-handoff.js'
 import { dailySyncState, installDailySync } from '../daily-sync.js'
 import { captureEvent, identifyUser } from '../posthog.js'
 import {
@@ -21,13 +26,16 @@ import {
 } from '../session.js'
 import { scanConsentedPromptStats, uploadTokenScan } from '../sync.js'
 import { bold, dim, error, info, success } from '../ui.js'
+import { waitForBareEnter } from '../utils/waitForEnter.js'
 import { ensureHandleClaimed, performLogin } from './login.js'
+import { PROFILE_SETUP_PROMPT } from './rtfm.js'
 import { formatScanReceipt } from './scan.js'
 
 /**
  * `hacklab setup` — the front door.
  *
- *   scan → anonymous rank → GitHub auth → one consent question → upload → daemon
+ *   scan → anonymous rank → GitHub auth → one consent question → upload →
+ *   daemon → hand the profile work to a coding agent
  *
  * The one deliberate composite command in the CLI (DESIGN.md's "one job per
  * command" carries a recorded exception for it): face-to-face testing showed
@@ -188,9 +196,8 @@ export async function setup(): Promise<void> {
   success(
     session.handle ? `you're in — ${appUrl}/${session.handle}` : "you're in"
   )
-  clack.outro(
-    dim('head back to your browser — the page will move on by itself')
-  )
+
+  const handoff = await offerAgentHandoff(session, appUrl)
 
   if (session.handle) {
     await identifyUser(session.handle, {
@@ -206,7 +213,87 @@ export async function setup(): Promise<void> {
       ...((rank ?? previewRank) ? { rank: rank ?? previewRank } : {}),
       prompt_consent: consent,
     })
+    await captureEvent(session.handle, 'cli_agent_handoff', {
+      ...(handoff.agent ? { agent: handoff.agent } : {}),
+      outcome: handoff.outcome,
+    })
   }
+}
+
+type HandoffResult = {
+  outcome: 'launched' | 'declined' | 'unavailable' | 'spawn_failed'
+  agent?: string
+}
+
+/**
+ * The last beat of setup: offer to hand the profile work to a coding agent the
+ * user already has installed, and close the flow.
+ *
+ * Every path ends with one closing line, and the browser line is printed before
+ * the agent takes over the terminal — once it does, nothing we print afterwards
+ * would be read in time. When no agent runs, the backend is told so the web
+ * onboarding switches to the manual paste-the-prompt step; a launched agent
+ * needs no such call, because its own `hacklab ping` is the signal.
+ */
+async function offerAgentHandoff(
+  session: Session,
+  appUrl: string
+): Promise<HandoffResult> {
+  const browserLine =
+    'head back to your browser — the page will move on by itself'
+  const agent = process.stdin.isTTY ? findAgentCli() : null
+
+  if (!agent) {
+    await notifyAgentHandoff(appUrl, session.token, 'unavailable')
+    if (process.stdin.isTTY) printManualPrompt()
+    clack.outro(dim(browserLine))
+    return { outcome: 'unavailable' }
+  }
+
+  console.log('')
+  console.log(`found ${bold(agent.name)} — it can set up your profile now`)
+  console.log(
+    dim('it runs here in your terminal, and you approve what it does')
+  )
+  const accepted = await waitForBareEnter(
+    `(press enter to hand off) ${dim('· anything else skips')} `
+  )
+
+  if (!accepted) {
+    await notifyAgentHandoff(appUrl, session.token, 'declined')
+    printManualPrompt()
+    clack.outro(dim(browserLine))
+    return { outcome: 'declined', agent: agent.bin }
+  }
+
+  console.log('')
+  console.log(dim(browserLine))
+  console.log('')
+
+  if (!launchAgentCli(agent, PROFILE_SETUP_PROMPT)) {
+    await notifyAgentHandoff(appUrl, session.token, 'unavailable')
+    console.log('')
+    console.log(`couldn't start ${agent.name}`)
+    printManualPrompt()
+    clack.outro(dim(session.handle ? `${appUrl}/${session.handle}` : appUrl))
+    return { outcome: 'spawn_failed', agent: agent.bin }
+  }
+
+  clack.outro(
+    dim(
+      session.handle
+        ? `${agent.name} finished — ${appUrl}/${session.handle}`
+        : `${agent.name} finished`
+    )
+  )
+  return { outcome: 'launched', agent: agent.bin }
+}
+
+/** The fallback when no agent runs here: the same line the web page shows. */
+function printManualPrompt(): void {
+  console.log('')
+  console.log(dim("paste this into your agent when you're ready:"))
+  console.log(`  ${bold(PROFILE_SETUP_PROMPT)}`)
 }
 
 /**

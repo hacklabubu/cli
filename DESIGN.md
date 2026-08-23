@@ -55,7 +55,8 @@ local usage and makes a card. `sync` uploads. Don't glue those into a ritual.
 separate commands — face-to-face, people who had just installed the CLI read
 `login` then `scan` as unrelated chores and stalled between them, so `hacklab
 setup` runs the whole first run as one flow (scan → rank → GitHub → one consent
-question → upload → background sync). It earns the exception because it is the
+question → upload → background sync → offer to hand profile setup to a coding
+agent the user already has). It earns the exception because it is the
 *first* run and nothing else: it composes existing commands rather than
 duplicating them (it calls into `login`'s device flow and `scan`'s receipt), it
 skips any stage already done and stops outright when there is nothing left, and
