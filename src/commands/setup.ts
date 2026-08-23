@@ -14,10 +14,12 @@ import {
 } from '../prompt-consent.js'
 import { rebuildScanState } from '../scanners/incremental.js'
 import {
+  type AggregateScan,
   collectToolScans,
   mergeToolScans,
   type ScanResult,
 } from '../scanners/index.js'
+import { formatTokens } from '../scanners/util.js'
 import {
   loadSession,
   resolveAppUrl,
@@ -25,11 +27,12 @@ import {
   saveSession,
 } from '../session.js'
 import { scanConsentedPromptStats, uploadTokenScan } from '../sync.js'
-import { bold, dim, error, info, success } from '../ui.js'
+import { bold, dim } from '../ui.js'
 import { waitForBareEnter } from '../utils/waitForEnter.js'
 import { ensureHandleClaimed, performLogin } from './login.js'
 import { PROFILE_SETUP_PROMPT } from './rtfm.js'
-import { formatScanReceipt } from './scan.js'
+import { TOOL_LABELS } from './scan.js'
+import { canRedraw, railAgentOffer, railDeviceCode } from './setup-rail.js'
 
 /**
  * `hacklab setup` — the front door.
@@ -43,15 +46,21 @@ import { formatScanReceipt } from './scan.js'
  * has never used hacklab, and people stalled between them. Each stage still
  * degrades on its own terms, and every piece remains its own command for anyone
  * who wants to re-run just that piece.
+ *
+ * It is also the one command allowed clack chrome, and it spends that allowance
+ * on being *one* flow: every line goes on the step rail, and every stage ends as
+ * a single line naming the stage and how it went. What a stage shows while it is
+ * working — the per-tool receipt, the GitHub code — has done its job by the time
+ * the next stage starts, so it comes back off the screen. `setup-rail.ts` holds
+ * the two blocks clack has no widget for.
  */
 export async function setup(): Promise<void> {
   clack.intro(bold('Hacklab CLI setup'))
-  console.log(
+  clack.log.message(
     dim(
       'scans your AI usage, connects GitHub, and starts a background usage sync'
     )
   )
-  console.log('')
 
   const existing = await loadSession()
   const appUrl = resolveAppUrl(existing)
@@ -61,40 +70,53 @@ export async function setup(): Promise<void> {
   // A finished account AND a live daemon means there is genuinely nothing to
   // do. Anything less falls through and skips only the stages already done.
   if (existing?.handle && existing.usernameClaimed && syncState === 'current') {
-    console.log(`already set up — you're ${bold(`@${existing.handle}`)}`)
-    console.log(
-      dim('re-scan with `hacklab scan`, re-upload with `hacklab sync`')
+    clack.log.step(`already set up — you're ${bold(`@${existing.handle}`)}`)
+    clack.log.message(
+      dim('re-scan with `hacklab scan`, re-upload with `hacklab sync`'),
+      { spacing: 0 }
     )
     clack.outro(dim(`${appUrl}/${existing.handle}`))
     return
   }
 
   // ── Scan (before auth — an anonymous scan needs no account) ──────────────
-  const spin = clack.spinner()
-  spin.start('scanning local AI tool usage')
+  const scanStep = startScanStep()
   let results: ScanResult[]
   try {
     results = await collectToolScans()
   } catch (err) {
-    spin.stop('scan failed')
+    scanStep.failed('scan failed')
     clack.cancel(
       `couldn't read local AI usage: ${err instanceof Error ? err.message : String(err)}`
     )
     process.exit(1)
   }
-  spin.stop('scan complete')
 
   const scan = mergeToolScans(results)
 
-  if (scan.grandTotal > 0) {
-    console.log('')
-    for (const line of formatScanReceipt(scan)) console.log(line)
-    console.log('')
-  } else {
+  // The per-tool tally is worth reading while the rank call is in flight and
+  // worth nothing after it — `hacklab scan` is where it lives permanently, and
+  // the share card carries it onward. So it goes inside the step, and leaves
+  // with it.
+  for (const line of scanNotes(scan)) scanStep.note(line)
+
+  // ── Anonymous rank preview (a hook, never a gate) ────────────────────────
+  const preview =
+    scan.grandTotal > 0 ? await fetchRankPreview(appUrl, scan.grandTotal) : null
+
+  scanStep.done(scanSummary(scan))
+  if (preview) {
+    clack.log.step(
+      `you'd be #${preview.rank} of ${preview.ofTotal.toLocaleString('en-US')} hackers`
+    )
+  }
+
+  if (scan.grandTotal === 0) {
     // No hard floor: a hackathon-door signup on a fresh laptop is exactly who
-    // this flow is for, so the default is yes.
+    // this flow is for, so the default is yes. The step above already said
+    // there is nothing here, so the question only has to be the question.
     const cont = await clack.confirm({
-      message: 'No AI usage found on this machine. Set up your account anyway?',
+      message: 'set up your account anyway?',
       initialValue: true,
     })
     if (clack.isCancel(cont) || !cont) {
@@ -102,19 +124,6 @@ export async function setup(): Promise<void> {
         dim('come back after some Claude Code / Codex / Cursor sessions.')
       )
       return
-    }
-  }
-
-  // ── Anonymous rank preview (a hook, never a gate) ────────────────────────
-  let previewRank: number | undefined
-  if (scan.grandTotal > 0) {
-    const preview = await fetchRankPreview(appUrl, scan.grandTotal)
-    if (preview) {
-      previewRank = preview.rank
-      console.log(
-        `${bold(`you'd be #${preview.rank}`)} of ${preview.ofTotal} hackers`
-      )
-      console.log('')
     }
   }
 
@@ -128,15 +137,14 @@ export async function setup(): Promise<void> {
     if (outcome.session !== existing) await saveSession(outcome.session)
     session = outcome.session
     claimFailed = outcome.claimFailed
-    console.log(
-      session.handle
-        ? `signed in as @${session.handle}`
-        : `signed in as ${session.email}`
-    )
-    console.log('')
   } else {
     try {
-      const outcome = await performLogin({ claimAttempts: 2 })
+      const outcome = await performLogin({
+        claimAttempts: 2,
+        // The rail block ends by redrawing itself away; with no terminal to
+        // redraw, `login`'s plain block is the honest thing to print.
+        ...(canRedraw() ? { deviceCode: railDeviceCode() } : {}),
+      })
       session = outcome.session
       claimFailed = outcome.claimFailed
     } catch (err) {
@@ -145,27 +153,27 @@ export async function setup(): Promise<void> {
       )
       process.exit(1)
     }
-    console.log('')
-    console.log(
-      session.handle
-        ? `signed in as @${session.handle}`
-        : `signed in as ${session.email}`
-    )
-    console.log('')
   }
+  clack.log.step(
+    session.handle
+      ? `github · signed in as @${session.handle}`
+      : `github · signed in as ${session.email}`
+  )
 
   // A lost claim must never be silent here: the web onboarding page polls
   // `username_claimed` and would sit spinning forever.
   if (claimFailed) {
-    error("couldn't finish claiming your handle")
-    info(dim('run `hacklab login` again to finish it'))
-    console.log('')
+    clack.log.error("couldn't finish claiming your handle")
+    clack.log.message(dim('run `hacklab login` again to finish it'), {
+      spacing: 0,
+    })
   }
 
   // ── The one question in the flow ─────────────────────────────────────────
   const consent = await askConversationConsent()
 
   // ── Upload ───────────────────────────────────────────────────────────────
+  const spin = clack.spinner()
   spin.start('saving your usage')
   let rank: number | undefined
   try {
@@ -178,22 +186,22 @@ export async function setup(): Promise<void> {
     // A full scan just went out, so re-base the minutely tick's incremental
     // state on it — otherwise the first tick re-uploads the whole history.
     await rebuildScanState(results)
-    spin.stop('usage saved')
     const after = uploaded.rankAfter
     if (typeof after === 'number' && Number.isFinite(after)) rank = after
-    if (rank) console.log(`rank: #${rank}`)
+    spin.stop(rank ? `synced · rank #${rank}` : 'synced')
   } catch {
     // Never fatal — the account exists, and `hacklab sync` is the recovery.
     spin.stop('usage sync deferred')
-    console.log(dim('run `hacklab sync` later to upload it'))
+    clack.log.message(dim('run `hacklab sync` later to upload it'), {
+      spacing: 0,
+    })
   }
 
   // ── Daemon (silent; the intro line is the whole disclosure) ──────────────
   await installDaemon(syncState, session.handle)
 
   // ── Tail ─────────────────────────────────────────────────────────────────
-  console.log('')
-  success(
+  clack.log.success(
     session.handle ? `you're in — ${appUrl}/${session.handle}` : "you're in"
   )
 
@@ -208,15 +216,82 @@ export async function setup(): Promise<void> {
       },
       $set_once: { joined_at: new Date().toISOString() },
     })
+    const reportedRank = rank ?? preview?.rank
     await captureEvent(session.handle, 'cli_setup_completed', {
       tokens_total: scan.grandTotal,
-      ...((rank ?? previewRank) ? { rank: rank ?? previewRank } : {}),
+      ...(reportedRank ? { rank: reportedRank } : {}),
       prompt_consent: consent,
     })
     await captureEvent(session.handle, 'cli_agent_handoff', {
       ...(handoff.agent ? { agent: handoff.agent } : {}),
       outcome: handoff.outcome,
     })
+  }
+}
+
+/**
+ * What the scan step shows while it is still running: one line per tool it
+ * found, biggest first.
+ *
+ * Deliberately not `scan`'s full receipt. That breaks every tool down by model,
+ * which on a heavy machine is twenty-odd lines — a wall to put up and take down
+ * again for the few seconds the rank call is in flight. One line per tool is the
+ * same answer at the altitude a first run needs, and it stays short.
+ */
+function scanNotes(scan: AggregateScan): string[] {
+  return Object.entries(scan.toolTotals)
+    .filter(([, total]) => total > 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(
+      ([tool, total]) =>
+        `${TOOL_LABELS[tool] ?? tool} · ${formatTokens(total)} tokens`
+    )
+}
+
+/** The one line the scan stage leaves on the rail. */
+function scanSummary(scan: AggregateScan): string {
+  return scan.grandTotal > 0
+    ? `scanned · ${formatTokens(scan.grandTotal)} tokens`
+    : 'scanned · no AI usage on this machine'
+}
+
+type ScanStep = {
+  /** Show a working note, visible only until the step ends. */
+  note(line: string): void
+  done(summary: string): void
+  failed(summary: string): void
+}
+
+/**
+ * The scan stage as a step that shows its working and then compresses.
+ *
+ * clack's `taskLog` is exactly this shape — notes on the rail while the step
+ * runs, one line where they were once it finishes — but it collapses by walking
+ * the cursor back, which is litter down a pipe and a divide by zero on a
+ * terminal that reports no width. A plain spinner is the honest stand-in there:
+ * same single closing line, no notes.
+ */
+function startScanStep(): ScanStep {
+  const title = 'scanning local AI tool usage'
+  if (!canRedraw()) {
+    const spin = clack.spinner()
+    spin.start(title)
+    return {
+      note: () => {
+        // A spinner has nowhere to put notes it could take back.
+      },
+      done: (summary) => spin.stop(summary),
+      failed: (summary) => spin.stop(summary),
+    }
+  }
+  const log = clack.taskLog({ title })
+  return {
+    // taskLog dims its own notes and sizes them by raw string length, so they
+    // arrive as plain text: colouring them would both fight the dim and throw
+    // its row arithmetic off by the length of every escape sequence.
+    note: (line) => log.message(line),
+    done: (summary) => log.success(summary),
+    failed: (summary) => log.error(summary, { showLog: false }),
   }
 }
 
@@ -250,30 +325,24 @@ async function offerAgentHandoff(
     return { outcome: 'unavailable' }
   }
 
-  console.log('')
-  console.log(`found ${bold(agent.name)} — it can set up your profile now`)
-  console.log(
-    dim('it runs here in your terminal, and you approve what it does')
-  )
-  const accepted = await waitForBareEnter(
-    `(press enter to hand off) ${dim('· anything else skips')} `
-  )
+  const offer = railAgentOffer(agent.name)
+  const accepted = await waitForBareEnter(offer.prompt)
+  offer.settle()
 
   if (!accepted) {
+    clack.log.step('skipped')
     await notifyAgentHandoff(appUrl, session.token, 'declined')
     printManualPrompt()
     clack.outro(dim(browserLine))
     return { outcome: 'declined', agent: agent.bin }
   }
 
-  console.log('')
-  console.log(dim(browserLine))
-  console.log('')
+  clack.log.step(`handed off to ${agent.name}`)
+  clack.log.message(dim(browserLine))
 
   if (!launchAgentCli(agent, PROFILE_SETUP_PROMPT)) {
     await notifyAgentHandoff(appUrl, session.token, 'unavailable')
-    console.log('')
-    console.log(`couldn't start ${agent.name}`)
+    clack.log.error(`couldn't start ${agent.name}`)
     printManualPrompt()
     clack.outro(dim(session.handle ? `${appUrl}/${session.handle}` : appUrl))
     return { outcome: 'spawn_failed', agent: agent.bin }
@@ -291,9 +360,10 @@ async function offerAgentHandoff(
 
 /** The fallback when no agent runs here: the same line the web page shows. */
 function printManualPrompt(): void {
-  console.log('')
-  console.log(dim("paste this into your agent when you're ready:"))
-  console.log(`  ${bold(PROFILE_SETUP_PROMPT)}`)
+  clack.log.message([
+    dim("paste this into your agent when you're ready:"),
+    bold(PROFILE_SETUP_PROMPT),
+  ])
 }
 
 /**
@@ -309,32 +379,26 @@ function printManualPrompt(): void {
 async function askConversationConsent(): Promise<PromptConsentTier> {
   const stored = await loadPromptConsent()
   if (stored) {
-    console.log(
+    // Already answered, so it is not a step to walk — one dim line saying what
+    // the answer is and where to change it.
+    clack.log.message(
       dim(
-        `conversation sharing: ${stored} — change with \`hacklab config prompt-stats <full|stats|none>\``
+        `conversation sharing · ${stored} — change with \`hacklab config prompt-stats <full|stats|none>\``
       )
     )
-    console.log('')
     return stored
   }
 
   if (!process.stdin.isTTY) return 'none'
 
-  console.log(bold('share your prompts?'))
-  console.log(
-    'hacklab scores how well you work with AI. your real prompts give the'
-  )
-  console.log(
-    'scoring model actual evidence — a sharper score, and a profile that'
-  )
-  console.log(
-    'stands out. a sample of up to 20,000 characters is read by the model,'
-  )
-  console.log('scored, and discarded. never stored, never shown to anyone.')
-  console.log(
-    dim('change anytime: hacklab config prompt-stats <full|stats|none>')
-  )
-  console.log('')
+  clack.log.message([
+    bold('share your prompts?'),
+    'hacklab scores how well you work with AI. your real prompts give the',
+    'scoring model actual evidence — a sharper score, and a profile that',
+    'stands out. a sample of up to 20,000 characters is read by the model,',
+    'scored, and discarded. never stored, never shown to anyone.',
+    dim('change anytime: hacklab config prompt-stats <full|stats|none>'),
+  ])
 
   const answer = await clack.confirm({
     message: 'share a sample of your prompts?',
@@ -388,7 +452,10 @@ async function installDaemon(
     // A failed *repair* means the jobs are still scheduled — printing cron
     // instructions there talks the user into a second, duplicate schedule.
     if (state === 'missing') {
-      console.log(dim(result.instructions))
+      clack.log.warn('background sync · schedule it yourself')
+      clack.log.message(result.instructions.split('\n').map(dim), {
+        spacing: 0,
+      })
       if (handle) {
         await captureEvent(handle, 'cli_daily_sync_manual', {
           mechanism: result.mechanism,
@@ -399,11 +466,11 @@ async function installDaemon(
     return
   }
   if (!result.recorded) {
-    console.log(dim('could not record daily-sync state — config unwritable'))
+    clack.log.warn('background sync · not recorded, config unwritable')
     return
   }
   if (state === 'missing') {
-    console.log(dim(`background sync scheduled (${result.mechanism})`))
+    clack.log.step(`background sync · scheduled (${result.mechanism})`)
     if (handle) {
       await captureEvent(handle, 'cli_daily_sync_installed', {
         mechanism: result.mechanism,

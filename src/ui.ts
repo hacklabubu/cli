@@ -5,6 +5,9 @@ import { type BeltColor, getBeltColor } from './belt.js'
 export const dim = chalk.dim
 export const bold = chalk.bold
 export const green = chalk.green
+// The colour clack paints its step rail. `setup` draws two blocks by hand
+// between clack widgets, and a gutter in any other colour reads as a seam.
+export const gray = chalk.gray
 export const red = chalk.red
 export const yellow = chalk.yellow
 export const white = chalk.whiteBright

@@ -29,7 +29,7 @@ import { bold, dim, error, info } from '../ui.js'
 
 const MAX_MODELS = 8
 
-const TOOL_LABELS: Record<string, string> = {
+export const TOOL_LABELS: Record<string, string> = {
   claude_code: 'claude',
   codex: 'codex',
   cursor: 'cursor',

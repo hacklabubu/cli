@@ -38,6 +38,16 @@ const m = vi.hoisted(() => ({
   errors: [] as string[],
 }))
 
+// The rail is chrome, so the mock flattens it: every widget that puts words on
+// screen funnels them through `console.log`, which the tests already capture.
+// That keeps the assertions about *substance* — what the flow said — rather than
+// which glyph it hung the words off.
+const { say } = vi.hoisted(() => ({
+  say: (msg?: string | string[]) => {
+    for (const line of Array.isArray(msg) ? msg : [msg ?? '']) console.log(line)
+  },
+}))
+
 vi.mock('@clack/prompts', () => ({
   intro: m.intro,
   outro: m.outro,
@@ -45,10 +55,29 @@ vi.mock('@clack/prompts', () => ({
   note: vi.fn(),
   confirm: m.confirm,
   isCancel: () => false,
-  spinner: () => ({ start: vi.fn(), stop: vi.fn(), message: vi.fn() }),
+  spinner: () => ({
+    start: vi.fn(),
+    stop: (msg?: string) => say(msg),
+    message: vi.fn(),
+    clear: vi.fn(),
+  }),
+  taskLog: () => ({
+    message: vi.fn(),
+    success: (msg: string) => say(msg),
+    error: (msg: string) => say(msg),
+  }),
   text: vi.fn(),
   password: vi.fn(),
-  log: { success: vi.fn(), info: vi.fn(), error: vi.fn(), message: vi.fn() },
+  log: {
+    success: say,
+    info: say,
+    step: say,
+    warn: say,
+    error: say,
+    message: say,
+  },
+  S_BAR: '|',
+  S_WARN: '!',
 }))
 vi.mock('../session.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../session.js')>()
@@ -211,13 +240,25 @@ const uploadBody = () => {
 }
 
 const originalIsTTY = process.stdin.isTTY
+const originalStdoutIsTTY = process.stdout.isTTY
 
 function setTTY(value: boolean) {
   Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value })
 }
 
+/**
+ * Whether the flow may redraw. Held false throughout: the collapsing blocks
+ * write cursor escapes straight to the real stdout (not through the spied
+ * `console.log`), which would garble the test reporter when the suite is run
+ * from a terminal.
+ */
+function setStdoutTTY(value: boolean) {
+  Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value })
+}
+
 beforeEach(async () => {
   vi.clearAllMocks()
+  setStdoutTTY(false)
   m.logs.length = 0
   m.errors.length = 0
   vi.spyOn(console, 'log').mockImplementation((msg?: unknown) => {
@@ -288,6 +329,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   setTTY(originalIsTTY as boolean)
+  setStdoutTTY(originalStdoutIsTTY as boolean)
   process.env.PATH = originalPath
   delete process.env.HACKLAB_MACHINE_PATH
   vi.unstubAllGlobals()
@@ -328,7 +370,11 @@ describe('setup — happy path', () => {
     expect(m.savePromptConsent).toHaveBeenCalledWith('full')
     expect(uploadBody().promptStats).toEqual(PROMPT_STATS)
 
+    // Each stage leaves one line naming what happened, not a receipt wall.
+    expect(m.logs.join('\n')).toContain('scanned · 1K tokens')
     expect(m.logs.join('\n')).toContain("you'd be #7 of 420 hackers")
+    expect(m.logs.join('\n')).toContain('signed in as @ada')
+    expect(m.logs.join('\n')).toContain('synced · rank #7')
     expect(m.logs.join('\n')).toContain("you're in — https://hacklab.so/ada")
     expect(m.outro).toHaveBeenCalledWith(
       'head back to your browser — the page will move on by itself'
@@ -350,7 +396,7 @@ describe('setup — happy path', () => {
       { mechanism: 'launchd', source: 'setup' }
     )
     // Announced, never asked about — the intro line is the whole disclosure.
-    expect(m.logs.join('\n')).toContain('background sync scheduled (launchd)')
+    expect(m.logs.join('\n')).toContain('background sync · scheduled (launchd)')
     expect(m.confirm).toHaveBeenCalledOnce() // the consent question, nothing else
   })
 
@@ -435,7 +481,7 @@ describe('setup — conversation sharing consent', () => {
 
     expect(m.confirm).not.toHaveBeenCalled()
     expect(m.savePromptConsent).not.toHaveBeenCalled()
-    expect(m.logs.join('\n')).toContain('conversation sharing: stats')
+    expect(m.logs.join('\n')).toContain('conversation sharing · stats')
   })
 })
 
@@ -455,7 +501,9 @@ describe('setup — agent handoff', () => {
     await setup()
 
     expect(launchedBin()).toBe('claude')
+    // The offer while it is on screen, then the one line it leaves behind.
     expect(m.logs.join('\n')).toContain('found Claude Code')
+    expect(m.logs.join('\n')).toContain('handed off to Claude Code')
   })
 
   it('falls through to the next agent when the first is missing', async () => {
@@ -496,6 +544,7 @@ describe('setup — agent handoff', () => {
     await setup()
 
     expect(m.spawnSync).not.toHaveBeenCalled()
+    expect(m.logs.join('\n')).toContain('skipped')
     expect(handoffBody()).toEqual({ outcome: 'declined' })
     const req = handoffCalls()[0]?.[1] as RequestInit
     expect((req.headers as Record<string, string>).Authorization).toBe(
@@ -599,8 +648,11 @@ describe('setup — guards and edge cases', () => {
 
     await setup()
 
+    // The scan step already said there is nothing here, so the question is
+    // only the question.
+    expect(m.logs.join('\n')).toContain('scanned · no AI usage on this machine')
     expect(m.confirm).toHaveBeenNthCalledWith(1, {
-      message: 'No AI usage found on this machine. Set up your account anyway?',
+      message: 'set up your account anyway?',
       initialValue: true,
     })
     // Nothing to rank, so the preview is skipped — but the account is still made.
