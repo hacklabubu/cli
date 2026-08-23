@@ -191,6 +191,9 @@ function installAgents(...bins: string[]) {
   }
 }
 
+/** The binary the flow handed the terminal to, or undefined if it launched none. */
+const launchedBin = () => m.spawnSync.mock.calls[0]?.[0] as string | undefined
+
 const handoffCalls = () => callsTo('/api/cli/agent-handoff')
 const handoffBody = () =>
   JSON.parse(String((handoffCalls()[0]?.[1] as RequestInit | undefined)?.body))
@@ -442,17 +445,16 @@ describe('setup — conversation sharing consent', () => {
 // path where no agent runs tells the backend, because the web onboarding is
 // waiting on that to show the manual prompt instead.
 describe('setup — agent handoff', () => {
+  // Which agent the flow picks and announces. The argv it is launched with is
+  // platform-shaped, so that lives in agent-handoff.test.ts where
+  // `process.platform` is stubbed both ways.
   it('takes the first agent on PATH, in table order', async () => {
     installAgents('grok', 'codex', 'claude')
     m.bareEnter.mockResolvedValue(true)
 
     await setup()
 
-    expect(m.spawnSync).toHaveBeenCalledWith(
-      'claude',
-      [PROFILE_SETUP_PROMPT],
-      expect.objectContaining({ stdio: 'inherit' })
-    )
+    expect(launchedBin()).toBe('claude')
     expect(m.logs.join('\n')).toContain('found Claude Code')
   })
 
@@ -462,11 +464,7 @@ describe('setup — agent handoff', () => {
 
     await setup()
 
-    expect(m.spawnSync).toHaveBeenCalledWith(
-      'codex',
-      [PROFILE_SETUP_PROMPT],
-      expect.anything()
-    )
+    expect(launchedBin()).toBe('codex')
     expect(m.logs.join('\n')).toContain('found Codex')
   })
 
