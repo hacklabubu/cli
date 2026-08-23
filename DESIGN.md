@@ -54,7 +54,7 @@ local usage and makes a card. `sync` uploads. Don't glue those into a ritual.
 **The one sanctioned exception: `setup`.** First-run onboarding tested badly as
 separate commands — face-to-face, people who had just installed the CLI read
 `login` then `scan` as unrelated chores and stalled between them, so `hacklab
-setup` runs the whole first run as one flow (scan → rank → GitHub → one consent
+setup` runs the whole first run as one flow (scan + rank → GitHub → one consent
 question → upload → background sync → offer to hand profile setup to a coding
 agent the user already has). It earns the exception because it is the
 *first* run and nothing else: it composes existing commands rather than
@@ -64,6 +64,12 @@ every piece it runs stays a standalone command for re-running one of them. It is
 also the only command allowed clack chrome (`intro`/`outro`, a spinner, one
 `confirm`) — it is a multi-stage flow, not a login-shaped command. Do not read
 this as licence for a second composite: adding one needs the same evidence.
+
+**The one sanctioned box: the handoff note on an authenticated `hacklab ping`.**
+Its reader is a human skimming an *agent's* transcript, where a line of ours is
+lost among tool output — so "go back to your browser, your profile is being
+filled in here" is drawn as a box, to be seen. It prints on the recorded ping
+only, never on the anonymous probe or an error path. No other command gets one.
 
 **Identity is `@handle`.** Print email only when there is no handle, or on
 `whoami`. Don't show both unless asked.

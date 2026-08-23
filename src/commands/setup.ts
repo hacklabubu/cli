@@ -28,17 +28,23 @@ import {
 } from '../session.js'
 import { scanConsentedPromptStats, uploadTokenScan } from '../sync.js'
 import { bold, dim } from '../ui.js'
-import { waitForBareEnter } from '../utils/waitForEnter.js'
+import { readEnterLine } from '../utils/waitForEnter.js'
 import { ensureHandleClaimed, performLogin } from './login.js'
 import { PROFILE_SETUP_PROMPT } from './rtfm.js'
 import { TOOL_LABELS } from './scan.js'
-import { canRedraw, railAgentOffer, railDeviceCode } from './setup-rail.js'
+import {
+  canRedraw,
+  railAgentOffer,
+  railDeviceCode,
+  railDisclosure,
+  railTaskDone,
+} from './setup-rail.js'
 
 /**
  * `hacklab setup` — the front door.
  *
- *   scan → anonymous rank → GitHub auth → one consent question → upload →
- *   daemon → hand the profile work to a coding agent
+ *   scan (with an anonymous rank preview) → GitHub auth → one consent question
+ *   → upload → daemon → hand the profile work to a coding agent
  *
  * The one deliberate composite command in the CLI (DESIGN.md's "one job per
  * command" carries a recorded exception for it): face-to-face testing showed
@@ -101,15 +107,17 @@ export async function setup(): Promise<void> {
   for (const line of scanNotes(scan)) scanStep.note(line)
 
   // ── Anonymous rank preview (a hook, never a gate) ────────────────────────
-  const preview =
-    scan.grandTotal > 0 ? await fetchRankPreview(appUrl, scan.grandTotal) : null
-
-  scanStep.done(scanSummary(scan))
-  if (preview) {
-    clack.log.step(
-      `you'd be #${preview.rank} of ${preview.ofTotal.toLocaleString('en-US')} hackers`
-    )
+  // Part of the scan stage, not a stage of its own: it needs the merged total,
+  // it takes a moment, and what it comes back with is one more fact about the
+  // usage just scanned. So the step stays open across the call and closes once,
+  // with both facts on the line it leaves.
+  let preview: RankPreview = null
+  if (scan.grandTotal > 0) {
+    scanStep.note('checking your rank…')
+    preview = await fetchRankPreview(appUrl, scan.grandTotal)
   }
+
+  scanStep.done(scanSummary(scan, preview))
 
   if (scan.grandTotal === 0) {
     // No hard floor: a hackathon-door signup on a fresh laptop is exactly who
@@ -248,11 +256,17 @@ function scanNotes(scan: AggregateScan): string[] {
     )
 }
 
-/** The one line the scan stage leaves on the rail. */
-function scanSummary(scan: AggregateScan): string {
-  return scan.grandTotal > 0
-    ? `scanned · ${formatTokens(scan.grandTotal)} tokens`
-    : 'scanned · no AI usage on this machine'
+/**
+ * The one line the scan stage leaves on the rail — what was found, and where it
+ * would put you. No "of N": a leaderboard size is a fact about hacklab, not
+ * about the person reading, and it dates the moment it is printed. The rank
+ * half is dropped whenever the preview didn't come back, so a slow or offline
+ * backend costs the line nothing.
+ */
+function scanSummary(scan: AggregateScan, preview: RankPreview): string {
+  if (scan.grandTotal === 0) return 'scanned · no AI usage on this machine'
+  const scanned = `scanned · ${formatTokens(scan.grandTotal)} tokens`
+  return preview ? `${scanned} · you'd be rank #${preview.rank}` : scanned
 }
 
 type ScanStep = {
@@ -290,7 +304,10 @@ function startScanStep(): ScanStep {
     // arrive as plain text: colouring them would both fight the dim and throw
     // its row arithmetic off by the length of every escape sequence.
     note: (line) => log.message(line),
-    done: (summary) => log.success(summary),
+    // A finished step is `◇`; `◆` belongs to the one success line at the end of
+    // the flow. taskLog only knows how to close with `◆`, so the rail redraws
+    // the line it left.
+    done: (summary) => railTaskDone(log, summary),
     failed: (summary) => log.error(summary, { showLog: false }),
   }
 }
@@ -326,11 +343,16 @@ async function offerAgentHandoff(
   }
 
   const offer = railAgentOffer(agent.name)
-  const accepted = await waitForBareEnter(offer.prompt)
-  offer.settle()
+  // The line as typed, not just yes/no: a bare Enter is the accept, and anything
+  // else was echoed onto the prompt row the block is about to erase.
+  const typed = await readEnterLine(offer.prompt)
+  const accepted = typed === ''
+  offer.settle(typed ?? '')
 
   if (!accepted) {
-    clack.log.step('skipped')
+    // Same shape as the accept line below: one `◇` naming the stage and how it
+    // went, so the offer block leaves the same trace either way.
+    clack.log.step('agent · skipped')
     await notifyAgentHandoff(appUrl, session.token, 'declined')
     printManualPrompt()
     clack.outro(dim(browserLine))
@@ -391,7 +413,7 @@ async function askConversationConsent(): Promise<PromptConsentTier> {
 
   if (!process.stdin.isTTY) return 'none'
 
-  clack.log.message([
+  const disclosure = railDisclosure([
     bold('share your prompts?'),
     'hacklab scores how well you work with AI. your real prompts give the',
     'scoring model actual evidence — a sharper score, and a profile that',
@@ -400,23 +422,37 @@ async function askConversationConsent(): Promise<PromptConsentTier> {
     dim('change anytime: hacklab config prompt-stats <full|stats|none>'),
   ])
 
-  const answer = await clack.confirm({
-    message: 'share a sample of your prompts?',
-    initialValue: true,
-  })
+  const message = 'share a sample of your prompts?'
+  const answer = await clack.confirm({ message, initialValue: true })
+  const cancelled = clack.isCancel(answer)
   // Only the two tiers that were actually asked about. 'stats' (numbers, no
   // text) was never on the table here; it stays reachable via `hacklab config`.
   const tier: PromptConsentTier =
-    !clack.isCancel(answer) && answer === true ? 'full' : 'none'
+    !cancelled && answer === true ? 'full' : 'none'
+  // The disclosure has been read by now, so it comes off with the widget it was
+  // explaining. A cancelled question is reported as the answer that was
+  // recorded — 'none' is a no, whichever key produced it.
+  disclosure.settle({
+    message,
+    value: tier === 'full' ? 'Yes' : 'No',
+    cancelled,
+  })
   await savePromptConsent(tier)
   return tier
 }
 
-/** The anonymous "you'd be #N of M" call. Any failure is skipped in silence. */
+/** What the scan step knows about the rank, once it knows anything. */
+type RankPreview = { rank: number } | null
+
+/**
+ * The anonymous "you'd be rank #N" call. Any failure is skipped in silence — it
+ * is a hook, never a gate. The response still carries a leaderboard size; the
+ * CLI reads past it, because no line here spends columns on it any more.
+ */
 async function fetchRankPreview(
   appUrl: string,
   totalTokens: number
-): Promise<{ rank: number; ofTotal: number } | null> {
+): Promise<RankPreview> {
   try {
     const res = await fetch(`${appUrl}/api/rank/preview`, {
       method: 'POST',
@@ -425,11 +461,9 @@ async function fetchRankPreview(
       signal: AbortSignal.timeout(10_000),
     })
     if (!res.ok) return null
-    const data = (await res.json()) as { rank?: number; ofTotal?: number }
-    if (typeof data.rank !== 'number' || typeof data.ofTotal !== 'number') {
-      return null
-    }
-    return { rank: data.rank, ofTotal: data.ofTotal }
+    const data = (await res.json()) as { rank?: number }
+    if (typeof data.rank !== 'number') return null
+    return { rank: data.rank }
   } catch {
     return null
   }

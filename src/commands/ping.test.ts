@@ -17,6 +17,11 @@ const SESSION = {
   savedAt: new Date().toISOString(),
 }
 
+// Built from a char code so the pattern itself carries no control character.
+const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g')
+/** Drop the colour so a row can be measured in columns. */
+const stripAnsi = (value: string) => value.replace(ANSI, '')
+
 function stubFetch(response: { ok: boolean; status: number }) {
   const fn = vi.fn(async () => response as unknown as Response)
   vi.stubGlobal('fetch', fn)
@@ -93,6 +98,73 @@ describe('ping', () => {
     expect(output()).toContain('authenticated as grace — ping recorded')
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(init.headers).toEqual({ Authorization: 'Bearer secret-token' })
+  })
+
+  // The recorded ping is step 1 of `hacklab rtfm profile-setup`, so it is the
+  // first deterministic moment an agent can tell the user they are free to go.
+  // Boxed on purpose (DESIGN.md's one sanctioned box): it is read inside an
+  // agent transcript, where a plain line gets scrolled past.
+  describe('the go-back-to-your-browser box', () => {
+    it('prints on the recorded ping, bordered and unmissable', async () => {
+      vi.mocked(loadSession).mockResolvedValue(SESSION)
+      stubFetch({ ok: true, status: 200 })
+
+      await ping()
+
+      expect(output()).toContain('Go back to your browser')
+      expect(output()).toContain('your agent fills in your profile')
+      expect(output()).toContain('┌')
+      expect(output()).toContain('└')
+      expect(output()).toMatch(/│.*│/)
+    })
+
+    it('never prints on the anonymous reachability probe', async () => {
+      vi.mocked(loadSession).mockResolvedValue(null)
+      stubFetch({ ok: true, status: 200 })
+
+      await ping()
+
+      expect(output()).not.toContain('Go back to your browser')
+      expect(output()).not.toContain('┌')
+    })
+
+    it('never prints when the ping was not recorded', async () => {
+      vi.mocked(loadSession).mockResolvedValue(SESSION)
+      stubFetch({ ok: false, status: 500 })
+
+      await ping()
+
+      expect(output()).not.toContain('Go back to your browser')
+    })
+
+    it('keeps its shape on a narrow terminal', async () => {
+      const original = process.stdout.columns
+      Object.defineProperty(process.stdout, 'columns', {
+        configurable: true,
+        value: 28,
+      })
+      try {
+        vi.mocked(loadSession).mockResolvedValue(SESSION)
+        stubFetch({ ok: true, status: 200 })
+
+        await ping()
+
+        // Every row of the box is the same width, and none of it overflows.
+        const rows = out
+          .flatMap((line) => line.split('\n'))
+          .filter((line) => /[┌│└]/.test(line))
+        expect(rows.length).toBeGreaterThan(4)
+        const widths = new Set(rows.map((line) => stripAnsi(line).length))
+        expect(widths.size).toBe(1)
+        expect([...widths][0]).toBeLessThanOrEqual(28)
+        expect(output()).toContain('Go back to your')
+      } finally {
+        Object.defineProperty(process.stdout, 'columns', {
+          configurable: true,
+          value: original,
+        })
+      }
+    })
   })
 
   it('authenticated: 401 → still success, with the re-login hint', async () => {

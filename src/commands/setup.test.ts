@@ -32,6 +32,7 @@ const m = vi.hoisted(() => ({
   cancel: vi.fn(),
   waitForEnter: vi.fn(),
   bareEnter: vi.fn(),
+  enterLine: vi.fn(),
   spawnSync: vi.fn(),
   openBrowser: vi.fn(),
   logs: [] as string[],
@@ -78,6 +79,9 @@ vi.mock('@clack/prompts', () => ({
   },
   S_BAR: '|',
   S_WARN: '!',
+  S_SUCCESS: '*',
+  S_STEP_SUBMIT: 'o',
+  S_STEP_CANCEL: 'x',
 }))
 vi.mock('../session.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../session.js')>()
@@ -127,6 +131,7 @@ vi.mock('../utils/openBrowser.js', () => ({ openBrowser: m.openBrowser }))
 vi.mock('../utils/waitForEnter.js', () => ({
   waitForEnter: m.waitForEnter,
   waitForBareEnter: m.bareEnter,
+  readEnterLine: m.enterLine,
 }))
 // Only the handoff launch is faked — agent *detection* runs for real against a
 // PATH pointed at a temp bin dir, so the probe itself is under test.
@@ -295,7 +300,7 @@ beforeEach(async () => {
   })
   m.confirm.mockResolvedValue(true)
   m.waitForEnter.mockResolvedValue(false)
-  m.bareEnter.mockResolvedValue(false)
+  m.enterLine.mockResolvedValue('n')
   m.spawnSync.mockReturnValue({ status: 0 })
   m.openBrowser.mockResolvedValue(true)
 
@@ -370,9 +375,14 @@ describe('setup — happy path', () => {
     expect(m.savePromptConsent).toHaveBeenCalledWith('full')
     expect(uploadBody().promptStats).toEqual(PROMPT_STATS)
 
-    // Each stage leaves one line naming what happened, not a receipt wall.
-    expect(m.logs.join('\n')).toContain('scanned · 1K tokens')
-    expect(m.logs.join('\n')).toContain("you'd be #7 of 420 hackers")
+    // Each stage leaves one line naming what happened, not a receipt wall. The
+    // scan and the rank preview are one stage, so they share one line — and it
+    // never names how many hackers there are.
+    expect(m.logs.join('\n')).toContain(
+      "scanned · 1K tokens · you'd be rank #7"
+    )
+    expect(m.logs.join('\n')).not.toContain('420')
+    expect(m.logs.join('\n')).not.toMatch(/of \d+ hackers/)
     expect(m.logs.join('\n')).toContain('signed in as @ada')
     expect(m.logs.join('\n')).toContain('synced · rank #7')
     expect(m.logs.join('\n')).toContain("you're in — https://hacklab.so/ada")
@@ -384,6 +394,33 @@ describe('setup — happy path', () => {
       rank: 7,
       prompt_consent: 'full',
     })
+  })
+
+  it('keeps the scan line when the rank preview never answers', async () => {
+    // The preview is a hook, not a gate: a backend that is slow, down, or
+    // simply older than this route costs the line its second half and nothing
+    // else — the step still closes, and the flow still runs.
+    fetchMock.mockImplementation(async (url: string) => {
+      const u = String(url)
+      if (u.includes('/api/rank/preview')) throw new Error('offline')
+      if (u.includes('/api/cli/device/start')) return jsonResponse(START)
+      if (u.includes('/api/cli/device/poll')) {
+        return jsonResponse({
+          status: 'approved',
+          token: 't',
+          email: 'ada@example.com',
+          login: 'ada',
+          usernameClaimed: true,
+        })
+      }
+      return jsonResponse({})
+    })
+
+    await setup()
+
+    expect(m.logs.join('\n')).toContain('scanned · 1K tokens')
+    expect(m.logs.join('\n')).not.toContain('rank #')
+    expect(m.logs.join('\n')).toContain("you're in — https://hacklab.so/ada")
   })
 
   it('installs the background sync silently and tags the source', async () => {
@@ -458,6 +495,25 @@ describe('setup — conversation sharing consent', () => {
     expect(uploadBody().promptStats).toBeUndefined()
   })
 
+  it('discloses what would be shared before it asks, and takes the block back after', async () => {
+    // What the disclosure says is the consent: it has to be on screen while the
+    // question is answered. Here (no redraw) it is printed and left; the erase
+    // that folds it into the question's own line is a terminal-only affordance
+    // and is exercised in setup-rail.test.ts.
+    let saidWhenAsked = ''
+    m.confirm.mockImplementation(async () => {
+      saidWhenAsked = m.logs.join('\n')
+      return true
+    })
+
+    await setup()
+
+    expect(saidWhenAsked).toContain('share your prompts?')
+    expect(saidWhenAsked).toContain('up to 20,000 characters')
+    expect(saidWhenAsked).toContain('never stored, never shown to anyone')
+    expect(saidWhenAsked).toContain('hacklab config prompt-stats')
+  })
+
   it('never default-yeses without a human — a non-TTY run stays at none', async () => {
     setTTY(false)
 
@@ -496,7 +552,7 @@ describe('setup — agent handoff', () => {
   // `process.platform` is stubbed both ways.
   it('takes the first agent on PATH, in table order', async () => {
     installAgents('grok', 'codex', 'claude')
-    m.bareEnter.mockResolvedValue(true)
+    m.enterLine.mockResolvedValue('')
 
     await setup()
 
@@ -508,7 +564,7 @@ describe('setup — agent handoff', () => {
 
   it('falls through to the next agent when the first is missing', async () => {
     installAgents('grok', 'codex')
-    m.bareEnter.mockResolvedValue(true)
+    m.enterLine.mockResolvedValue('')
 
     await setup()
 
@@ -518,7 +574,7 @@ describe('setup — agent handoff', () => {
 
   it('launches interactively on enter and never notifies the backend', async () => {
     installAgents('claude')
-    m.bareEnter.mockResolvedValue(true)
+    m.enterLine.mockResolvedValue('')
     // The browser line has to be printed BEFORE the agent owns the terminal —
     // afterwards nobody is reading our output.
     let logsAtSpawn: string[] = []
@@ -539,12 +595,13 @@ describe('setup — agent handoff', () => {
 
   it('notifies `declined` and prints the prompt to paste when skipped', async () => {
     installAgents('claude')
-    m.bareEnter.mockResolvedValue(false)
+    m.enterLine.mockResolvedValue('n')
 
     await setup()
 
     expect(m.spawnSync).not.toHaveBeenCalled()
-    expect(m.logs.join('\n')).toContain('skipped')
+    // The same one-line shape the accept path leaves behind.
+    expect(m.logs.join('\n')).toContain('agent · skipped')
     expect(handoffBody()).toEqual({ outcome: 'declined' })
     const req = handoffCalls()[0]?.[1] as RequestInit
     expect((req.headers as Record<string, string>).Authorization).toBe(
@@ -560,7 +617,7 @@ describe('setup — agent handoff', () => {
   it('notifies `unavailable` when no agent is installed', async () => {
     await setup()
 
-    expect(m.bareEnter).not.toHaveBeenCalled()
+    expect(m.enterLine).not.toHaveBeenCalled()
     expect(handoffBody()).toEqual({ outcome: 'unavailable' })
     expect(m.logs.join('\n')).toContain(PROFILE_SETUP_PROMPT)
     expect(m.captureEvent).toHaveBeenCalledWith('ada', 'cli_agent_handoff', {
@@ -570,7 +627,7 @@ describe('setup — agent handoff', () => {
 
   it('treats an agent that will not start as unavailable', async () => {
     installAgents('claude')
-    m.bareEnter.mockResolvedValue(true)
+    m.enterLine.mockResolvedValue('')
     m.spawnSync.mockReturnValue({ error: new Error('spawn ENOENT') })
 
     await setup()
@@ -590,7 +647,7 @@ describe('setup — agent handoff', () => {
 
     await setup()
 
-    expect(m.bareEnter).not.toHaveBeenCalled()
+    expect(m.enterLine).not.toHaveBeenCalled()
     expect(m.spawnSync).not.toHaveBeenCalled()
     expect(handoffBody()).toEqual({ outcome: 'unavailable' })
     // Nothing to paste into: there is nobody at the terminal.

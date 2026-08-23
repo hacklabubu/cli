@@ -38,6 +38,7 @@ const MANUALS: Manual[] = [
         lines: [
           '1. Run `hacklab ping` immediately.',
           '   This tells hacklab that profile setup is in progress and lets the user continue on the platform.',
+          '   Show the user the message it prints — they can leave for the browser while you work.',
           '2. Inspect the current profile with `hacklab profile --json`.',
           '3. Gather the most relevant, verifiable information about the user.',
           '4. Look for their profiles on:',

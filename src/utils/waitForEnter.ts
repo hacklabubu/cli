@@ -3,8 +3,12 @@ import { createInterface } from 'node:readline'
 /**
  * Print `prompt` and block for one line. Resolves the line as typed, or null if
  * stdin is not a TTY, the wait was aborted, or the stream closed.
+ *
+ * Exported for callers that redraw over the prompt afterwards: what the user
+ * typed was echoed onto that row, so its width is part of how much of the
+ * terminal the prompt actually took.
  */
-async function readLine(
+export async function readEnterLine(
   prompt: string,
   signal?: AbortSignal
 ): Promise<string | null> {
@@ -36,7 +40,7 @@ export async function waitForEnter(
   prompt: string,
   signal?: AbortSignal
 ): Promise<boolean> {
-  return (await readLine(prompt, signal)) !== null
+  return (await readEnterLine(prompt, signal)) !== null
 }
 
 /**
@@ -48,5 +52,5 @@ export async function waitForBareEnter(
   prompt: string,
   signal?: AbortSignal
 ): Promise<boolean> {
-  return (await readLine(prompt, signal)) === ''
+  return (await readEnterLine(prompt, signal)) === ''
 }
