@@ -1,3 +1,4 @@
+import { writeFileSync } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -30,6 +31,8 @@ const m = vi.hoisted(() => ({
   outro: vi.fn(),
   cancel: vi.fn(),
   waitForEnter: vi.fn(),
+  bareEnter: vi.fn(),
+  spawnSync: vi.fn(),
   openBrowser: vi.fn(),
   logs: [] as string[],
   errors: [] as string[],
@@ -92,8 +95,18 @@ vi.mock('../ui.js', async (importOriginal) => {
   return { ...actual, bold: (s: string) => s, dim: (s: string) => s }
 })
 vi.mock('../utils/openBrowser.js', () => ({ openBrowser: m.openBrowser }))
-vi.mock('../utils/waitForEnter.js', () => ({ waitForEnter: m.waitForEnter }))
+vi.mock('../utils/waitForEnter.js', () => ({
+  waitForEnter: m.waitForEnter,
+  waitForBareEnter: m.bareEnter,
+}))
+// Only the handoff launch is faked — agent *detection* runs for real against a
+// PATH pointed at a temp bin dir, so the probe itself is under test.
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>()
+  return { ...actual, spawnSync: m.spawnSync }
+})
 
+import { PROFILE_SETUP_PROMPT } from './rtfm.js'
 import { setup } from './setup.js'
 
 const START = {
@@ -163,6 +176,24 @@ function failResponse(status: number) {
 
 let fetchMock: ReturnType<typeof vi.fn>
 let claimResponder: () => Response
+let handoffResponder: () => Response
+
+// Agent detection reads PATH, so the tests own it: an empty temp dir means "no
+// agent installed", and `installAgents` drops executables into it in the shape
+// the probe looks for on this platform.
+let binDir: string
+const originalPath = process.env.PATH
+
+function installAgents(...bins: string[]) {
+  const ext = process.platform === 'win32' ? '.cmd' : ''
+  for (const bin of bins) {
+    writeFileSync(join(binDir, `${bin}${ext}`), '', { mode: 0o755 })
+  }
+}
+
+const handoffCalls = () => callsTo('/api/cli/agent-handoff')
+const handoffBody = () =>
+  JSON.parse(String((handoffCalls()[0]?.[1] as RequestInit | undefined)?.body))
 
 const urls = () => fetchMock.mock.calls.map((c) => String(c[0]))
 const callIndex = (fragment: string) =>
@@ -198,6 +229,9 @@ beforeEach(async () => {
   process.env.HACKLAB_MACHINE_PATH = join(dir, 'machine.json')
   delete process.env.HACKLAB_APP_URL
 
+  binDir = await mkdtemp(join(tmpdir(), 'hacklab-bin-'))
+  process.env.PATH = binDir
+
   setTTY(true)
   m.loadSession.mockResolvedValue(null)
   m.saveSession.mockResolvedValue(undefined)
@@ -217,12 +251,16 @@ beforeEach(async () => {
   })
   m.confirm.mockResolvedValue(true)
   m.waitForEnter.mockResolvedValue(false)
+  m.bareEnter.mockResolvedValue(false)
+  m.spawnSync.mockReturnValue({ status: 0 })
   m.openBrowser.mockResolvedValue(true)
 
   claimResponder = () => jsonResponse({ handle: 'ada' })
+  handoffResponder = () => jsonResponse({})
 
   fetchMock = vi.fn(async (url: string) => {
     const u = String(url)
+    if (u.includes('/api/cli/agent-handoff')) return handoffResponder()
     if (u.includes('/api/cli/device/start')) return jsonResponse(START)
     if (u.includes('/api/cli/device/poll')) {
       return jsonResponse({
@@ -247,6 +285,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   setTTY(originalIsTTY as boolean)
+  process.env.PATH = originalPath
   delete process.env.HACKLAB_MACHINE_PATH
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -394,6 +433,151 @@ describe('setup — conversation sharing consent', () => {
     expect(m.confirm).not.toHaveBeenCalled()
     expect(m.savePromptConsent).not.toHaveBeenCalled()
     expect(m.logs.join('\n')).toContain('conversation sharing: stats')
+  })
+})
+
+// The last beat of setup hands the profile work to a coding agent the user
+// already has. Two rules the tests pin down: a launched agent is announced to
+// nobody but the user (its own `hacklab ping` is the success signal), and every
+// path where no agent runs tells the backend, because the web onboarding is
+// waiting on that to show the manual prompt instead.
+describe('setup — agent handoff', () => {
+  it('takes the first agent on PATH, in table order', async () => {
+    installAgents('grok', 'codex', 'claude')
+    m.bareEnter.mockResolvedValue(true)
+
+    await setup()
+
+    expect(m.spawnSync).toHaveBeenCalledWith(
+      'claude',
+      [PROFILE_SETUP_PROMPT],
+      expect.objectContaining({ stdio: 'inherit' })
+    )
+    expect(m.logs.join('\n')).toContain('found Claude Code')
+  })
+
+  it('falls through to the next agent when the first is missing', async () => {
+    installAgents('grok', 'codex')
+    m.bareEnter.mockResolvedValue(true)
+
+    await setup()
+
+    expect(m.spawnSync).toHaveBeenCalledWith(
+      'codex',
+      [PROFILE_SETUP_PROMPT],
+      expect.anything()
+    )
+    expect(m.logs.join('\n')).toContain('found Codex')
+  })
+
+  it('launches interactively on enter and never notifies the backend', async () => {
+    installAgents('claude')
+    m.bareEnter.mockResolvedValue(true)
+    // The browser line has to be printed BEFORE the agent owns the terminal —
+    // afterwards nobody is reading our output.
+    let logsAtSpawn: string[] = []
+    m.spawnSync.mockImplementation(() => {
+      logsAtSpawn = [...m.logs]
+      return { status: 0 }
+    })
+
+    await setup()
+
+    expect(logsAtSpawn.join('\n')).toContain('head back to your browser')
+    expect(handoffCalls()).toHaveLength(0)
+    expect(m.captureEvent).toHaveBeenCalledWith('ada', 'cli_agent_handoff', {
+      agent: 'claude',
+      outcome: 'launched',
+    })
+  })
+
+  it('notifies `declined` and prints the prompt to paste when skipped', async () => {
+    installAgents('claude')
+    m.bareEnter.mockResolvedValue(false)
+
+    await setup()
+
+    expect(m.spawnSync).not.toHaveBeenCalled()
+    expect(handoffBody()).toEqual({ outcome: 'declined' })
+    const req = handoffCalls()[0]?.[1] as RequestInit
+    expect((req.headers as Record<string, string>).Authorization).toBe(
+      'Bearer t'
+    )
+    expect(m.logs.join('\n')).toContain(PROFILE_SETUP_PROMPT)
+    expect(m.captureEvent).toHaveBeenCalledWith('ada', 'cli_agent_handoff', {
+      agent: 'claude',
+      outcome: 'declined',
+    })
+  })
+
+  it('notifies `unavailable` when no agent is installed', async () => {
+    await setup()
+
+    expect(m.bareEnter).not.toHaveBeenCalled()
+    expect(handoffBody()).toEqual({ outcome: 'unavailable' })
+    expect(m.logs.join('\n')).toContain(PROFILE_SETUP_PROMPT)
+    expect(m.captureEvent).toHaveBeenCalledWith('ada', 'cli_agent_handoff', {
+      outcome: 'unavailable',
+    })
+  })
+
+  it('treats an agent that will not start as unavailable', async () => {
+    installAgents('claude')
+    m.bareEnter.mockResolvedValue(true)
+    m.spawnSync.mockReturnValue({ error: new Error('spawn ENOENT') })
+
+    await setup()
+
+    expect(handoffBody()).toEqual({ outcome: 'unavailable' })
+    expect(m.logs.join('\n')).toContain("couldn't start Claude Code")
+    expect(m.logs.join('\n')).toContain(PROFILE_SETUP_PROMPT)
+    expect(m.captureEvent).toHaveBeenCalledWith('ada', 'cli_agent_handoff', {
+      agent: 'claude',
+      outcome: 'spawn_failed',
+    })
+  })
+
+  it('never offers a handoff without a human — a non-TTY run just notifies', async () => {
+    installAgents('claude')
+    setTTY(false)
+
+    await setup()
+
+    expect(m.bareEnter).not.toHaveBeenCalled()
+    expect(m.spawnSync).not.toHaveBeenCalled()
+    expect(handoffBody()).toEqual({ outcome: 'unavailable' })
+    // Nothing to paste into: there is nobody at the terminal.
+    expect(m.logs.join('\n')).not.toContain(PROFILE_SETUP_PROMPT)
+  })
+
+  it('shrugs off a backend that has no such route yet', async () => {
+    handoffResponder = () => failResponse(404)
+
+    await setup()
+
+    expect(m.outro).toHaveBeenCalledWith(
+      'head back to your browser — the page will move on by itself'
+    )
+    expect(m.captureEvent).toHaveBeenCalledWith('ada', 'cli_agent_handoff', {
+      outcome: 'unavailable',
+    })
+  })
+
+  it('shrugs off a network failure on the notification', async () => {
+    handoffResponder = () => {
+      throw new Error('offline')
+    }
+
+    await setup()
+
+    expect(m.outro).toHaveBeenCalledWith(
+      'head back to your browser — the page will move on by itself'
+    )
+    expect(m.captureEvent).toHaveBeenCalledWith(
+      'ada',
+      'cli_setup_completed',
+      expect.anything()
+    )
   })
 })
 
