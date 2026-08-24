@@ -186,6 +186,35 @@ describe('login — device flow', () => {
     )
   })
 
+  it('tells the claim it came from bare login, not setup', async () => {
+    // The web branches its onboarding copy on this: `login` means no terminal
+    // flow is running, so it prints the manual agent prompt.
+    const fetchMock = vi.fn(async (url: string) =>
+      String(url).includes('/api/cli/device/start')
+        ? jsonResponse(START)
+        : String(url).includes('/api/cli/claim')
+          ? jsonResponse({ handle: 'ada' })
+          : jsonResponse({
+              status: 'approved',
+              token: 'tok',
+              email: 'a@b.co',
+              handle: 'ada',
+              usernameClaimed: false,
+            })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await login()
+
+    const claim = fetchMock.mock.calls.find((c) =>
+      String(c[0]).includes('/api/cli/claim')
+    )
+    expect(claim).toBeDefined()
+    expect(
+      JSON.parse(String((claim?.[1] as RequestInit | undefined)?.body))
+    ).toEqual({ username: 'ada', flow: 'login' })
+  })
+
   it('resolves the handle from the profile when poll omits it', async () => {
     vi.stubGlobal(
       'fetch',

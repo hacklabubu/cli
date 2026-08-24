@@ -53,6 +53,16 @@ const plainDeviceCode: DeviceCodeRenderer = {
   },
 }
 
+/**
+ * Which front door claimed the handle. The claim request carries it, so the web
+ * knows what the hacker is in the middle of the moment `username_claimed` flips:
+ * a `setup` claim means a terminal flow is still running and onboarding can say
+ * "head back to your terminal", while a bare `login` claim gets the manual agent
+ * prompt instead. It rides on the claim itself rather than a second call — same
+ * request, same instant, no race with the flip it describes.
+ */
+export type ClaimFlow = 'setup' | 'login'
+
 export type LoginOutcome = {
   /** The session as it now stands (already persisted by `performLogin`). */
   session: Session
@@ -72,11 +82,16 @@ export type LoginOutcome = {
  * The shared implementation behind both `hacklab login` and `hacklab setup` —
  * there is exactly one device flow (the code/URL beat with the parallel
  * Enter-wait ↔ poll race), and both front doors go through it. `claimAttempts`
- * is how hard the handle claim tries before giving up, and `deviceCode` swaps
- * the code/URL presentation without touching the race behind it.
+ * is how hard the handle claim tries before giving up, `flow` tells the web
+ * which command is claiming, and `deviceCode` swaps the code/URL presentation
+ * without touching the race behind it.
  */
 export async function performLogin(
-  opts: { claimAttempts?: number; deviceCode?: DeviceCodeRenderer } = {}
+  opts: {
+    claimAttempts?: number
+    deviceCode?: DeviceCodeRenderer
+    flow?: ClaimFlow
+  } = {}
 ): Promise<LoginOutcome> {
   const appUrl = getAppUrl()
   const creds = await loginViaDevice(appUrl, opts.deviceCode)
@@ -91,7 +106,8 @@ export async function performLogin(
       savedAt: new Date().toISOString(),
       expiresAt: creds.expiresAt,
     },
-    opts.claimAttempts
+    opts.claimAttempts,
+    opts.flow
   )
 
   await saveSession(outcome.session)
@@ -105,10 +121,15 @@ export async function performLogin(
  * updated session (the same object when nothing changed) and leaves persistence
  * to the caller, so it works both on a session that was just minted and on one
  * already sitting on disk from a half-finished signup.
+ *
+ * `flow` names the command doing the claiming for the web's benefit; it defaults
+ * to the conservative `'login'`, which is the value that leaves onboarding
+ * printing its manual prompt rather than promising a terminal that isn't there.
  */
 export async function ensureHandleClaimed(
   session: Session,
-  attempts = 1
+  attempts = 1,
+  flow: ClaimFlow = 'login'
 ): Promise<LoginOutcome> {
   if (session.handle && session.usernameClaimed) {
     return { session, claimFailed: false }
@@ -130,7 +151,13 @@ export async function ensureHandleClaimed(
     }
   }
 
-  const claimed = await claimHandle(appUrl, session.token, handle, attempts)
+  const claimed = await claimHandle(
+    appUrl,
+    session.token,
+    handle,
+    flow,
+    attempts
+  )
   return {
     session: {
       ...session,
@@ -147,7 +174,7 @@ export async function ensureHandleClaimed(
  * guided `setup` flow is the one that has to complain.
  */
 export async function login(): Promise<void> {
-  const { session } = await performLogin()
+  const { session } = await performLogin({ flow: 'login' })
   const { handle, email, appUrl, usernameClaimed } = session
 
   console.log('')
@@ -315,11 +342,16 @@ async function fetchMe(
  * Claim `username` for this account, returning the claimed handle or null if
  * every attempt failed. `attempts > 1` retries — the claim is idempotent for the
  * owner, and a lost one leaves an account the web onboarding never sees finish.
+ *
+ * `flow` travels in the body so the flip of `username_claimed` and the reason
+ * for it land in one request. A backend that predates the field ignores it —
+ * unknown body keys are dropped — so there is nothing to negotiate here.
  */
 async function claimHandle(
   appUrl: string,
   token: string,
   username: string,
+  flow: ClaimFlow,
   attempts = 1
 ): Promise<string | null> {
   for (let i = 0; i < Math.max(1, attempts); i++) {
@@ -330,7 +362,7 @@ async function claimHandle(
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ username }),
+        body: JSON.stringify({ username, flow }),
       })
       if (res.ok) {
         const data = (await res.json()) as { handle?: string }
