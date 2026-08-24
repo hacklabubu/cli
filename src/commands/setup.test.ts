@@ -418,6 +418,33 @@ describe('setup — happy path', () => {
 })
 
 describe('setup — handle claim', () => {
+  const claimBody = (index = 0) =>
+    JSON.parse(
+      String((callsTo('/api/cli/claim')[index]?.[1] as RequestInit)?.body)
+    )
+
+  it('names setup as the flow on a fresh sign-in', async () => {
+    // The claim is what flips `username_claimed`, so it is also what tells the
+    // web a terminal flow is mid-run — "head back to your terminal", not the
+    // manual agent prompt.
+    await setup()
+
+    expect(claimBody()).toEqual({ username: 'ada', flow: 'setup' })
+  })
+
+  it('names setup as the flow on the existing-session repair too', async () => {
+    m.loadSession.mockResolvedValue({
+      ...CLAIMED_SESSION,
+      handle: 'ada',
+      usernameClaimed: false,
+    })
+
+    await setup()
+
+    expect(callIndex('/api/cli/device/start')).toBe(-1)
+    expect(claimBody()).toEqual({ username: 'ada', flow: 'setup' })
+  })
+
   it('retries the claim once and surfaces a visible error when it never lands', async () => {
     // The web onboarding UI polls `username_claimed` and hangs forever if the
     // claim is lost, so setup may not swallow this the way bare `login` does.

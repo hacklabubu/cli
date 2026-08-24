@@ -133,7 +133,7 @@ export async function setup(): Promise<void> {
   if (existing) {
     // Reuse a session that's already on disk. It may still be half-finished
     // (auth succeeded, the claim didn't), so run the claim guard over it.
-    const outcome = await ensureHandleClaimed(existing, 2)
+    const outcome = await ensureHandleClaimed(existing, 2, 'setup')
     if (outcome.session !== existing) await saveSession(outcome.session)
     session = outcome.session
     claimFailed = outcome.claimFailed
@@ -141,6 +141,9 @@ export async function setup(): Promise<void> {
     try {
       const outcome = await performLogin({
         claimAttempts: 2,
+        // Both of setup's auth paths claim as `setup`, so the web can point the
+        // hacker back at the terminal they are standing in.
+        flow: 'setup',
         // The rail block ends by redrawing itself away; with no terminal to
         // redraw, `login`'s plain block is the honest thing to print.
         ...(canRedraw() ? { deviceCode: railDeviceCode() } : {}),
