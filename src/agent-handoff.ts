@@ -9,9 +9,10 @@ import { delimiter, join } from 'node:path'
  * it, answers its permission prompts, and (if the agent CLI is installed but
  * logged out) walks its own login flow. Nothing here is silent or headless.
  *
- * When no agent can be used we tell the backend, so the web onboarding can fall
- * back to showing the manual paste-the-prompt step instead of waiting for a
- * ping that is never coming.
+ * Every outcome is reported to the backend, because the web onboarding waits
+ * only on positive evidence: a `launched` says an agent is running and the page
+ * should sit on "waiting for your agent"; `declined` / `unavailable` (and no
+ * signal at all) put the manual paste-the-prompt step up instead.
  */
 
 export type AgentCli = {
@@ -86,19 +87,24 @@ export function launchAgentCli(agent: AgentCli, prompt: string): boolean {
 const HANDOFF_TIMEOUT_MS = 8000
 
 /**
- * Tell the backend that no agent took the profile work, so the web onboarding
- * shows the manual prompt instead of waiting. Best effort by design: a failure
- * (offline, or a backend that doesn't have the route yet) must never break the
- * end of setup. There is deliberately no 'launched' outcome — the agent's own
- * `hacklab ping` is that signal.
+ * Tell the backend what happened to the profile work, so the web onboarding
+ * knows which state to show: `launched` is the positive evidence that an agent
+ * is now running and the page should wait for it; `declined` and `unavailable`
+ * mean nobody took it, so the page shows the manual paste-the-prompt step
+ * instead of waiting for a ping that is never coming.
+ *
+ * Best effort by design: a failure (offline, or a backend too old to know the
+ * `launched` outcome and 400ing it) must never break the end of setup.
  *
  * Server contract (POST /api/cli/agent-handoff):
- *   `Authorization: Bearer <session token>`, body `{ outcome }`.
+ *   `Authorization: Bearer <session token>`, body `{ outcome, agent? }`,
+ *   where `agent` is the binary name we launched or offered (e.g. `claude`).
  */
 export async function notifyAgentHandoff(
   appUrl: string,
   token: string,
-  outcome: 'unavailable' | 'declined'
+  outcome: 'launched' | 'unavailable' | 'declined',
+  agent?: string
 ): Promise<void> {
   try {
     await fetch(`${appUrl}/api/cli/agent-handoff`, {
@@ -107,7 +113,7 @@ export async function notifyAgentHandoff(
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({ outcome }),
+      body: JSON.stringify({ outcome, ...(agent ? { agent } : {}) }),
       signal: AbortSignal.timeout(HANDOFF_TIMEOUT_MS),
     })
   } catch {
