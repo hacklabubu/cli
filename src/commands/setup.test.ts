@@ -205,7 +205,7 @@ function failResponse(status: number) {
 
 let fetchMock: ReturnType<typeof vi.fn>
 let claimResponder: () => Response
-let handoffResponder: () => Response
+let handoffResponder: () => Response | Promise<Response>
 
 // Agent detection reads PATH, so the tests own it: an empty temp dir means "no
 // agent installed", and `installAgents` drops executables into it in the shape
@@ -224,8 +224,13 @@ function installAgents(...bins: string[]) {
 const launchedBin = () => m.spawnSync.mock.calls[0]?.[0] as string | undefined
 
 const handoffCalls = () => callsTo('/api/cli/agent-handoff')
-const handoffBody = () =>
-  JSON.parse(String((handoffCalls()[0]?.[1] as RequestInit | undefined)?.body))
+const handoffBody = (nth = 0) =>
+  JSON.parse(
+    String((handoffCalls()[nth]?.[1] as RequestInit | undefined)?.body)
+  )
+/** Every handoff outcome the flow reported, in the order it reported them. */
+const handoffOutcomes = () =>
+  handoffCalls().map((_, i) => handoffBody(i).outcome as string)
 
 const urls = () => fetchMock.mock.calls.map((c) => String(c[0]))
 const callIndex = (fragment: string) =>
@@ -486,10 +491,10 @@ describe('setup — conversation sharing consent', () => {
 })
 
 // The last beat of setup hands the profile work to a coding agent the user
-// already has. Two rules the tests pin down: a launched agent is announced to
-// nobody but the user (its own `hacklab ping` is the success signal), and every
-// path where no agent runs tells the backend, because the web onboarding is
-// waiting on that to show the manual prompt instead.
+// already has. The rule the tests pin down: the backend hears about every
+// outcome, because the web onboarding waits only on positive evidence of a
+// launch. A `launched` puts the page into "waiting for your agent"; `declined`
+// / `unavailable` — and silence — put the manual prompt up instead.
 describe('setup — agent handoff', () => {
   // Which agent the flow picks and announces. The argv it is launched with is
   // platform-shaped, so that lives in agent-handoff.test.ts where
@@ -516,25 +521,82 @@ describe('setup — agent handoff', () => {
     expect(m.logs.join('\n')).toContain('found Codex')
   })
 
-  it('launches interactively on enter and never notifies the backend', async () => {
+  it('notifies `launched` BEFORE it hands over the terminal', async () => {
     installAgents('claude')
     m.bareEnter.mockResolvedValue(true)
-    // The browser line has to be printed BEFORE the agent owns the terminal —
-    // afterwards nobody is reading our output.
+    // Ordering is the whole point. `spawnSync` blocks the event loop until the
+    // agent session ends, so a notification merely *started* before the spawn
+    // would not reach the backend for as long as the user keeps the agent
+    // open — and the web page it steers would already have given up. Snapshot
+    // what the backend has heard at the moment of the spawn.
+    // The round-trip completes on a later tick, the way a real one does — so
+    // this fails on a notification that is merely *started* before the spawn.
+    let delivered = false
+    handoffResponder = () =>
+      new Promise((resolve) =>
+        setTimeout(() => {
+          delivered = true
+          resolve(jsonResponse({}))
+        }, 0)
+      )
+    let outcomesAtSpawn: string[] = []
+    let deliveredAtSpawn = false
     let logsAtSpawn: string[] = []
     m.spawnSync.mockImplementation(() => {
+      outcomesAtSpawn = handoffOutcomes()
+      deliveredAtSpawn = delivered
       logsAtSpawn = [...m.logs]
       return { status: 0 }
     })
 
     await setup()
 
+    expect(outcomesAtSpawn).toEqual(['launched'])
+    expect(deliveredAtSpawn).toBe(true)
+    // The browser line has to be printed BEFORE the agent owns the terminal —
+    // afterwards nobody is reading our output.
     expect(logsAtSpawn.join('\n')).toContain('head back to your browser')
-    expect(handoffCalls()).toHaveLength(0)
+    // One report, and it names the binary that took the work.
+    expect(handoffCalls()).toHaveLength(1)
+    expect(handoffBody()).toEqual({ outcome: 'launched', agent: 'claude' })
     expect(m.captureEvent).toHaveBeenCalledWith('ada', 'cli_agent_handoff', {
       agent: 'claude',
       outcome: 'launched',
     })
+    // …and exactly once: the telemetry event is not a second handoff report.
+    expect(
+      m.captureEvent.mock.calls.filter(
+        (c: unknown[]) => c[1] === 'cli_agent_handoff'
+      )
+    ).toHaveLength(1)
+  })
+
+  it('spawns anyway when the `launched` notification fails', async () => {
+    installAgents('claude')
+    m.bareEnter.mockResolvedValue(true)
+    handoffResponder = () => {
+      throw new Error('offline')
+    }
+
+    await setup()
+
+    expect(launchedBin()).toBe('claude')
+    expect(m.captureEvent).toHaveBeenCalledWith('ada', 'cli_agent_handoff', {
+      agent: 'claude',
+      outcome: 'launched',
+    })
+  })
+
+  it('spawns anyway when the backend rejects the `launched` outcome', async () => {
+    // An older backend that predates `launched` 400s it. The user's agent
+    // still gets to run; only the web page is worse off.
+    installAgents('claude')
+    m.bareEnter.mockResolvedValue(true)
+    handoffResponder = () => failResponse(400)
+
+    await setup()
+
+    expect(launchedBin()).toBe('claude')
   })
 
   it('notifies `declined` and prints the prompt to paste when skipped', async () => {
@@ -545,6 +607,7 @@ describe('setup — agent handoff', () => {
 
     expect(m.spawnSync).not.toHaveBeenCalled()
     expect(m.logs.join('\n')).toContain('skipped')
+    expect(handoffCalls()).toHaveLength(1)
     expect(handoffBody()).toEqual({ outcome: 'declined' })
     const req = handoffCalls()[0]?.[1] as RequestInit
     expect((req.headers as Record<string, string>).Authorization).toBe(
@@ -568,14 +631,19 @@ describe('setup — agent handoff', () => {
     })
   })
 
-  it('treats an agent that will not start as unavailable', async () => {
+  it('corrects a `launched` with `unavailable` when the agent will not start', async () => {
     installAgents('claude')
     m.bareEnter.mockResolvedValue(true)
     m.spawnSync.mockReturnValue({ error: new Error('spawn ENOENT') })
 
     await setup()
 
-    expect(handoffBody()).toEqual({ outcome: 'unavailable' })
+    // We commit to `launched` before the spawn, so a spawn that never starts
+    // has to walk it back — otherwise the page waits forever on an agent that
+    // does not exist. Both reports, in that order.
+    expect(handoffOutcomes()).toEqual(['launched', 'unavailable'])
+    expect(handoffBody(0)).toEqual({ outcome: 'launched', agent: 'claude' })
+    expect(handoffBody(1)).toEqual({ outcome: 'unavailable', agent: 'claude' })
     expect(m.logs.join('\n')).toContain("couldn't start Claude Code")
     expect(m.logs.join('\n')).toContain(PROFILE_SETUP_PROMPT)
     expect(m.captureEvent).toHaveBeenCalledWith('ada', 'cli_agent_handoff', {

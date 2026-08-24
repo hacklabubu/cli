@@ -306,9 +306,9 @@ type HandoffResult = {
  *
  * Every path ends with one closing line, and the browser line is printed before
  * the agent takes over the terminal — once it does, nothing we print afterwards
- * would be read in time. When no agent runs, the backend is told so the web
- * onboarding switches to the manual paste-the-prompt step; a launched agent
- * needs no such call, because its own `hacklab ping` is the signal.
+ * would be read in time. Every path also tells the backend what happened: the
+ * web onboarding only waits on a `launched`, and switches to the manual
+ * paste-the-prompt step on `declined` / `unavailable` or on hearing nothing.
  */
 async function offerAgentHandoff(
   session: Session,
@@ -340,8 +340,18 @@ async function offerAgentHandoff(
   clack.log.step(`handed off to ${agent.name}`)
   clack.log.message(dim(browserLine))
 
+  // Ordering is load-bearing: the `launched` signal must be *awaited* before
+  // the spawn. `launchAgentCli` uses `spawnSync`, which blocks the event loop
+  // for the whole agent session, so a fire-and-forget fetch would not actually
+  // go out until the agent exits — by which time the web page it was meant to
+  // steer has long since given up. The 8s timeout inside `notifyAgentHandoff`
+  // caps how long this can hold up the spawn; the typical case is one fast POST.
+  await notifyAgentHandoff(appUrl, session.token, 'launched', agent.bin)
+
   if (!launchAgentCli(agent, PROFILE_SETUP_PROMPT)) {
-    await notifyAgentHandoff(appUrl, session.token, 'unavailable')
+    // The correction to the `launched` we just sent: the process never
+    // started, so the page must stop waiting and show the manual prompt.
+    await notifyAgentHandoff(appUrl, session.token, 'unavailable', agent.bin)
     clack.log.error(`couldn't start ${agent.name}`)
     printManualPrompt()
     clack.outro(dim(session.handle ? `${appUrl}/${session.handle}` : appUrl))
