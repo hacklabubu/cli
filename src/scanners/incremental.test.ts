@@ -3,17 +3,20 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { parsePromptLine } from '../prompt-stats.js'
 import {
   cumulativeTotals,
   emptyState,
+  hasPromptActivity,
   loadScanState,
   markUploaded,
+  PROMPT_SESSION_RETENTION_DAYS,
   readCompleteLines,
-  rebuildScanState,
   runTick,
   sameTotals,
   saveScanState,
   scanStatePath,
+  stageFullScan,
   type TickSources,
   tickPayload,
 } from './incremental.js'
@@ -49,6 +52,20 @@ function usageLine(tokens: number, model = 'opus'): string {
   })}\n`
 }
 
+/** A Claude Code user prompt, as the transcript records one. */
+function promptLine(
+  text: string,
+  sessionId = 's1',
+  timestamp = new Date().toISOString()
+): string {
+  return `${JSON.stringify({
+    type: 'user',
+    sessionId,
+    timestamp,
+    message: { content: text },
+  })}\n`
+}
+
 /** Sources with one JSONL harness rooted at a tmp dir, nothing else. */
 function sources(over: Partial<TickSources> = {}): TickSources {
   return {
@@ -57,6 +74,7 @@ function sources(over: Partial<TickSources> = {}): TickSources {
         tool: 'claude_code',
         files: () => findFiles(dir, '.jsonl'),
         parse: parseClaudeCodeLine,
+        parsePrompt: parsePromptLine,
       },
     ],
     codex: { files: async () => [], dateFor: () => null },
@@ -245,7 +263,6 @@ describe('runTick — SQLite harnesses', () => {
   const result = (tokens: number): ScanResult => ({
     tool: 'hermes',
     daily: [{ date: today, tool: 'hermes', tokens, messages: 1, model: 'h' }],
-    hourly: [],
     models: { h: tokens },
   })
 
@@ -279,24 +296,28 @@ describe('runTick — SQLite harnesses', () => {
 })
 
 describe('scan-state persistence', () => {
-  it('drops hourly buckets that fell out of the 90-day window', async () => {
+  it('drops prompt sessions that aged out of the retention window', async () => {
+    const stale = new Date(
+      Date.now() - (PROMPT_SESSION_RETENTION_DAYS + 5) * 86_400_000
+    ).toISOString()
     const state = emptyState()
-    state.harnesses.claude_code = {
-      files: {},
-      daily: {},
-      hourly: {
-        '2000-01-01|9|opus': { tokens: 10, messages: 1 },
-        [`${today}|9|opus`]: { tokens: 20, messages: 1 },
+    state.prompts.sessions = {
+      old: { startedAt: stale, lastActiveAt: stale, promptCount: 3 },
+      fresh: {
+        startedAt: new Date().toISOString(),
+        lastActiveAt: new Date().toISOString(),
+        promptCount: 1,
       },
-      models: {},
     }
+    // An unsent row goes with it: a dirty list that only ever grows is the
+    // failure mode this prune exists to prevent.
+    state.prompts.dirtySessions = ['old', 'fresh']
 
     await saveScanState(state)
     const loaded = await loadScanState()
 
-    expect(Object.keys(loaded?.harnesses.claude_code?.hourly ?? {})).toEqual([
-      `${today}|9|opus`,
-    ])
+    expect(Object.keys(loaded?.prompts.sessions ?? {})).toEqual(['fresh'])
+    expect(loaded?.prompts.dirtySessions).toEqual(['fresh'])
   })
 
   it('treats a state from another version as no state at all', async () => {
@@ -323,10 +344,6 @@ describe('tickPayload', () => {
         '2026-03-01|opus': { tokens: 10, messages: 1 },
         '2026-03-02|opus': { tokens: 20, messages: 2 },
       },
-      hourly: {
-        '2026-03-01|9|opus': { tokens: 10, messages: 1 },
-        '2026-03-02|9|opus': { tokens: 20, messages: 2 },
-      },
       models: { opus: 30 },
     }
     // Cursor is never scanned by a tick — it's carried over from the last full
@@ -334,7 +351,6 @@ describe('tickPayload', () => {
     s.harnesses.cursor = {
       files: {},
       daily: { '2026-03-02|': { tokens: 7, messages: 1 } },
-      hourly: {},
       models: {},
     }
     s.dirty = ['2026-03-02']
@@ -363,16 +379,6 @@ describe('tickPayload', () => {
       ])
     )
     expect(payload.dailyTotals).toHaveLength(2)
-    expect(payload.hourlyTotals).toEqual([
-      {
-        date: '2026-03-02',
-        hour: 9,
-        tool: 'claude_code',
-        model: 'opus',
-        tokens: 20,
-        messages: 2,
-      },
-    ])
   })
 
   it('always sends the full cumulative totals', async () => {
@@ -396,7 +402,6 @@ describe('cumulative bookkeeping', () => {
     state.harnesses.claude_code = {
       files: {},
       daily: { [`${today}|opus`]: { tokens: 5, messages: 1 } },
-      hourly: {},
       models: { opus: 5 },
     }
     state.dirty = [today]
@@ -412,7 +417,7 @@ describe('cumulative bookkeeping', () => {
   })
 })
 
-describe('rebuildScanState', () => {
+describe('stageFullScan', () => {
   it('re-bases the state on a full scan, leaving nothing dirty', async () => {
     const file = join(dir, 'a.jsonl')
     await writeFile(file, usageLine(100))
@@ -427,11 +432,11 @@ describe('rebuildScanState', () => {
           model: 'opus',
         },
       ],
-      hourly: [],
       models: { opus: 100 },
     }
 
-    await rebuildScanState([scanned], sources())
+    const staged = await stageFullScan([scanned], { scanned: null }, sources())
+    await staged.commit()
     const state = await loadScanState()
 
     expect(state?.dirty).toEqual([])
@@ -456,5 +461,306 @@ describe('readCompleteLines', () => {
 
     expect(text).toBe('{"a":"日本語"}')
     expect(offset).toBe(Buffer.byteLength('{"a":"日本語"}\n'))
+  })
+})
+
+// Prompt activity rides the same tail-read as tokens, but on the opposite
+// contract: the server upserts it with GREATEST semantics per (machine,
+// session) and (machine, date), so a resend is free and the dirty sets can be
+// drained a capped batch at a time.
+describe('runTick — prompt activity', () => {
+  it('counts prompts from the same tail-read that counts tokens', async () => {
+    const file = join(dir, 'a.jsonl')
+    await writeFile(file, usageLine(100))
+    const first = await runTick(null, sources())
+
+    await appendFile(file, promptLine('fix the auth bug please'))
+    const { state } = await runTick(first.state, sources())
+
+    expect(state.prompts.sessions.s1).toMatchObject({ promptCount: 1 })
+    expect(state.prompts.daily[today]).toEqual({ prompts: 1, words: 5 })
+    expect(state.prompts.dirtySessions).toEqual(['s1'])
+    expect(state.prompts.dirtyDates).toEqual([today])
+    expect(hasPromptActivity(state)).toBe(true)
+  })
+
+  it('widens a session rather than duplicating it', async () => {
+    const file = join(dir, 'a.jsonl')
+    await writeFile(
+      file,
+      promptLine('later one', 's1', '2026-03-02T12:00:00.000Z')
+    )
+    const first = await runTick(null, sources())
+
+    await appendFile(
+      file,
+      promptLine('even later', 's1', '2026-03-02T13:00:00.000Z')
+    )
+    const { state } = await runTick(first.state, sources())
+
+    expect(state.prompts.sessions.s1).toEqual({
+      startedAt: '2026-03-02T12:00:00.000Z',
+      lastActiveAt: '2026-03-02T13:00:00.000Z',
+      promptCount: 2,
+    })
+  })
+
+  it('marks everything dirty on a cold start', async () => {
+    // Unlike tokens, prompt rows are idempotent upserts and a cold start is
+    // exactly the case where nothing proves they ever reached the server.
+    await writeFile(join(dir, 'a.jsonl'), promptLine('hello there'))
+
+    const { state } = await runTick(null, sources())
+
+    expect(state.dirty).toEqual([])
+    expect(state.prompts.dirtySessions).toEqual(['s1'])
+    expect(state.prompts.dirtyDates).toEqual([today])
+  })
+
+  it('rebuilds rather than double-counts when the tail is invalidated', async () => {
+    const file = join(dir, 'a.jsonl')
+    await writeFile(file, promptLine('one two three') + promptLine('four five'))
+    const first = await runTick(null, sources())
+    expect(first.state.prompts.sessions.s1?.promptCount).toBe(2)
+
+    // The file shrank: the whole harness is re-read, prompts included.
+    await writeFile(file, promptLine('one two three'))
+    const { state } = await runTick(first.state, sources())
+
+    expect(state.prompts.sessions.s1?.promptCount).toBe(1)
+    expect(state.prompts.daily[today]).toEqual({ prompts: 1, words: 3 })
+  })
+
+  it('ignores lines that are not the person typing', async () => {
+    const toolResult = `${JSON.stringify({
+      type: 'user',
+      sessionId: 's1',
+      timestamp: new Date().toISOString(),
+      message: { content: [{ type: 'tool_result', content: 'ok' }] },
+    })}\n`
+    await writeFile(join(dir, 'a.jsonl'), toolResult)
+
+    const { state } = await runTick(null, sources())
+
+    expect(state.prompts.sessions).toEqual({})
+  })
+})
+
+describe('tickPayload — promptActivity', () => {
+  const withPrompts = (sessionCount: number) => {
+    const s = emptyState()
+    for (let i = 0; i < sessionCount; i++) {
+      const id = `s${String(i).padStart(4, '0')}`
+      const at = new Date(Date.parse('2026-03-02T00:00:00.000Z') + i * 1000)
+      s.prompts.sessions[id] = {
+        startedAt: at.toISOString(),
+        lastActiveAt: at.toISOString(),
+        promptCount: 1,
+      }
+      s.prompts.dirtySessions.push(id)
+    }
+    s.prompts.daily['2026-03-02'] = { prompts: sessionCount, words: 10 }
+    s.prompts.dirtyDates.push('2026-03-02')
+    return s
+  }
+
+  it('is left out entirely unless the tier asked for it', () => {
+    const state = withPrompts(1)
+    expect(tickPayload(state).promptActivity).toBeUndefined()
+  })
+
+  it('sends the outstanding sessions and dates', () => {
+    const payload = tickPayload(withPrompts(2), { promptActivity: true })
+
+    expect(payload.promptActivity?.sessions).toHaveLength(2)
+    expect(payload.promptActivity?.dailyPrompts).toEqual([
+      { date: '2026-03-02', prompts: 2, words: 10 },
+    ])
+  })
+
+  it('caps a backlog at 500 sessions, newest first, keeping the rest dirty', () => {
+    const state = withPrompts(520)
+
+    const payload = tickPayload(state, { promptActivity: true })
+    expect(payload.promptActivity?.sessions).toHaveLength(500)
+    // Most recently active first, so the work the user cares about syncs first.
+    expect(payload.promptActivity?.sessions[0]?.sessionId).toBe('s0519')
+
+    markUploaded(state)
+    expect(state.prompts.dirtySessions).toHaveLength(20)
+    expect(state.prompts.dirtyDates).toEqual([])
+  })
+
+  it('reads a dirty id with no row behind it as nothing to send', () => {
+    // Otherwise the tick POSTs an empty block every minute forever: there'd be
+    // nothing for markUploaded to clear, so the id would never go away.
+    const state = emptyState()
+    state.prompts.dirtySessions = ['pruned']
+    state.prompts.dirtyDates = ['2020-01-01']
+
+    expect(hasPromptActivity(state)).toBe(false)
+  })
+
+  it('drops a claim the tier no longer covers', () => {
+    // A failed send under `stats`, then the user turns the tier down to `none`:
+    // the next tick's success must not clear rows it never sent.
+    const state = withPrompts(2)
+    tickPayload(state, { promptActivity: true })
+
+    tickPayload(state)
+    markUploaded(state)
+
+    expect(state.prompts.dirtySessions).toHaveLength(2)
+  })
+
+  it('keeps everything dirty when the upload never lands', () => {
+    const state = withPrompts(3)
+    tickPayload(state, { promptActivity: true })
+
+    // No markUploaded: the POST failed, so the next tick has to resend.
+    expect(state.prompts.dirtySessions).toHaveLength(3)
+    const again = tickPayload(state, { promptActivity: true })
+    expect(again.promptActivity?.sessions).toHaveLength(3)
+  })
+})
+
+describe('stageFullScan — prompt activity', () => {
+  const scanned: ScanResult = {
+    tool: 'claude_code',
+    daily: [],
+    models: {},
+  }
+
+  // Inside the retention window, or `saveScanState` prunes it away first.
+  const startedAt = new Date(Date.now() - 3_600_000).toISOString()
+  const lastActiveAt = new Date().toISOString()
+
+  it('dirties only what the full scan moved', async () => {
+    const before = emptyState()
+    before.prompts.sessions.s1 = { startedAt, lastActiveAt, promptCount: 4 }
+    before.prompts.daily[today] = { prompts: 4, words: 40 }
+    await saveScanState(before)
+
+    const staged = await stageFullScan(
+      [scanned],
+      {
+        scanned: {
+          sessions: {
+            // unchanged — the ticks already sent this one
+            s1: { startedAt, lastActiveAt, promptCount: 4 },
+            // new to the full scan
+            s2: { startedAt, lastActiveAt, promptCount: 2 },
+          },
+          daily: { [today]: { prompts: 6, words: 55 } },
+        },
+      },
+      sources()
+    )
+
+    // The difference rides out on this very upload — there may be no daemon to
+    // drain it later.
+    expect(staged.promptActivity?.sessions).toEqual([
+      { sessionId: 's2', startedAt, lastActiveAt, promptCount: 2 },
+    ])
+    expect(staged.promptActivity?.dailyPrompts).toEqual([
+      { date: today, prompts: 6, words: 55 },
+    ])
+
+    await staged.commit()
+    const state = await loadScanState()
+    expect(state?.prompts.dirtySessions).toEqual([])
+    expect(state?.prompts.dirtyDates).toEqual([])
+    expect(state?.prompts.daily[today]).toEqual({ prompts: 6, words: 55 })
+  })
+
+  it('clears the claim only on a commit', async () => {
+    // No commit means the POST never landed: everything has to still be there
+    // for the next run to re-derive and resend.
+    const before = emptyState()
+    before.prompts.daily[today] = { prompts: 1, words: 5 }
+    await saveScanState(before)
+
+    const full = {
+      scanned: {
+        sessions: { s1: { startedAt, lastActiveAt, promptCount: 2 } },
+        daily: { [today]: { prompts: 2, words: 11 } },
+      },
+    }
+
+    const failed = await stageFullScan([scanned], full, sources())
+    expect(failed.promptActivity?.sessions).toHaveLength(1)
+    // ...upload throws here, so commit() is never called.
+
+    const retry = await stageFullScan([scanned], full, sources())
+    expect(retry.promptActivity).toEqual(failed.promptActivity)
+
+    await retry.commit()
+    const state = await loadScanState()
+    expect(state?.prompts.dirtySessions).toEqual([])
+  })
+
+  it('holds back what the cap could not carry', async () => {
+    const sessions: Record<string, unknown> = {}
+    for (let i = 0; i < 505; i++) {
+      sessions[`s${String(i).padStart(4, '0')}`] = {
+        startedAt,
+        lastActiveAt: new Date(
+          Date.parse(lastActiveAt) - i * 1000
+        ).toISOString(),
+        promptCount: 1,
+      }
+    }
+
+    const staged = await stageFullScan(
+      [scanned],
+      {
+        scanned: {
+          sessions: sessions as never,
+          daily: { [today]: { prompts: 505, words: 900 } },
+        },
+      },
+      sources()
+    )
+    expect(staged.promptActivity?.sessions).toHaveLength(500)
+
+    await staged.commit()
+    const state = await loadScanState()
+    expect(state?.prompts.dirtySessions).toHaveLength(5)
+  })
+
+  it('leaves the prompt state alone for a caller that never read prompts', async () => {
+    // `hacklab scan` uploads tokens without resolving a consent tier. It must
+    // not wipe what the tick accumulated, and must not send any of it either.
+    const before = emptyState()
+    before.prompts.sessions.s1 = { startedAt, lastActiveAt, promptCount: 4 }
+    before.prompts.daily[today] = { prompts: 4, words: 40 }
+    before.prompts.dirtySessions = ['s1']
+    before.prompts.dirtyDates = [today]
+    await saveScanState(before)
+
+    const staged = await stageFullScan([scanned], 'untouched', sources())
+    expect(staged.promptActivity).toBeUndefined()
+
+    await staged.commit()
+    const state = await loadScanState()
+    expect(state?.prompts.sessions.s1?.promptCount).toBe(4)
+    expect(state?.prompts.dirtySessions).toEqual(['s1'])
+    expect(state?.prompts.dirtyDates).toEqual([today])
+  })
+
+  it('drops the prompt state entirely when the user is at the none tier', async () => {
+    // Nothing conversational was read, so nothing conversational is kept.
+    const before = emptyState()
+    before.prompts.sessions.s1 = { startedAt, lastActiveAt, promptCount: 4 }
+    before.prompts.dirtySessions = ['s1']
+    await saveScanState(before)
+
+    const staged = await stageFullScan([scanned], { scanned: null }, sources())
+    await staged.commit()
+
+    const state = await loadScanState()
+    expect(state?.prompts.sessions).toEqual({})
+    expect(state?.prompts.dirtySessions).toEqual([])
+    expect(staged.promptActivity).toBeUndefined()
   })
 })

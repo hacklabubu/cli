@@ -4,12 +4,16 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import {
+  addPromptToActivity,
   bucketMaxFor,
   buildHistogram,
   countWords,
+  emptyPromptActivity,
   gitOriginUrl,
   PROMPT_LENGTH_BUCKET_MAX,
   PROMPT_LENGTH_BUCKET_MIN,
+  PROMPT_SESSION_ID_MAX_CHARS,
+  parsePromptLine,
   promptTextFrom,
 } from './prompt-stats.js'
 
@@ -67,6 +71,94 @@ describe('promptTextFrom', () => {
     expect(promptTextFrom({ type: 'user' })).toBeNull()
     expect(promptTextFrom(null)).toBeNull()
     expect(promptTextFrom('nonsense')).toBeNull()
+  })
+})
+
+describe('parsePromptLine', () => {
+  const line = (extra: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      type: 'user',
+      sessionId: 'abc-123',
+      timestamp: '2026-03-02T12:00:00.000Z',
+      message: { content: 'fix the auth bug' },
+      ...extra,
+    })
+
+  it('reduces a prompt to session, instant and word count', () => {
+    expect(parsePromptLine(line())).toEqual({
+      sessionId: 'abc-123',
+      timestamp: '2026-03-02T12:00:00.000Z',
+      words: 4,
+    })
+  })
+
+  it('canonicalizes the timestamp so string order is time order', () => {
+    // The state compares timestamps as strings to widen a session's window;
+    // a non-UTC offset would sort wrong if it went in verbatim.
+    expect(
+      parsePromptLine(line({ timestamp: '2026-03-02T14:00:00+02:00' }))
+    ).toEqual({
+      sessionId: 'abc-123',
+      timestamp: '2026-03-02T12:00:00.000Z',
+      words: 4,
+    })
+  })
+
+  it('drops a prompt that cannot be placed on a session or a day', () => {
+    // The server's schema requires both, so an unplaceable prompt would 400
+    // the whole sync rather than contributing anything.
+    expect(parsePromptLine(line({ sessionId: undefined }))).toBeNull()
+    expect(parsePromptLine(line({ timestamp: 'not a date' }))).toBeNull()
+    expect(
+      parsePromptLine(
+        line({ sessionId: 'x'.repeat(PROMPT_SESSION_ID_MAX_CHARS + 1) })
+      )
+    ).toBeNull()
+  })
+
+  it('applies the same exclusions as promptTextFrom', () => {
+    expect(parsePromptLine(line({ isSidechain: true }))).toBeNull()
+    expect(
+      parsePromptLine(line({ message: { content: [{ type: 'tool_result' }] } }))
+    ).toBeNull()
+    expect(parsePromptLine(line({ message: { content: '   ' } }))).toBeNull()
+    expect(parsePromptLine('not json')).toBeNull()
+  })
+})
+
+describe('addPromptToActivity', () => {
+  const at = (iso: string, words = 3) => ({
+    sessionId: 's1',
+    timestamp: iso,
+    words,
+  })
+
+  it('widens a session and tallies the day', () => {
+    const activity = emptyPromptActivity()
+    addPromptToActivity(activity, at('2026-03-02T12:00:00.000Z', 4))
+    addPromptToActivity(activity, at('2026-03-02T13:00:00.000Z', 6))
+
+    expect(activity.sessions.s1).toEqual({
+      startedAt: '2026-03-02T12:00:00.000Z',
+      lastActiveAt: '2026-03-02T13:00:00.000Z',
+      promptCount: 2,
+    })
+    expect(activity.daily['2026-03-02']).toEqual({ prompts: 2, words: 10 })
+  })
+
+  it('moves startedAt back when a transcript is read out of order', () => {
+    const activity = emptyPromptActivity()
+    addPromptToActivity(activity, at('2026-03-02T13:00:00.000Z'))
+    addPromptToActivity(activity, at('2026-03-02T09:00:00.000Z'))
+
+    expect(activity.sessions.s1?.startedAt).toBe('2026-03-02T09:00:00.000Z')
+    expect(activity.sessions.s1?.lastActiveAt).toBe('2026-03-02T13:00:00.000Z')
+  })
+
+  it('reports the session and date it touched', () => {
+    expect(
+      addPromptToActivity(emptyPromptActivity(), at('2026-03-02T23:30:00.000Z'))
+    ).toEqual({ sessionId: 's1', date: '2026-03-02' })
   })
 })
 

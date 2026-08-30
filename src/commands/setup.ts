@@ -8,11 +8,11 @@ import {
 import { dailySyncState, installDailySync } from '../daily-sync.js'
 import { captureEvent, identifyUser } from '../posthog.js'
 import {
-  loadPromptConsent,
-  type PromptConsentTier,
-  savePromptConsent,
+  loadPromptSync,
+  type PromptSyncTier,
+  savePromptSync,
 } from '../prompt-consent.js'
-import { rebuildScanState } from '../scanners/incremental.js'
+import { stageFullScan } from '../scanners/incremental.js'
 import {
   type AggregateScan,
   collectToolScans,
@@ -171,7 +171,7 @@ export async function setup(): Promise<void> {
   }
 
   // ── The one question in the flow ─────────────────────────────────────────
-  const consent = await askConversationConsent()
+  const consent = await askPromptSyncConsent()
 
   // ── Upload ───────────────────────────────────────────────────────────────
   const spin = clack.spinner()
@@ -179,14 +179,21 @@ export async function setup(): Promise<void> {
   let rank: number | undefined
   try {
     const promptStats = await scanConsentedPromptStats(consent)
-    const uploaded = await uploadTokenScan(session, scan, {
-      interactive: true,
-      timeoutMs: 120_000,
-      promptStats,
+    // Re-base the minutely tick's incremental state on this scan — otherwise
+    // the first tick re-uploads the whole history. Staged before the upload so
+    // the prompt activity it works out rides along, exactly as `sync` does.
+    const staged = await stageFullScan(results, {
+      scanned: promptStats?.activity ?? null,
     })
-    // A full scan just went out, so re-base the minutely tick's incremental
-    // state on it — otherwise the first tick re-uploads the whole history.
-    await rebuildScanState(results)
+
+    const uploaded = await uploadTokenScan(
+      session,
+      staged.promptActivity
+        ? { ...scan, promptActivity: staged.promptActivity }
+        : scan,
+      { interactive: true, timeoutMs: 120_000, promptStats }
+    )
+    await staged.commit()
     const after = uploaded.rankAfter
     if (typeof after === 'number' && Number.isFinite(after)) rank = after
     spin.stop(rank ? `synced · rank #${rank}` : 'synced')
@@ -221,7 +228,7 @@ export async function setup(): Promise<void> {
     await captureEvent(session.handle, 'cli_setup_completed', {
       tokens_total: scan.grandTotal,
       ...(reportedRank ? { rank: reportedRank } : {}),
-      prompt_consent: consent,
+      prompt_sync: consent,
     })
     await captureEvent(session.handle, 'cli_agent_handoff', {
       ...(handoff.agent ? { agent: handoff.agent } : {}),
@@ -378,7 +385,7 @@ function printManualPrompt(): void {
 }
 
 /**
- * Ask once whether to share conversation text, defaulting to yes.
+ * Ask once whether to sync prompt activity, defaulting to yes.
  *
  * Deliberately NOT prompt-consent.ts's `askYesNo` (which refuses to carry a
  * default): setup is the one place a default-yes is the product decision, and
@@ -386,15 +393,20 @@ function printManualPrompt(): void {
  * — a keypress they perform, not a value applied behind their back. `sync`'s
  * no-default disclosure is untouched. A non-TTY run has nobody to accept, so it
  * stays at 'none'.
+ *
+ * One question, so it can only honestly offer one tier: `stats`, the metadata
+ * one, which is the most a default-yes should carry. Sending prompt *text* is
+ * the `full` tier and stays a deliberate second act — named here, chosen
+ * elsewhere.
  */
-async function askConversationConsent(): Promise<PromptConsentTier> {
-  const stored = await loadPromptConsent()
+async function askPromptSyncConsent(): Promise<PromptSyncTier> {
+  const stored = await loadPromptSync()
   if (stored) {
     // Already answered, so it is not a step to walk — one dim line saying what
     // the answer is and where to change it.
     clack.log.message(
       dim(
-        `conversation sharing · ${stored} — change with \`hacklab config prompt-stats <full|stats|none>\``
+        `prompt sync · ${stored} — change with \`hacklab config prompt-sync <none|stats|full>\``
       )
     )
     return stored
@@ -403,23 +415,24 @@ async function askConversationConsent(): Promise<PromptConsentTier> {
   if (!process.stdin.isTTY) return 'none'
 
   clack.log.message([
-    bold('share your prompts?'),
-    'hacklab scores how well you work with AI. your real prompts give the',
-    'scoring model actual evidence — a sharper score, and a profile that',
-    'stands out. a sample of up to 20,000 characters is read by the model,',
-    'scored, and discarded. never stored, never shown to anyone.',
-    dim('change anytime: hacklab config prompt-stats <full|stats|none>'),
+    bold('sync your prompt activity?'),
+    'hacklab scores how well you work with AI. syncing how you prompt — how',
+    'many prompts, how long they are, when each session ran — puts your',
+    'sessions and prompt counts on your profile and keeps them current.',
+    'the text of your prompts stays on this machine.',
+    dim(
+      'want a sample of your prompts scored too? hacklab config prompt-sync full'
+    ),
+    dim('change anytime: hacklab config prompt-sync <none|stats|full>'),
   ])
 
   const answer = await clack.confirm({
-    message: 'share a sample of your prompts?',
+    message: 'sync your prompt activity?',
     initialValue: true,
   })
-  // Only the two tiers that were actually asked about. 'stats' (numbers, no
-  // text) was never on the table here; it stays reachable via `hacklab config`.
-  const tier: PromptConsentTier =
-    !clack.isCancel(answer) && answer === true ? 'full' : 'none'
-  await savePromptConsent(tier)
+  const tier: PromptSyncTier =
+    !clack.isCancel(answer) && answer === true ? 'stats' : 'none'
+  await savePromptSync(tier)
   return tier
 }
 

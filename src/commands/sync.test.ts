@@ -12,6 +12,7 @@ const m = vi.hoisted(() => ({
   uploadTokenScan: vi.fn(),
   loadSessionState: vi.fn(),
   refreshSession: vi.fn(),
+  loadPromptSync: vi.fn(),
 }))
 
 vi.mock('../sync.js', async (importOriginal) => {
@@ -26,6 +27,12 @@ vi.mock('../sync.js', async (importOriginal) => {
 vi.mock('../session.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../session.js')>()
   return { ...actual, loadSessionState: m.loadSessionState }
+})
+// Consent lives in ~/.hacklab/config.json, which os.homedir() pins outside the
+// tmp dir — so the tier is injected rather than written to the real config.
+vi.mock('../prompt-consent.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../prompt-consent.js')>()
+  return { ...actual, loadPromptSync: m.loadPromptSync }
 })
 // The state machine itself stays real — it reads and writes the tmp
 // scan-state.json — but the tick scans no logs, so what these tests exercise is
@@ -75,10 +82,24 @@ function dirtyState() {
   state.harnesses.claude_code = {
     files: {},
     daily: { [`${today}|opus`]: { tokens: 500, messages: 2 } },
-    hourly: {},
     models: { opus: 500 },
   }
   state.dirty = [today]
+  return state
+}
+
+/** A state with one outstanding prompt session and its day, nothing else. */
+function promptDirtyState() {
+  const state = emptyState()
+  const at = new Date().toISOString()
+  state.prompts.sessions.s1 = {
+    startedAt: at,
+    lastActiveAt: at,
+    promptCount: 3,
+  }
+  state.prompts.daily[today] = { prompts: 3, words: 21 }
+  state.prompts.dirtySessions = ['s1']
+  state.prompts.dirtyDates = [today]
   return state
 }
 
@@ -91,6 +112,7 @@ beforeEach(async () => {
   process.env.HACKLAB_SESSION_PATH = join(dir, 'session.json')
   m.loadSessionState.mockResolvedValue({ status: 'ok', session: SESSION })
   m.uploadTokenScan.mockResolvedValue({ tokensDelta: 500 })
+  m.loadPromptSync.mockResolvedValue(null)
 })
 
 afterEach(async () => {
@@ -211,6 +233,57 @@ describe('hacklab sync --tick', () => {
 
     expect(m.uploadTokenScan).toHaveBeenCalledTimes(2)
     expect((await loadScanState())?.dirty).toEqual([])
+  })
+
+  it('stays a no-op when only prompts moved and consent is missing', async () => {
+    // The tick counts prompts whatever the tier; at `none` they stay on disk,
+    // and a minute with nothing else to say still costs no request.
+    await saveScanState(promptDirtyState())
+
+    await sync(['--tick'])
+
+    expect(m.uploadTokenScan).not.toHaveBeenCalled()
+  })
+
+  it('uploads prompt activity on its own once the tier allows it', async () => {
+    await saveScanState(promptDirtyState())
+    m.loadPromptSync.mockResolvedValue('stats')
+
+    await sync(['--tick'])
+
+    const scan = m.uploadTokenScan.mock.calls[0]?.[1]
+    expect(scan.promptActivity).toEqual({
+      sessions: [expect.objectContaining({ sessionId: 's1', promptCount: 3 })],
+      dailyPrompts: [{ date: today, prompts: 3, words: 21 }],
+    })
+    // No token dates moved, so the token half of the payload stays empty.
+    expect(scan.dailyTotals).toEqual([])
+
+    const state = await loadScanState()
+    expect(state?.prompts.dirtySessions).toEqual([])
+    expect(state?.prompts.dirtyDates).toEqual([])
+  })
+
+  it('keeps prompt rows dirty when the upload fails', async () => {
+    await saveScanState(promptDirtyState())
+    m.loadPromptSync.mockResolvedValue('full')
+    m.uploadTokenScan.mockRejectedValue(new SyncUploadError('boom', 500))
+
+    await sync(['--tick'])
+
+    const state = await loadScanState()
+    expect(state?.prompts.dirtySessions).toEqual(['s1'])
+    expect(state?.prompts.dirtyDates).toEqual([today])
+  })
+
+  it('never sends prompt activity at the none tier, even with tokens to push', async () => {
+    const state = dirtyState()
+    state.prompts = promptDirtyState().prompts
+    await saveScanState(state)
+
+    await sync(['--tick'])
+
+    expect(m.uploadTokenScan.mock.calls[0]?.[1].promptActivity).toBeUndefined()
   })
 
   it('trims a sync.log that got out of hand', async () => {

@@ -5,16 +5,18 @@ import {
   saveConfig,
 } from '../config.js'
 import {
-  isPromptConsentTier,
-  PROMPT_CONSENT_TIERS,
-  type PromptConsentTier,
+  isPromptSyncTier,
+  PROMPT_SYNC_TIERS,
+  type PromptSyncTier,
+  savePromptSync,
 } from '../prompt-consent.js'
 import { dim, error, info, success } from '../ui.js'
 
-const PROMPT_CONSENT_DESCRIPTIONS: Record<PromptConsentTier, string> = {
-  none: 'token counts only. nothing from your conversations leaves this machine.',
-  stats: 'prompt lengths and per-project counts. numbers only, no text.',
-  full: 'the above, plus a text sample scored for how technical it is (then discarded).',
+const PROMPT_SYNC_DESCRIPTIONS: Record<PromptSyncTier, string> = {
+  none: 'token counts only. nothing prompt-related leaves this machine.',
+  stats:
+    'prompt counts, word counts, timestamps and session ids, synced continuously. no text.',
+  full: 'the above, plus a sample of your most recent prompts, scored for how technical it is (then discarded).',
 }
 
 /**
@@ -44,12 +46,12 @@ export async function configCommand(args: string[]) {
         `  cursor-email:   ${auth.email}${sourceNote(auth.emailSource, 'CURSOR_EMAIL')}`
       )
     }
-    const consent = (await loadConfig()).promptStatsConsent
-    if (isPromptConsentTier(consent)) {
-      info(`  prompt-stats:   ${consent}`)
-      info(`    ${dim(PROMPT_CONSENT_DESCRIPTIONS[consent])}`)
+    const consent = (await loadConfig()).promptSync
+    if (isPromptSyncTier(consent)) {
+      info(`  prompt-sync:    ${consent}`)
+      info(`    ${dim(PROMPT_SYNC_DESCRIPTIONS[consent])}`)
     } else {
-      info(`  prompt-stats:   ${dim('unset — sync will ask')}`)
+      info(`  prompt-sync:    ${dim('unset — sync will ask')}`)
     }
     if (!auth.apiKey && !auth.email) {
       info(`  ${dim('(cursor: empty)')}`)
@@ -61,7 +63,7 @@ export async function configCommand(args: string[]) {
       `  ${dim('cursor-email')}    your Cursor account email — scopes a team key to you`
     )
     info(
-      `  ${dim('prompt-stats')}    ${PROMPT_CONSENT_TIERS.join(' | ')} — what leaves this machine`
+      `  ${dim('prompt-sync')}     ${PROMPT_SYNC_TIERS.join(' | ')} — what leaves this machine`
     )
     console.log('')
     info(dim('per-run overrides (both beat this file):'))
@@ -89,19 +91,18 @@ export async function configCommand(args: string[]) {
       await saveConfig(config)
       success(`cursor-email set to ${value}`)
       break
-    case 'prompt-stats':
-      if (!isPromptConsentTier(value)) {
-        error(`prompt-stats must be one of: ${PROMPT_CONSENT_TIERS.join(', ')}`)
+    case 'prompt-sync':
+      if (!isPromptSyncTier(value)) {
+        error(`prompt-sync must be one of: ${PROMPT_SYNC_TIERS.join(', ')}`)
         process.exit(1)
       }
-      config.promptStatsConsent = value
-      await saveConfig(config)
-      success(`prompt-stats set to ${value}`)
-      info(dim(`  ${PROMPT_CONSENT_DESCRIPTIONS[value]}`))
+      await savePromptSync(value)
+      success(`prompt-sync set to ${value}`)
+      info(dim(`  ${PROMPT_SYNC_DESCRIPTIONS[value]}`))
       break
     default:
       error(`unknown config key: ${key}`)
-      info(`available: cursor-api-key, cursor-email, prompt-stats`)
+      info(`available: cursor-api-key, cursor-email, prompt-sync`)
       process.exit(1)
   }
 }

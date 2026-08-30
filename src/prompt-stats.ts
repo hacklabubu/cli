@@ -1,20 +1,24 @@
 import { execFile } from 'node:child_process'
-import { readFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 
-import { findFiles } from './scanners/util.js'
+import { findFiles, toDateStr } from './scanners/util.js'
 
 /**
  * Prompt statistics, computed entirely on this machine from the local Claude
  * Code transcripts and uploaded only under an explicit consent tier (see
  * prompt-consent.ts).
  *
- * Two numbers come out of a scan:
+ * Three things come out of a full scan:
  *
  *   - a histogram of how long the user's own prompts are, in words
  *   - a per-project prompt count, keyed by the project's git origin
+ *   - the prompt *activity* aggregate: per-session start/end/count and a
+ *     per-day prompt/word tally. That one is also what the minutely tick
+ *     accumulates incrementally (scanners/incremental.ts), so a full scan can
+ *     re-base the tick's state without either drifting from the other.
  *
  * and, under the `full` tier only, a sample of the raw prompt text so the
  * backend can score "how technical is this person's prompting". The backend
@@ -41,11 +45,39 @@ export type PromptStatsProject = {
   lastActiveAt: string
 }
 
+/** One session's running aggregate, as both the tick and a full scan build it. */
+export type PromptSessionAggregate = {
+  /** ISO timestamp of the first prompt seen in this session. */
+  startedAt: string
+  /** ISO timestamp of the most recent one. */
+  lastActiveAt: string
+  promptCount: number
+}
+
+/** One day's running tally. Cumulative for this machine, never a delta. */
+export type PromptDayAggregate = { prompts: number; words: number }
+
+/**
+ * The whole prompt-activity aggregate, keyed for cheap merging: sessions by
+ * session id, days by YYYY-MM-DD.
+ */
+export type PromptActivityAggregate = {
+  sessions: Record<string, PromptSessionAggregate>
+  daily: Record<string, PromptDayAggregate>
+}
+
 export type PromptStats = {
   totalPrompts: number
   bucketMax: number
   histogram: { length: number; count: number }[]
   projects: PromptStatsProject[]
+  /**
+   * Sessions and per-day counts for the whole local history. Not part of the
+   * `promptStats` block on the wire — the caller hands it to `stageFullScan`,
+   * which re-bases the tick's incremental state on it and works out which rows
+   * this upload still has to carry.
+   */
+  activity: PromptActivityAggregate
   /** Only ever set under the `full` consent tier. */
   conversationSample?: string
 }
@@ -90,6 +122,100 @@ export function promptTextFrom(entry: unknown): string | null {
 export function countWords(text: string): number {
   const matches = text.match(/\S+/g)
   return matches ? matches.length : 0
+}
+
+/** The server's cap on a session id. Longer than this and the row is rejected. */
+export const PROMPT_SESSION_ID_MAX_CHARS = 128
+
+/** One prompt, reduced to the three facts the activity aggregate needs. */
+export type PromptLine = {
+  sessionId: string
+  /** Canonical ISO-8601 UTC, so string order is time order. */
+  timestamp: string
+  words: number
+}
+
+/**
+ * A transcript line as prompt activity, or null when it isn't one.
+ *
+ * Stricter than `promptTextFrom` on purpose: a prompt with no session id or no
+ * usable timestamp can't be placed on a session or a day, and the server's
+ * schema would reject it, so it counts towards the histogram (which needs
+ * neither) and nothing else.
+ */
+export function parsePromptLine(line: string): PromptLine | null {
+  if (!line.trim()) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(line)
+  } catch {
+    return null
+  }
+  const text = promptTextFrom(parsed)
+  if (text === null) return null
+  const words = countWords(text)
+  if (words <= 0) return null
+
+  const entry = parsed as { sessionId?: unknown; timestamp?: unknown }
+  const sessionId =
+    typeof entry.sessionId === 'string' ? entry.sessionId.trim() : ''
+  if (!sessionId || sessionId.length > PROMPT_SESSION_ID_MAX_CHARS) return null
+
+  const timestamp = normalizeTimestamp(entry.timestamp)
+  if (!timestamp) return null
+
+  return { sessionId, timestamp, words }
+}
+
+/** An ISO-8601 UTC string, or null when the value isn't a usable instant. */
+export function normalizeTimestamp(value: unknown): string | null {
+  if (typeof value !== 'string' && typeof value !== 'number') return null
+  const at = typeof value === 'number' ? value : Date.parse(value)
+  if (!Number.isFinite(at)) return null
+  return new Date(at).toISOString()
+}
+
+export function emptyPromptActivity(): PromptActivityAggregate {
+  return { sessions: {}, daily: {} }
+}
+
+/**
+ * Fold one prompt into an activity aggregate, returning the session and date it
+ * landed on so an incremental caller can mark exactly those dirty.
+ *
+ * The date is the UTC day of the timestamp — the same attribution
+ * `toDateStr` gives every token daily row, so the two halves of a sync agree
+ * about which day a piece of work belongs to.
+ */
+export function addPromptToActivity(
+  activity: PromptActivityAggregate,
+  line: PromptLine
+): { sessionId: string; date: string } {
+  const session = activity.sessions[line.sessionId]
+  if (session) {
+    if (line.timestamp < session.startedAt) session.startedAt = line.timestamp
+    if (line.timestamp > session.lastActiveAt) {
+      session.lastActiveAt = line.timestamp
+    }
+    session.promptCount += 1
+  } else {
+    activity.sessions[line.sessionId] = {
+      startedAt: line.timestamp,
+      lastActiveAt: line.timestamp,
+      promptCount: 1,
+    }
+  }
+
+  const date = toDateStr(line.timestamp)
+  const day = activity.daily[date]
+  if (day) {
+    day.prompts += 1
+    day.words += line.words
+  } else {
+    activity.daily[date] = { prompts: 1, words: line.words }
+  }
+
+  return { sessionId: line.sessionId, date }
 }
 
 /**
@@ -162,6 +288,25 @@ type ProjectAccumulator = {
 }
 
 /**
+ * Newest transcript first. The sample is meant to be the user's *recent*
+ * prompting, so the walk order has to be time order — the directory walk's own
+ * order is alphabetical and would hand the scorer whatever happens to sort
+ * first, which for a long-lived machine is usually a project abandoned years
+ * ago. A file we can't stat sorts last rather than dropping out.
+ */
+async function byMtimeDesc(paths: string[]): Promise<string[]> {
+  const stamped = await Promise.all(
+    paths.map(async (path) => ({
+      path,
+      mtimeMs: await stat(path)
+        .then((s) => s.mtimeMs)
+        .catch(() => 0),
+    }))
+  )
+  return stamped.sort((a, b) => b.mtimeMs - a.mtimeMs).map((f) => f.path)
+}
+
+/**
  * Scan the local Claude Code transcripts.
  *
  * `includeSample` gates the raw prompt text: only the `full` consent tier
@@ -172,10 +317,11 @@ export async function scanPromptStats(
   options: { includeSample?: boolean } = {}
 ): Promise<PromptStats | null> {
   const root = join(homedir(), '.claude', 'projects')
-  const files = await findFiles(root, '.jsonl')
+  const files = await byMtimeDesc(await findFiles(root, '.jsonl'))
   if (files.length === 0) return null
 
   const wordCounts: number[] = []
+  const activity = emptyPromptActivity()
   const sampleParts: string[] = []
   let sampleChars = 0
   // Keyed by the transcript's project directory, which is Claude Code's own
@@ -197,6 +343,14 @@ export async function scanPromptStats(
     } catch {
       continue
     }
+
+    // Within a file the newest prompts are last, so the sample is drained in
+    // reverse after the file is read. Only collected while the budget is still
+    // open, so a full sample doesn't hold a whole history in memory.
+    const collectSample =
+      options.includeSample === true &&
+      sampleChars < CONVERSATION_SAMPLE_MAX_CHARS
+    const fileSample: string[] = []
 
     for (const line of content.split('\n')) {
       if (!line.trim()) continue
@@ -220,20 +374,22 @@ export async function scanPromptStats(
       wordCounts.push(words)
       project.promptCount += 1
 
-      if (typeof entry.timestamp === 'string') {
-        const at = Date.parse(entry.timestamp)
-        if (Number.isFinite(at) && at > project.lastActiveAt) {
-          project.lastActiveAt = at
-        }
+      const at = Date.parse(String(entry.timestamp))
+      if (Number.isFinite(at) && at > project.lastActiveAt) {
+        project.lastActiveAt = at
       }
 
-      if (
-        options.includeSample &&
-        sampleChars < CONVERSATION_SAMPLE_MAX_CHARS
-      ) {
-        sampleParts.push(text)
-        sampleChars += text.length + 2
-      }
+      const promptLine = parsePromptLine(line)
+      if (promptLine) addPromptToActivity(activity, promptLine)
+
+      if (collectSample) fileSample.push(text)
+    }
+
+    for (let i = fileSample.length - 1; i >= 0; i--) {
+      if (sampleChars >= CONVERSATION_SAMPLE_MAX_CHARS) break
+      const text = fileSample[i] as string
+      sampleParts.push(text)
+      sampleChars += text.length + 2
     }
   }
 
@@ -245,6 +401,7 @@ export async function scanPromptStats(
     bucketMax,
     histogram: buildHistogram(wordCounts, bucketMax),
     projects: await resolveProjects(byProjectDir),
+    activity,
   }
 
   if (options.includeSample && sampleParts.length > 0) {
@@ -254,6 +411,18 @@ export async function scanPromptStats(
   }
 
   return stats
+}
+
+/**
+ * The `promptStats` block as the server takes it. `activity` is deliberately
+ * dropped: it is local bookkeeping for the tick's incremental state, and it
+ * travels under its own top-level `promptActivity` field instead.
+ */
+export function promptStatsPayload(
+  stats: PromptStats
+): Omit<PromptStats, 'activity'> {
+  const { activity: _activity, ...wire } = stats
+  return wire
 }
 
 /**

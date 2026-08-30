@@ -18,10 +18,11 @@ const m = vi.hoisted(() => ({
   saveSession: vi.fn(),
   collectToolScans: vi.fn(),
   mergeToolScans: vi.fn(),
-  rebuildScanState: vi.fn(),
+  stageFullScan: vi.fn(),
+  stageCommit: vi.fn(),
   scanConsentedPromptStats: vi.fn(),
-  loadPromptConsent: vi.fn(),
-  savePromptConsent: vi.fn(),
+  loadPromptSync: vi.fn(),
+  savePromptSync: vi.fn(),
   dailySyncState: vi.fn(),
   installDailySync: vi.fn(),
   captureEvent: vi.fn(),
@@ -99,8 +100,8 @@ vi.mock('../daily-sync.js', () => ({
   trimSyncLog: vi.fn(),
 }))
 vi.mock('../prompt-consent.js', () => ({
-  loadPromptConsent: m.loadPromptConsent,
-  savePromptConsent: m.savePromptConsent,
+  loadPromptSync: m.loadPromptSync,
+  savePromptSync: m.savePromptSync,
 }))
 vi.mock('../scanners/index.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../scanners/index.js')>()
@@ -113,7 +114,7 @@ vi.mock('../scanners/index.js', async (importOriginal) => {
 vi.mock('../scanners/incremental.js', async (importOriginal) => {
   const actual =
     await importOriginal<typeof import('../scanners/incremental.js')>()
-  return { ...actual, rebuildScanState: m.rebuildScanState }
+  return { ...actual, stageFullScan: m.stageFullScan }
 })
 vi.mock('../sync.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../sync.js')>()
@@ -152,7 +153,6 @@ const SCAN = {
   toolTotals: { claude_code: 1_000 },
   modelsByTool: { claude_code: { 'claude-sonnet-4': 1_000 } },
   dailyTotals: [{ date: '2026-08-20', tool: 'claude_code', tokens: 1_000 }],
-  hourlyTotals: [],
   modelTotals: { 'claude-sonnet-4': 1_000 },
   cursorStats: null,
   cursorScanStatus: { source: 'none' },
@@ -167,12 +167,44 @@ const EMPTY_SCAN = {
   modelTotals: {},
 }
 
+const PROMPT_ACTIVITY = {
+  sessions: {
+    s1: {
+      startedAt: '2026-08-20T09:00:00.000Z',
+      lastActiveAt: '2026-08-20T09:30:00.000Z',
+      promptCount: 12,
+    },
+  },
+  daily: { '2026-08-20': { prompts: 12, words: 140 } },
+}
+
 const PROMPT_STATS = {
   totalPrompts: 12,
   bucketMax: 40,
   histogram: [],
   projects: [],
-  conversationSample: 'a sample of my own prompts',
+  activity: PROMPT_ACTIVITY,
+}
+
+/** What the staged rebuild claims for this upload. */
+const STAGED_ACTIVITY = {
+  sessions: [
+    {
+      sessionId: 's1',
+      startedAt: '2026-08-20T09:00:00.000Z',
+      lastActiveAt: '2026-08-20T09:30:00.000Z',
+      promptCount: 12,
+    },
+  ],
+  dailyPrompts: [{ date: '2026-08-20', prompts: 12, words: 140 }],
+}
+
+/** What `promptStats` looks like on the wire: `activity` travels separately. */
+const PROMPT_STATS_WIRE = {
+  totalPrompts: 12,
+  bucketMax: 40,
+  histogram: [],
+  projects: [],
 }
 
 const CLAIMED_SESSION = {
@@ -285,11 +317,14 @@ beforeEach(async () => {
   m.saveSession.mockResolvedValue(undefined)
   m.collectToolScans.mockResolvedValue([{ tool: 'claude_code' }])
   m.mergeToolScans.mockReturnValue(SCAN)
-  m.rebuildScanState.mockResolvedValue(undefined)
-  m.loadPromptConsent.mockResolvedValue(null)
-  m.savePromptConsent.mockResolvedValue(undefined)
+  m.stageFullScan.mockResolvedValue({
+    promptActivity: STAGED_ACTIVITY,
+    commit: m.stageCommit,
+  })
+  m.loadPromptSync.mockResolvedValue(null)
+  m.savePromptSync.mockResolvedValue(undefined)
   m.scanConsentedPromptStats.mockImplementation(async (tier: string) =>
-    tier === 'full' ? PROMPT_STATS : null
+    tier === 'none' ? null : PROMPT_STATS
   )
   m.dailySyncState.mockResolvedValue('missing')
   m.installDailySync.mockResolvedValue({
@@ -370,9 +405,18 @@ describe('setup — happy path', () => {
       expect.objectContaining({ handle: 'ada', usernameClaimed: true })
     )
 
-    // Consented, so the conversation sample rides along on the upload.
-    expect(m.savePromptConsent).toHaveBeenCalledWith('full')
-    expect(uploadBody().promptStats).toEqual(PROMPT_STATS)
+    // Consented, so the prompt stats ride along on the upload — minus the
+    // local-only activity aggregate, which re-bases the tick's state instead.
+    expect(m.savePromptSync).toHaveBeenCalledWith('stats')
+    expect(uploadBody().promptStats).toEqual(PROMPT_STATS_WIRE)
+    expect(m.stageFullScan).toHaveBeenCalledWith([{ tool: 'claude_code' }], {
+      scanned: PROMPT_ACTIVITY,
+    })
+    // Staged before the upload, so the outstanding prompt rows ride along —
+    // a machine whose daemon never runs still gets them up — and only the
+    // server's 200 commits the claim.
+    expect(uploadBody().promptActivity).toEqual(STAGED_ACTIVITY)
+    expect(m.stageCommit).toHaveBeenCalledOnce()
 
     // Each stage leaves one line naming what happened, not a receipt wall.
     expect(m.logs.join('\n')).toContain('scanned · 1K tokens')
@@ -386,7 +430,7 @@ describe('setup — happy path', () => {
     expect(m.captureEvent).toHaveBeenCalledWith('ada', 'cli_setup_completed', {
       tokens_total: 1_000,
       rank: 7,
-      prompt_consent: 'full',
+      prompt_sync: 'stats',
     })
   })
 
@@ -475,18 +519,27 @@ describe('setup — handle claim', () => {
   })
 })
 
-describe('setup — conversation sharing consent', () => {
+describe('setup — prompt sync consent', () => {
   it('asks with a yes default and uploads nothing conversational on a no', async () => {
     m.confirm.mockResolvedValue(false)
 
     await setup()
 
     expect(m.confirm).toHaveBeenCalledWith({
-      message: 'share a sample of your prompts?',
+      message: 'sync your prompt activity?',
       initialValue: true,
     })
-    expect(m.savePromptConsent).toHaveBeenCalledWith('none')
+    expect(m.savePromptSync).toHaveBeenCalledWith('none')
     expect(uploadBody().promptStats).toBeUndefined()
+  })
+
+  it('a default-yes never opts into sending prompt text', async () => {
+    // One question can only honestly carry the metadata tier; `full` stays a
+    // deliberate second act, reachable only through `hacklab config`.
+    await setup()
+
+    expect(m.savePromptSync).toHaveBeenCalledWith('stats')
+    expect(m.savePromptSync).not.toHaveBeenCalledWith('full')
   })
 
   it('never default-yeses without a human — a non-TTY run stays at none', async () => {
@@ -496,23 +549,23 @@ describe('setup — conversation sharing consent', () => {
 
     expect(m.confirm).not.toHaveBeenCalled()
     // Unanswered, not answered: nothing is written to the config either.
-    expect(m.savePromptConsent).not.toHaveBeenCalled()
+    expect(m.savePromptSync).not.toHaveBeenCalled()
     expect(uploadBody().promptStats).toBeUndefined()
     expect(m.captureEvent).toHaveBeenCalledWith(
       'ada',
       'cli_setup_completed',
-      expect.objectContaining({ prompt_consent: 'none' })
+      expect.objectContaining({ prompt_sync: 'none' })
     )
   })
 
   it('skips the question entirely when consent is already on file', async () => {
-    m.loadPromptConsent.mockResolvedValue('stats')
+    m.loadPromptSync.mockResolvedValue('stats')
 
     await setup()
 
     expect(m.confirm).not.toHaveBeenCalled()
-    expect(m.savePromptConsent).not.toHaveBeenCalled()
-    expect(m.logs.join('\n')).toContain('conversation sharing · stats')
+    expect(m.savePromptSync).not.toHaveBeenCalled()
+    expect(m.logs.join('\n')).toContain('prompt sync · stats')
   })
 })
 

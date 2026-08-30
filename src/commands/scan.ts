@@ -4,7 +4,7 @@ import { beltForTokens } from '../belt.js'
 import { loadConfig, resolveCursorAuth, saveConfig } from '../config.js'
 import { dailySyncState, installDailySync } from '../daily-sync.js'
 import { captureEvent } from '../posthog.js'
-import { rebuildScanState } from '../scanners/incremental.js'
+import { stageFullScan } from '../scanners/incremental.js'
 import {
   type AggregateScan,
   collectToolScans,
@@ -95,8 +95,11 @@ export async function scan(args: string[] = []): Promise<void> {
 
   let uploaded: Record<string, unknown>
   try {
+    // `scan` never reads prompts and never resolves the consent tier, so it
+    // re-bases the token half only and leaves the prompt state to the tick.
+    const staged = await stageFullScan(results, 'untouched')
     uploaded = await uploadTokenScan(session, scanResult, { interactive: true })
-    await rebuildScanState(results)
+    await staged.commit()
   } catch (err) {
     error(err instanceof Error ? err.message : String(err))
     process.exit(1)

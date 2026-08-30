@@ -1,7 +1,11 @@
 import { getMachineIdentity } from './machine.js'
-import type { PromptConsentTier } from './prompt-consent.js'
-import { type PromptStats, scanPromptStats } from './prompt-stats.js'
-import { rebuildScanState } from './scanners/incremental.js'
+import type { PromptSyncTier } from './prompt-consent.js'
+import {
+  type PromptStats,
+  promptStatsPayload,
+  scanPromptStats,
+} from './prompt-stats.js'
+import { stageFullScan } from './scanners/incremental.js'
 import {
   type AggregateScan,
   type CursorScanStatus,
@@ -226,10 +230,15 @@ export async function uploadTokenScan(
       dailyTotals: scan.dailyTotals,
       toolTotals: toolTotalsRecord(scan),
       modelTotals: scan.modelTotals,
-      hourlyTotals: scan.hourlyTotals,
-      // Absent unless consented — the backend's field is optional, so an
-      // opted-out sync is byte-identical to the pre-prompt-stats payload.
-      ...(opts.promptStats ? { promptStats: opts.promptStats } : {}),
+      // Both blocks are absent unless consented — the backend's fields are
+      // optional, so an opted-out sync carries token counts and nothing else.
+      // `promptStats` rides on full scans (histogram, projects, and under the
+      // `full` tier the text sample); `promptActivity` rides on ticks (session
+      // and per-day metadata, no text ever).
+      ...(opts.promptStats
+        ? { promptStats: promptStatsPayload(opts.promptStats) }
+        : {}),
+      ...(scan.promptActivity ? { promptActivity: scan.promptActivity } : {}),
     }),
     ...(opts.timeoutMs ? { signal: AbortSignal.timeout(opts.timeoutMs) } : {}),
   })
@@ -301,21 +310,33 @@ export async function ensureFreshSession(session: Session): Promise<Session> {
 
 export async function runSync(
   session: Session,
-  opts: { interactive?: boolean; promptConsent?: PromptConsentTier } = {}
+  opts: { interactive?: boolean; promptSync?: PromptSyncTier } = {}
 ): Promise<SyncResult> {
   const results = await collectToolScans()
   const scan = mergeToolScans(results)
   // Scanning transcripts is skipped entirely at the 'none' tier — an opted-out
   // user's conversations are never even read.
-  const promptStats = await scanConsentedPromptStats(opts.promptConsent)
-  const result = await uploadTokenScan(session, scan, {
-    interactive: opts.interactive,
-    promptStats,
+  const promptStats = await scanConsentedPromptStats(opts.promptSync)
+  // Re-base the tick's incremental state on this scan before uploading — same
+  // repair the daily job does, so a manual `hacklab sync` also clears any drift
+  // (and refreshes the Cursor totals the tick can only carry over). It has to
+  // come first because the rebuild is what works out which prompt rows are
+  // still outstanding, and those ride along on this very upload: a machine with
+  // no daemon has no tick to drain them.
+  const staged = await stageFullScan(results, {
+    scanned: promptStats?.activity ?? null,
   })
-  // A full scan just went out, so re-base the tick's incremental state on it —
-  // same repair the daily job does, so a manual `hacklab sync` also clears any
-  // drift (and refreshes the Cursor totals the tick can only carry over).
-  await rebuildScanState(results)
+
+  const result = await uploadTokenScan(
+    session,
+    staged.promptActivity
+      ? { ...scan, promptActivity: staged.promptActivity }
+      : scan,
+    { interactive: opts.interactive, promptStats }
+  )
+  // Only now is any of it delivered. A throw above leaves the saved state
+  // untouched, so the next run re-derives the same claim and resends it.
+  await staged.commit()
 
   const totals = toolTotalsRecord(scan)
   const allEntries = scan.dailyTotals
@@ -349,7 +370,7 @@ export async function runSync(
  * their token upload.
  */
 export async function scanConsentedPromptStats(
-  tier: PromptConsentTier | undefined
+  tier: PromptSyncTier | undefined
 ): Promise<PromptStats | null> {
   if (!tier || tier === 'none') return null
   try {

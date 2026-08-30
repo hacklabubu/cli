@@ -139,7 +139,7 @@ describe('resolveCursorAuth precedence', () => {
 // anyone noticing.
 describe('updateConfig', () => {
   it('merges into the existing config', async () => {
-    configFile({ cursorApiKey: 'file-key', promptStatsConsent: 'stats' })
+    configFile({ cursorApiKey: 'file-key', promptSync: 'stats' })
 
     const ok = await updateConfig((config) => ({
       ...config,
@@ -149,7 +149,7 @@ describe('updateConfig', () => {
     expect(ok).toBe(true)
     expect(written()).toEqual({
       cursorApiKey: 'file-key',
-      promptStatsConsent: 'stats',
+      promptSync: 'stats',
       dailySync: { command: 'c' },
     })
   })
