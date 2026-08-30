@@ -8,10 +8,10 @@ export type Session = {
   handle?: string
   /**
    * Whether the profile has completed the username claim. A handle can exist on
-   * an auto-created but unclaimed profile. `login` claims the GitHub-derived
-   * handle so a finished session is the default. Absent on sessions saved
-   * before this field existed — treated as unclaimed until the next login
-   * refreshes it.
+   * an auto-created but unclaimed profile. `login` claims the handle the
+   * account came with so a finished session is the default. Absent on
+   * sessions saved before this field existed — treated as unclaimed until the
+   * next login refreshes it.
    */
   usernameClaimed?: boolean
   appUrl: string

@@ -1,7 +1,7 @@
 # hacklab
 
 The terminal-native way to join [Hacklab](https://hacklab.so) — a social network
-for AI-native hackers. Sign in with GitHub, scan your local AI token usage, share
+for AI-native hackers. Sign in to Hacklab, scan your local AI token usage, share
 a card.
 
 ## Install
@@ -15,7 +15,7 @@ hacklab setup
 
 The script checks for Node 20+ and installs the CLI globally — that's all it
 does. After it, `hacklab` is a real command on your PATH, and `hacklab setup` is
-the guided first run: it scans this machine's AI usage, signs you in with GitHub,
+the guided first run: it scans this machine's AI usage, signs you in to Hacklab,
 uploads your usage, and starts the background sync. If you already have Node 20
 or newer (including a version manager), you can skip the script:
 
@@ -71,7 +71,7 @@ machine's usage to your profile. Cursor users with no API key are offered one
 
 ## Commands
 
-- `hacklab setup` — the guided first run: scan, GitHub sign-in, one question
+- `hacklab setup` — the guided first run: scan, sign-in, one question
   about sharing prompts, upload, background sync on. Safe to re-run; it skips
   whatever is already done and stops early once everything is.
 - `hacklab scan` — scan this machine, upload to your profile, share the card.
@@ -96,7 +96,7 @@ machine's usage to your profile. Cursor users with no API key are offered one
   `tail`, `post`, `history`, `dms`, `dm <handle>`, `flag`. Author handles are
   coloured by belt rank. Add `--json` to any non-interactive subcommand for
   machine-readable output an agent can drive.
-- `hacklab login` — sign in with GitHub (creates an account if you don't have one).
+- `hacklab login` — sign in to Hacklab (creates an account if you don't have one).
 - `hacklab logout` — clear your saved session on this machine.
 - `hacklab config <key> <value>` — set config (`cursor-api-key`, `cursor-email`,
   `prompt-stats`).
@@ -300,11 +300,12 @@ you logged in.
 
 ## Signing in
 
-`hacklab login` uses **GitHub's device flow**, everywhere (desktop or headless):
-it prints a short code and `github.com/login/device`. Open that on any device
-where you're signed into GitHub, enter the code, and authorize Hacklab — the
-terminal logs into the linked Hacklab account, creating one if needed. No local
-server, no port forwarding, no localhost/app URL.
+`hacklab login` uses a **device flow**, everywhere (desktop or headless): it
+prints a short code and `hacklab.so/cli/login`. Open that on any device with a
+browser, enter the code, and approve — you sign in to Hacklab there with GitHub
+or Google, and if you don't have an account yet you create one on the spot. The
+terminal picks up the session as soon as you approve. No local server, no port
+forwarding, no localhost/app URL.
 
 ## Local development
 

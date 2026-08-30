@@ -1,7 +1,7 @@
 [
   {
     "event_name": "cli_setup_completed",
-    "event_description": "A user finished the guided first run (`hacklab setup`): scanned, signed in with GitHub, answered the prompt-sharing question, and uploaded their usage. Props: tokens_total, rank (real rank when the upload returned one, else the anonymous preview), prompt_consent (none|stats|full).",
+    "event_description": "A user finished the guided first run (`hacklab setup`): scanned, signed in to Hacklab, answered the prompt-sharing question, and uploaded their usage. Props: tokens_total, rank (real rank when the upload returned one, else the anonymous preview), prompt_consent (none|stats|full).",
     "file": "src/commands/setup.ts"
   },
   {
@@ -11,7 +11,7 @@
   },
   {
     "event_name": "cli_login_completed",
-    "event_description": "A user successfully authenticated via GitHub device flow and a session was saved.",
+    "event_description": "A user successfully authenticated via Hacklab device flow and a session was saved.",
     "file": "src/commands/login.ts"
   },
   {

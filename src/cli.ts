@@ -101,7 +101,7 @@ const HELP_GROUPS: Array<{
   {
     title: 'auth',
     rows: [
-      { label: 'login', summary: 'sign in with github' },
+      { label: 'login', summary: 'sign in to hacklab' },
       { label: 'logout', summary: "clear this machine's session" },
       { label: 'whoami', summary: "who you're logged in as" },
     ],

@@ -11,7 +11,7 @@ This is the terminal UI for this repo. It is not the web app's visual system.
 copy code
 857F-61CE
 
-https://github.com/login/device
+https://hacklab.so/cli/login
 (press enter)
 
 signed in as @mattbratos
@@ -54,7 +54,7 @@ local usage and makes a card. `sync` uploads. Don't glue those into a ritual.
 **The one sanctioned exception: `setup`.** First-run onboarding tested badly as
 separate commands — face-to-face, people who had just installed the CLI read
 `login` then `scan` as unrelated chores and stalled between them, so `hacklab
-setup` runs the whole first run as one flow (scan → rank → GitHub → one consent
+setup` runs the whole first run as one flow (scan → rank → sign in → one consent
 question → upload → background sync → offer to hand profile setup to a coding
 agent the user already has). It earns the exception because it is the
 *first* run and nothing else: it composes existing commands rather than

@@ -89,7 +89,7 @@ export const COMMANDS: CommandSpec[] = [
   },
   {
     name: 'login',
-    summary: 're-authenticate with github',
+    summary: 're-authenticate with hacklab',
     run: () => login(),
   },
   {

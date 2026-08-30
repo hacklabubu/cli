@@ -76,8 +76,10 @@ export type LoginOutcome = {
 }
 
 /**
- * Authenticate via GitHub's device flow and persist the session. Unknown GitHub
- * identities get an account. An unclaimed GitHub-derived handle is claimed as-is.
+ * Authenticate via hacklab's device flow and persist the session. The hacker
+ * approves the code in a browser on hacklab.so, signing up on the spot if they
+ * have no account yet — so anyone who gets past the poll has one. An unclaimed
+ * handle is claimed as-is.
  *
  * The shared implementation behind both `hacklab login` and `hacklab setup` —
  * there is exactly one device flow (the code/URL beat with the parallel
@@ -270,10 +272,7 @@ async function pollDevice(
       const res = await fetch(`${appUrl}/api/cli/device/poll`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          deviceCode,
-          allowSignup: true,
-        }),
+        body: JSON.stringify({ deviceCode }),
         signal: AbortSignal.timeout(10_000),
       })
       if (res.status !== 429) data = await res.json().catch(() => null)
@@ -292,16 +291,10 @@ async function pollDevice(
       }
     }
     if (status === 'denied') {
-      throw new Error('authorization was denied on GitHub.')
+      throw new Error('authorization was denied in the browser.')
     }
     if (status === 'expired') {
       throw new Error('the code expired — run `hacklab login` again.')
-    }
-    if (status === 'no_account') {
-      const who = typeof data?.login === 'string' ? ` (@${data.login})` : ''
-      throw new Error(
-        `no hacklab account is linked to that GitHub${who}. run \`hacklab login\` again.`
-      )
     }
 
     await sleep(intervalMs)
