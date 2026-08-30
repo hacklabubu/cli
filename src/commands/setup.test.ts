@@ -141,9 +141,8 @@ import { setup } from './setup.js'
 const START = {
   deviceCode: 'dev-code',
   userCode: 'WDJB-MJHT',
-  verificationUri: 'https://github.com/login/device',
-  verificationUriComplete:
-    'https://github.com/login/device?user_code=WDJB-MJHT',
+  verificationUri: 'https://hacklab.so/cli/login',
+  verificationUriComplete: 'https://hacklab.so/cli/login?code=WDJB-MJHT',
   expiresIn: 900,
   interval: 5,
 }
@@ -467,7 +466,7 @@ describe('setup — handle claim', () => {
 
     await setup()
 
-    // Reuses the saved token — no second trip through GitHub.
+    // Reuses the saved token — no second trip through the device flow.
     expect(callIndex('/api/cli/device/start')).toBe(-1)
     expect(callsTo('/api/cli/claim')).toHaveLength(1)
     expect(m.saveSession).toHaveBeenCalledWith(

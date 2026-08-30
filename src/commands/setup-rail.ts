@@ -8,7 +8,7 @@ import type { DeviceCodeRenderer } from './login.js'
  *
  * Everything clack prints — prompts, `log.*`, spinners, `taskLog` — hangs off a
  * `│` gutter and leaves one `◇` line per finished step. Two beats of `setup`
- * can't be a clack widget (the GitHub code beat races an Enter-wait against a
+ * can't be a clack widget (the device-code beat races an Enter-wait against a
  * poll; the agent offer waits on a bare Enter), so they are drawn here by hand
  * in the same vocabulary and, like every other step, collapse to one line when
  * they are done.
@@ -94,12 +94,13 @@ export class RailBlock {
  * │
  * ▲  first copy your one-time code: C98F-E695
  * │
- * │  Press Enter to open https://github.com/login/device in your browser...
+ * │  Press Enter to open https://hacklab.so/cli/login in your browser...
  * ```
  *
  * The code is the one thing on screen the user has to act on, so it gets the
- * attention glyph and the mint. Once GitHub answers, the block has served its
- * purpose and the caller replaces all four rows with one `◇ github · …` line.
+ * attention glyph and the mint. Once the approval lands, the block has served
+ * its purpose and the caller replaces all four rows with one `◇ hacklab · …`
+ * line.
  */
 export function railDeviceCode(): DeviceCodeRenderer {
   const block = new RailBlock()

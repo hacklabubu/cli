@@ -31,9 +31,8 @@ import { login } from './login.js'
 const START = {
   deviceCode: 'dev-code',
   userCode: 'WDJB-MJHT',
-  verificationUri: 'https://github.com/login/device',
-  verificationUriComplete:
-    'https://github.com/login/device?user_code=WDJB-MJHT',
+  verificationUri: 'https://hacklab.so/cli/login',
+  verificationUriComplete: 'https://hacklab.so/cli/login?code=WDJB-MJHT',
   expiresIn: 900,
   interval: 5,
 }
@@ -87,18 +86,18 @@ afterEach(() => {
 })
 
 describe('login — device flow', () => {
-  it('shows the code and URL before opening GitHub', async () => {
+  it('shows the code and URL before opening the browser', async () => {
     await login()
 
     expect(m.order.slice(0, 4)).toEqual([
       'log:copy code',
       'log:WDJB-MJHT',
       'log:',
-      'log:https://github.com/login/device',
+      'log:https://hacklab.so/cli/login',
     ])
     expect(m.order).toContain('enter:(press enter)')
     expect(m.order).toContain(
-      'open:https://github.com/login/device?user_code=WDJB-MJHT'
+      'open:https://hacklab.so/cli/login?code=WDJB-MJHT'
     )
     expect(m.order.at(-1)).toBe('log:signed in as @ada')
   })
@@ -113,7 +112,7 @@ describe('login — device flow', () => {
     await login()
 
     expect(m.openBrowser).toHaveBeenCalledWith(
-      'https://github.com/login/device?user_code=WDJB-MJHT'
+      'https://hacklab.so/cli/login?code=WDJB-MJHT'
     )
     expect(m.saveSession).toHaveBeenCalledWith(
       expect.objectContaining({ token: 'tok', handle: 'ada' })
@@ -141,7 +140,7 @@ describe('login — device flow', () => {
     expect(m.order.at(-1)).toBe('log:signed in as @ada')
   })
 
-  it('falls back to the plain verification URI when GitHub omits the complete one', async () => {
+  it('falls back to the plain verification URI when the server omits the complete one', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string) =>
@@ -158,12 +157,35 @@ describe('login — device flow', () => {
 
     await login()
 
-    expect(m.openBrowser).toHaveBeenCalledWith(
-      'https://github.com/login/device'
-    )
+    expect(m.openBrowser).toHaveBeenCalledWith('https://hacklab.so/cli/login')
   })
 
-  it('uses the GitHub login when the poll has no handle', async () => {
+  it('polls with the device code alone', async () => {
+    const fetchMock = vi.fn(async (url: string) =>
+      String(url).includes('/api/cli/device/start')
+        ? jsonResponse(START)
+        : jsonResponse({
+            status: 'approved',
+            token: 'tok',
+            email: 'a@b.co',
+            handle: 'ada',
+            usernameClaimed: true,
+          })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await login()
+
+    const poll = fetchMock.mock.calls.find((c) =>
+      String(c[0]).includes('/api/cli/device/poll')
+    )
+    expect(poll).toBeDefined()
+    expect(
+      JSON.parse(String((poll?.[1] as RequestInit | undefined)?.body))
+    ).toEqual({ deviceCode: 'dev-code' })
+  })
+
+  it('uses the login field when the poll sends no handle', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string) =>

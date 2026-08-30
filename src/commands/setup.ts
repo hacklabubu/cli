@@ -37,7 +37,7 @@ import { canRedraw, railAgentOffer, railDeviceCode } from './setup-rail.js'
 /**
  * `hacklab setup` — the front door.
  *
- *   scan → anonymous rank → GitHub auth → one consent question → upload →
+ *   scan → anonymous rank → sign in → one consent question → upload →
  *   daemon → hand the profile work to a coding agent
  *
  * The one deliberate composite command in the CLI (DESIGN.md's "one job per
@@ -50,16 +50,14 @@ import { canRedraw, railAgentOffer, railDeviceCode } from './setup-rail.js'
  * It is also the one command allowed clack chrome, and it spends that allowance
  * on being *one* flow: every line goes on the step rail, and every stage ends as
  * a single line naming the stage and how it went. What a stage shows while it is
- * working — the per-tool receipt, the GitHub code — has done its job by the time
+ * working — the per-tool receipt, the device code — has done its job by the time
  * the next stage starts, so it comes back off the screen. `setup-rail.ts` holds
  * the two blocks clack has no widget for.
  */
 export async function setup(): Promise<void> {
   clack.intro(bold('Hacklab CLI setup'))
   clack.log.message(
-    dim(
-      'scans your AI usage, connects GitHub, and starts a background usage sync'
-    )
+    dim('scans your AI usage, signs you in, and starts a background usage sync')
   )
 
   const existing = await loadSession()
@@ -127,7 +125,7 @@ export async function setup(): Promise<void> {
     }
   }
 
-  // ── GitHub auth (the exact device flow `hacklab login` runs) ─────────────
+  // ── Sign in (the exact device flow `hacklab login` runs) ─────────────────
   let session: Session
   let claimFailed: boolean
   if (existing) {
@@ -152,15 +150,15 @@ export async function setup(): Promise<void> {
       claimFailed = outcome.claimFailed
     } catch (err) {
       clack.cancel(
-        `GitHub sign-in failed: ${err instanceof Error ? err.message : String(err)}. run \`hacklab setup\` again.`
+        `sign-in failed: ${err instanceof Error ? err.message : String(err)}. run \`hacklab setup\` again.`
       )
       process.exit(1)
     }
   }
   clack.log.step(
     session.handle
-      ? `github · signed in as @${session.handle}`
-      : `github · signed in as ${session.email}`
+      ? `hacklab · signed in as @${session.handle}`
+      : `hacklab · signed in as ${session.email}`
   )
 
   // A lost claim must never be silent here: the web onboarding page polls
