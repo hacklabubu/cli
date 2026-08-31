@@ -25,9 +25,15 @@ export type HacklabConfig = {
   cursorEmail?: string
   dailySync?: DailySyncRecord
   /**
-   * Consent for uploading Claude Code conversation data: 'none' | 'stats' |
+   * Consent for syncing Claude Code conversation data: 'none' | 'stats' |
    * 'full'. Absent means never asked — see prompt-consent.ts, which owns the
    * tiers and treats an unset value as "ask", never as a yes.
+   */
+  promptSync?: string
+  /**
+   * The obsolete one-off prompt-stats consent. Declared only so
+   * `savePromptSync` can delete it: it answered a narrower question (a scan
+   * uploaded once a day) than `promptSync` asks, so it never carries over.
    */
   promptStatsConsent?: string
 }
@@ -98,7 +104,7 @@ export async function saveConfig(config: HacklabConfig): Promise<void> {
  * the rest of it. Unlike `loadConfig`, which flattens every read failure to
  * `{}`, this refuses to write when the file exists but can't be parsed —
  * spreading `{}` over an unreadable config would silently drop the user's cursor
- * key and prompt-stats consent, and nothing here is worth that.
+ * key and prompt-sync consent, and nothing here is worth that.
  *
  * `mutate` returns the config to write, or null for "nothing to change" (no
  * write at all — a background job shouldn't rewrite config.json for nothing).

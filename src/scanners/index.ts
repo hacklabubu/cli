@@ -10,7 +10,7 @@ import {
   type DailyToolEntry,
   emptyResult,
   findFiles,
-  type HourlyEntry,
+  type PromptActivity,
   type ScanResult,
   TokenCollector,
   toDateStr,
@@ -65,7 +65,6 @@ export type UsageLine = {
   tokens: number
   model: string
   date: string | null
-  hour: number | null
 }
 
 export function parseClaudeCodeLine(line: string): UsageLine | null {
@@ -82,7 +81,6 @@ export function parseClaudeCodeLine(line: string): UsageLine | null {
     if (tokens <= 0) return null
 
     let date: string | null = null
-    let hour: number | null = null
     if (parsed.timestamp) {
       const d = new Date(
         typeof parsed.timestamp === 'string' && /^\d+$/.test(parsed.timestamp)
@@ -90,9 +88,8 @@ export function parseClaudeCodeLine(line: string): UsageLine | null {
           : parsed.timestamp
       )
       date = toDateStr(d)
-      hour = d.getHours()
     }
-    return { tokens, model: parsed.message?.model ?? '', date, hour }
+    return { tokens, model: parsed.message?.model ?? '', date }
   } catch {
     // malformed line (or an unparseable timestamp) — skip it
     return null
@@ -120,9 +117,6 @@ export async function scanClaudeCode(): Promise<ScanResult> {
           date = fallbackDate
         }
         collector.addDaily(date, usage.model, usage.tokens, 1)
-        if (usage.hour !== null) {
-          collector.addHourly(date, usage.hour, usage.model, usage.tokens, 1)
-        }
       }
     } catch {
       // skip unreadable files
@@ -248,7 +242,6 @@ export async function scanHermes(): Promise<ScanResult> {
       const m = str(model).trim()
       const messages = num(msgCount) || 1
       collector.addDaily(date, m, tokens, messages)
-      collector.addHourly(date, d.getHours(), m, tokens, messages)
     }
   } catch {
     return emptyResult('hermes')
@@ -276,19 +269,15 @@ export function parseOpenclawLine(line: string): UsageLine | null {
     if (!tokens || tokens <= 0) return null
 
     let date: string | null = null
-    let hour: number | null = null
     const ts = parsed.timestamp ?? parsed.t ?? parsed.time ?? null
     if (ts) {
       const tsMs = typeof ts === 'string' && /^\d+$/.test(ts) ? Number(ts) : ts
       const d = new Date(tsMs)
-      if (!Number.isNaN(d.getTime())) {
-        date = toDateStr(d)
-        hour = d.getHours()
-      }
+      if (!Number.isNaN(d.getTime())) date = toDateStr(d)
     }
 
     const model: string = parsed.model ?? parsed.response?.model ?? ''
-    return { tokens, model, date, hour }
+    return { tokens, model, date }
   } catch {
     // skip malformed lines
     return null
@@ -331,9 +320,6 @@ export async function scanOpenclaw(): Promise<ScanResult> {
           date = fileFallbackDate
         }
         collector.addDaily(date, usage.model, usage.tokens, 1)
-        if (usage.hour !== null) {
-          collector.addHourly(date, usage.hour, usage.model, usage.tokens, 1)
-        }
       }
     } catch {
       // skip unreadable files
@@ -372,7 +358,6 @@ export async function scanOpenCode(): Promise<ScanResult> {
         const d = new Date(tsMs)
         const m = str(model).trim()
         collector.addDaily(toDateStr(d), m, tokens, 1)
-        collector.addHourly(toDateStr(d), d.getHours(), m, tokens, 1)
       }
       const dbResult = collector.result()
       if (dbResult.daily.length > 0) return dbResult
@@ -410,18 +395,12 @@ export async function scanOpenCode(): Promise<ScanResult> {
             (t.reasoning ?? 0)
           if (tokens <= 0) continue
           const tsMs: number = parsed.time?.created ?? 0
-          let date: string
-          let hour: number | null = null
-          if (tsMs > 0) {
-            const d = new Date(tsMs)
-            date = toDateStr(d)
-            hour = d.getHours()
-          } else {
-            date = toDateStr((await stat(filePath)).mtime)
-          }
+          const date =
+            tsMs > 0
+              ? toDateStr(new Date(tsMs))
+              : toDateStr((await stat(filePath)).mtime)
           const model = String(parsed.modelID ?? '')
           collector.addDaily(date, model, tokens, 1)
-          if (hour !== null) collector.addHourly(date, hour, model, tokens, 1)
         } catch {
           // skip malformed files
         }
@@ -457,17 +436,13 @@ export function parseGrokLine(line: string): UsageLine | null {
     if (!Number.isFinite(tokens) || tokens <= 0) return null
 
     let date: string | null = null
-    let hour: number | null = null
     if (parsed.ts) {
       const d = new Date(parsed.ts)
-      if (!Number.isNaN(d.getTime())) {
-        date = toDateStr(d)
-        hour = d.getHours()
-      }
+      if (!Number.isNaN(d.getTime())) date = toDateStr(d)
     }
     const model =
       String(ctx.model_id ?? ctx.model ?? parsed.model ?? '').trim() || 'grok'
-    return { tokens, model, date, hour }
+    return { tokens, model, date }
   } catch {
     return null
   }
@@ -494,9 +469,6 @@ export async function scanGrok(): Promise<ScanResult> {
           date = fallbackDate
         }
         collector.addDaily(date, usage.model, usage.tokens, 1)
-        if (usage.hour !== null) {
-          collector.addHourly(date, usage.hour, usage.model, usage.tokens, 1)
-        }
       }
     } catch {
       // skip unreadable files
@@ -725,7 +697,6 @@ export async function scanCursorApi(): Promise<ScanResult> {
         const d = new Date(tsMs)
         const model = (event.model as string | undefined) ?? ''
         collector.addDaily(toDateStr(d), model, tokens, 1)
-        collector.addHourly(toDateStr(d), d.getHours(), model, tokens, 1)
         eventsProcessed++
       }
     }
@@ -747,10 +718,15 @@ export async function scanCursorApi(): Promise<ScanResult> {
 export type AggregateScan = {
   toolTotals: Record<string, number>
   dailyTotals: DailyToolEntry[]
-  hourlyTotals: HourlyEntry[]
   modelTotals: Record<string, number>
   /** Per-tool model breakdown. Optional on older incremental payloads. */
   modelsByTool?: Record<string, Record<string, number>>
+  /**
+   * Prompt metadata, filled in by the tick under the `stats`/`full` tier of
+   * `promptSync`. Absent at `none`, and absent on a full scan — which has no
+   * incremental dirty set to drain.
+   */
+  promptActivity?: PromptActivity
   grandTotal: number
   cursorStats: CursorStats | null
   cursorScanStatus: CursorScanStatus
@@ -819,7 +795,6 @@ export async function rescanCursorWithApi(
 export function mergeToolScans(results: ScanResult[]): AggregateScan {
   const toolTotals: Record<string, number> = {}
   const dailyTotals: DailyToolEntry[] = []
-  const hourlyTotals: HourlyEntry[] = []
   const modelTotals: Record<string, number> = {}
   const modelsByTool: Record<string, Record<string, number>> = {}
   let grandTotal = 0
@@ -832,7 +807,6 @@ export function mergeToolScans(results: ScanResult[]): AggregateScan {
     }
     toolTotals[r.tool] = (toolTotals[r.tool] ?? 0) + toolSum
     grandTotal += toolSum
-    hourlyTotals.push(...r.hourly)
     let byTool = modelsByTool[r.tool]
     if (!byTool) {
       byTool = {}
@@ -848,7 +822,6 @@ export function mergeToolScans(results: ScanResult[]): AggregateScan {
   return {
     toolTotals,
     dailyTotals,
-    hourlyTotals,
     modelTotals,
     modelsByTool,
     grandTotal,

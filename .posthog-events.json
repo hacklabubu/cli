@@ -1,7 +1,7 @@
 [
   {
     "event_name": "cli_setup_completed",
-    "event_description": "A user finished the guided first run (`hacklab setup`): scanned, signed in to Hacklab, answered the prompt-sharing question, and uploaded their usage. Props: tokens_total, rank (real rank when the upload returned one, else the anonymous preview), prompt_consent (none|stats|full).",
+    "event_description": "A user finished the guided first run (`hacklab setup`): scanned, signed in to Hacklab, answered the prompt-sync question, and uploaded their usage. Props: tokens_total, rank (real rank when the upload returned one, else the anonymous preview), prompt_sync (none|stats|full — the chosen tier; replaces the old prompt_consent prop, which answered a narrower question). Never carries prompt text or per-prompt counts.",
     "file": "src/commands/setup.ts"
   },
   {

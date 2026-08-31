@@ -72,8 +72,8 @@ machine's usage to your profile. Cursor users with no API key are offered one
 ## Commands
 
 - `hacklab setup` — the guided first run: scan, sign-in, one question
-  about sharing prompts, upload, background sync on. Safe to re-run; it skips
-  whatever is already done and stops early once everything is.
+  about syncing your prompt activity, upload, background sync on. Safe to
+  re-run; it skips whatever is already done and stops early once everything is.
 - `hacklab scan` — scan this machine, upload to your profile, share the card.
   Requires login. Summons the daemon afterwards (`--no-daemon` to skip).
 - `hacklab sync` — re-scan local AI usage and sync it to your profile.
@@ -82,8 +82,9 @@ machine's usage to your profile. Cursor users with no API key are offered one
   tokens, rank, and streak stay current without you running anything. A **tick
   every minute** reads only what your tools appended since the last run — no
   network call at all on a minute where nothing happened — and a **full sync once
-  a day** re-scans everything and repairs whatever the tick missed. No daemon, no
-  streak. Re-running it is idempotent; `hacklab daemon off` tears both down, and
+  a day** re-scans everything and repairs whatever the tick missed. With prompt
+  sync on (see below), the same minutely read also pushes your prompt activity.
+  No daemon, no streak. Re-running it is idempotent; `hacklab daemon off` tears both down, and
   `hacklab logout` removes them too. On a platform we can't schedule (BSD, a
   locked-down box) it prints the commands to schedule yourself instead of
   pretending it worked. `hacklab sync --install-daily` still forwards here.
@@ -99,7 +100,7 @@ machine's usage to your profile. Cursor users with no API key are offered one
 - `hacklab login` — sign in to Hacklab (creates an account if you don't have one).
 - `hacklab logout` — clear your saved session on this machine.
 - `hacklab config <key> <value>` — set config (`cursor-api-key`, `cursor-email`,
-  `prompt-stats`).
+  `prompt-sync`).
   Bare `hacklab config` prints the effective values and where each came from.
 - `hacklab project` — agent help for publishing a project to your profile.
   `project add --title "…" [--repo <git url>] [--url <live url>] [--desc "…"]`
@@ -211,44 +212,51 @@ otherwise, and all of it would land on your profile as your own.
 If a key is set but Cursor rejects it, the scan says so and falls back to the
 local estimate — it won't quietly hand you an estimate you think is exact.
 
-## Prompt stats
+## Prompt sync
 
-`sync` can also chart *how* you prompt, not just how many tokens you burned:
-a histogram of your prompt lengths and a prompt count per project, shown on the
-AI Usage tab of your profile. It reads your local Claude Code transcripts
-(`~/.claude/projects`) on this machine.
+`sync` can also track *how* you prompt, not just how many tokens you burned.
+With it on, the same minutely tick that pushes your token counts also pushes
+prompt metadata — so your profile shows your coding sessions, how many you run
+at once, and your prompt counts, kept current rather than once a day. Every
+full sync carries whatever is still outstanding too, so a machine with no
+daemon gets its prompt activity up by running `hacklab sync` by hand. The daily
+full sync also adds a histogram of your prompt lengths — every bar an exact
+word count, and everything past the end of the axis as a list of length/count
+pairs instead, so a tail of unusually long prompts keeps its real lengths
+rather than piling into a final catch-all bar — and a prompt count per project. It all comes from your local Claude Code transcripts
+(`~/.claude/projects`), read on this machine.
 
-Nothing conversation-derived is uploaded until you say so. The first
+Nothing conversation-derived leaves your machine until you say so. The first
 interactive `sync` asks, remembers the answer, and never asks again. There are
 three tiers:
 
 | Tier    | What leaves your machine |
 | ------- | ------------------------ |
-| `none`  | token counts only — exactly what the CLI did before this existed |
-| `stats` | + prompt-length histogram and per-project counts. Numbers only; no prompt text |
-| `full`  | + a sample of your prompt text (≤20k chars), scored for how technical it is and then discarded server-side |
+| `none`  | token counts only — nothing prompt-related |
+| `stats` | + prompt counts, word counts, timestamps and session ids, synced continuously, plus the length histogram and per-project counts. Your prompt text never leaves the machine |
+| `full`  | + a rolling sample of your most recent prompts (≤20k chars) sent with the daily sync, used only to estimate a technical-level score and then discarded server-side. Never stored |
 
 Projects are matched by their git `origin` remote, so a prompt count only lands
-on a project you've already added to hacklab (`hacklab brag`). Directories
-without a git remote are skipped entirely.
+on a project you've already added to hacklab. Directories without a git remote
+are skipped entirely.
 
 Answer up front, without the prompt — the agent-friendly path:
 
 ```sh
-hacklab sync --share-prompt-stats         # numbers only
-hacklab sync --share-prompt-stats=full    # numbers + text sample
-hacklab sync --no-share-prompt-stats      # refuse
+hacklab sync --share-prompt-sync         # metadata only
+hacklab sync --share-prompt-sync=full    # metadata + prompt sample
+hacklab sync --no-share-prompt-sync      # refuse
 ```
 
 Change or revoke it any time:
 
 ```sh
-hacklab config prompt-stats none    # stop sharing; nothing further is uploaded
-hacklab config                      # show the current tier
+hacklab config prompt-sync none    # stop syncing; nothing further is uploaded
+hacklab config                     # show the current tier
 ```
 
-The unattended daily sync never asks. A machine that has never answered
-uploads token counts only.
+The unattended daily sync and the minutely tick never ask. A machine that has
+never answered uploads token counts only.
 
 ## Choosing a backend
 

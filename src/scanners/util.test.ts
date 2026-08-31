@@ -42,23 +42,6 @@ describe('TokenCollector', () => {
     expect(r.models).toEqual({})
   })
 
-  it('drops hourly entries older than the 90-day window', () => {
-    const c = new TokenCollector('codex')
-    c.addHourly('2000-01-01', 12, 'm', 100, 1) // ancient → dropped
-    expect(c.result().hourly).toHaveLength(0)
-  })
-
-  it('keeps and merges recent hourly entries', () => {
-    const c = new TokenCollector('codex')
-    const today = new Date().toISOString().slice(0, 10)
-    c.addHourly(today, 9, 'm', 10, 1)
-    c.addHourly(today, 9, 'm', 5, 1)
-    const r = c.result()
-    expect(r.hourly).toHaveLength(1)
-    expect(r.hourly[0]?.tokens).toBe(15)
-    expect(r.hourly[0]?.messages).toBe(2)
-  })
-
   it('carries cursor extras through result()', () => {
     const c = new TokenCollector('cursor')
     const r = c.result({ cursorScanStatus: { source: 'api', events: 3 } })

@@ -1,15 +1,28 @@
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
-
 import {
   bucketMaxFor,
   buildHistogram,
+  buildTail,
   CONVERSATION_SAMPLE_MAX_CHARS,
+  emptyPromptActivity,
+  PROMPT_TAIL_MAX_ENTRIES,
   type PromptStats,
+  promptStatsPayload,
 } from './prompt-stats.js'
+import {
+  emptyState,
+  markUploaded,
+  tickPayload,
+} from './scanners/incremental.js'
+import {
+  PROMPT_ACTIVITY_DATE_CAP,
+  PROMPT_ACTIVITY_SESSION_CAP,
+} from './scanners/util.js'
 
 /**
- * The backend's `promptStats` schema, transcribed from the hacklab repo
+ * The backend's schemas for the two conversation-derived blocks of
+ * `/api/claim/sync`, transcribed from the hacklab repo
  * (`apps/web/app/(app)/api/claim/sync/route.ts`). The CLI and the server live
  * in separate repos, so nothing but a test like this catches a drift between
  * what we upload and what the endpoint accepts — and the failure mode is
@@ -30,6 +43,18 @@ const serverPromptStatsSchema = z.object({
       })
     )
     .max(200),
+  // The exact distribution past the end of the histogram's axis, which the
+  // histogram itself does not cover. Optional: a scan with nothing past
+  // `bucketMax` omits it rather than sending `[]`.
+  tail: z
+    .array(
+      z.object({
+        length: z.number().int().positive(),
+        count: z.number().int().min(1),
+      })
+    )
+    .max(PROMPT_TAIL_MAX_ENTRIES)
+    .optional(),
   projects: z
     .array(
       z.object({
@@ -42,18 +67,50 @@ const serverPromptStatsSchema = z.object({
   conversationSample: z.string().max(CONVERSATION_SAMPLE_MAX_CHARS).optional(),
 })
 
+/**
+ * `promptActivity`: the continuously-synced metadata block. Upserted per
+ * (machine, sessionId) and (machine, date) with GREATEST semantics, so a
+ * resend after a failed POST is safe by construction.
+ */
+const serverPromptActivitySchema = z.object({
+  sessions: z
+    .array(
+      z.object({
+        sessionId: z.string().min(1).max(128),
+        startedAt: z.iso.datetime(),
+        lastActiveAt: z.iso.datetime(),
+        promptCount: z.number().int().min(1),
+      })
+    )
+    .max(PROMPT_ACTIVITY_SESSION_CAP),
+  dailyPrompts: z
+    .array(
+      z.object({
+        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        prompts: z.number().int().nonnegative(),
+        words: z.number().int().nonnegative(),
+      })
+    )
+    .max(PROMPT_ACTIVITY_DATE_CAP),
+})
+
 function statsFrom(
   wordCounts: number[],
   overrides: Partial<PromptStats> = {}
 ): PromptStats {
   const bucketMax = bucketMaxFor(wordCounts)
-  return {
+  const tail = buildTail(wordCounts, bucketMax)
+  return promptStatsPayload({
     totalPrompts: wordCounts.length,
     bucketMax,
     histogram: buildHistogram(wordCounts, bucketMax),
+    // Assembled the way `scanPromptStats` does: the key is absent, not
+    // undefined, when there is no tail.
+    ...(tail ? { tail } : {}),
     projects: [],
+    activity: emptyPromptActivity(),
     ...overrides,
-  }
+  }) as PromptStats
 }
 
 describe('promptStats payload matches the server schema', () => {
@@ -69,6 +126,13 @@ describe('promptStats payload matches the server schema', () => {
       conversationSample: 'fix the auth bug',
     })
     expect(serverPromptStatsSchema.safeParse(stats).success).toBe(true)
+  })
+
+  it('never puts the local activity aggregate on the wire', () => {
+    // `activity` is bookkeeping for the tick's incremental state; it travels
+    // under its own top-level field, not inside promptStats.
+    const stats = statsFrom([3])
+    expect('activity' in stats).toBe(false)
   })
 
   it('accepts a terse user (bucketMax floors at the schema minimum)', () => {
@@ -125,5 +189,182 @@ describe('promptStats payload matches the server schema', () => {
       conversationSample: 'x'.repeat(CONVERSATION_SAMPLE_MAX_CHARS + 1),
     })
     expect(serverPromptStatsSchema.safeParse(stats).success).toBe(false)
+  })
+
+  it('carries the tail when prompts run past bucketMax', () => {
+    const stats = statsFrom([...Array.from({ length: 38 }, () => 5), 40, 120])
+    expect(stats.bucketMax).toBe(10)
+    expect(stats.tail).toEqual([
+      { length: 40, count: 1 },
+      { length: 120, count: 1 },
+    ])
+    expect(serverPromptStatsSchema.safeParse(stats).success).toBe(true)
+  })
+
+  it('sends an empty tail when nothing runs past bucketMax', () => {
+    // Always present: an empty tail is how the server tells an exact
+    // histogram from a legacy snapshot whose last bar was a lump. The server
+    // field stays optional so pre-tail CLIs keep parsing.
+    const stats = statsFrom([1, 2, 3])
+    expect(stats.tail).toEqual([])
+    expect(serverPromptStatsSchema.safeParse(stats).success).toBe(true)
+  })
+
+  it('coarsens a very wide tail down to the server entry cap', () => {
+    // A long-lived machine easily has thousands of distinct long prompt
+    // lengths; unrounded that is an instant 400 on the whole sync.
+    const counts = [
+      ...Array.from({ length: 200 }, () => 5),
+      ...Array.from({ length: 3_000 }, (_, i) => 101 + i),
+    ]
+    const stats = statsFrom(counts)
+
+    expect(stats.bucketMax).toBe(100)
+    expect(stats.tail?.length).toBeLessThanOrEqual(PROMPT_TAIL_MAX_ENTRIES)
+    expect(serverPromptStatsSchema.safeParse(stats).success).toBe(true)
+  })
+
+  it('rejects an over-cap tail, proving the coarsening is load-bearing', () => {
+    const stats = statsFrom([3], {
+      tail: Array.from({ length: PROMPT_TAIL_MAX_ENTRIES + 1 }, (_, i) => ({
+        length: 11 + i,
+        count: 1,
+      })),
+    })
+    expect(serverPromptStatsSchema.safeParse(stats).success).toBe(false)
+  })
+
+  it('sorts the tail ascending, coarsened or not', () => {
+    const narrow = statsFrom([1, 2, 900, 12, 300])
+    const wide = statsFrom(Array.from({ length: 3_000 }, (_, i) => 101 + i))
+
+    for (const stats of [narrow, wide]) {
+      const lengths = (stats.tail ?? []).map((e) => e.length)
+      expect(lengths.length).toBeGreaterThan(0)
+      expect(lengths).toEqual([...lengths].sort((a, b) => a - b))
+      expect(lengths.every((length) => length > stats.bucketMax)).toBe(true)
+    }
+  })
+
+  it('never emits a zero-count tail entry, which the server rejects', () => {
+    const stats = statsFrom([0, ...Array.from({ length: 38 }, () => 5), 44, 44])
+    expect(stats.tail?.every((e) => e.count > 0)).toBe(true)
+    expect(serverPromptStatsSchema.safeParse(stats).success).toBe(true)
+  })
+
+  it('splits totalPrompts between the histogram and the tail', () => {
+    // The histogram covers `1..bucketMax` exactly, the tail everything above,
+    // and nothing is in both — so the two sums always reconstruct
+    // `totalPrompts`. That is the arithmetic the server can check us against.
+    const counts = [...Array.from({ length: 38 }, () => 5), 11, 11, 40, 120]
+    const stats = statsFrom(counts)
+    const histogramTotal = stats.histogram.reduce((sum, b) => sum + b.count, 0)
+    const tailTotal = (stats.tail ?? []).reduce((sum, e) => sum + e.count, 0)
+
+    expect(stats.bucketMax).toBe(10)
+    expect(histogramTotal).toBe(38)
+    expect(tailTotal).toBe(4)
+    expect(histogramTotal + tailTotal).toBe(stats.totalPrompts)
+  })
+
+  it('counts prompts of exactly bucketMax words in the histogram, not the tail', () => {
+    // The bar at `bucketMax` is an exact word count like every other one; the
+    // tail only ever describes lengths beyond it.
+    const counts = [...Array.from({ length: 38 }, () => 5), 10, 10, 40]
+    const stats = statsFrom(counts)
+    const last = stats.histogram.find((b) => b.length === stats.bucketMax)
+    const histogramTotal = stats.histogram.reduce((sum, b) => sum + b.count, 0)
+    const tailTotal = (stats.tail ?? []).reduce((sum, e) => sum + e.count, 0)
+
+    expect(stats.bucketMax).toBe(10)
+    expect(last?.count).toBe(2)
+    expect(tailTotal).toBe(1)
+    expect(histogramTotal + tailTotal).toBe(stats.totalPrompts)
+    expect(serverPromptStatsSchema.safeParse(stats).success).toBe(true)
+  })
+})
+
+/** A state with `count` outstanding sessions, all on one dirty date. */
+function stateWithPrompts(count: number, date = '2026-03-02') {
+  const state = emptyState()
+  for (let i = 0; i < count; i++) {
+    const id = `${'0'.repeat(8)}-0000-4000-8000-${String(i).padStart(12, '0')}`
+    const at = new Date(Date.parse(`${date}T00:00:00.000Z`) + i * 1000)
+    state.prompts.sessions[id] = {
+      startedAt: at.toISOString(),
+      lastActiveAt: at.toISOString(),
+      promptCount: i + 1,
+    }
+    state.prompts.dirtySessions.push(id)
+  }
+  state.prompts.daily[date] = { prompts: count, words: count * 9 }
+  state.prompts.dirtyDates.push(date)
+  return state
+}
+
+describe('promptActivity payload matches the server schema', () => {
+  it('accepts what a tick actually builds', () => {
+    const payload = tickPayload(stateWithPrompts(3), { promptActivity: true })
+    expect(
+      serverPromptActivitySchema.safeParse(payload.promptActivity).success
+    ).toBe(true)
+  })
+
+  it('honours the session cap the server enforces', () => {
+    const state = stateWithPrompts(PROMPT_ACTIVITY_SESSION_CAP + 40)
+    const payload = tickPayload(state, { promptActivity: true })
+
+    expect(payload.promptActivity?.sessions).toHaveLength(
+      PROMPT_ACTIVITY_SESSION_CAP
+    )
+    expect(
+      serverPromptActivitySchema.safeParse(payload.promptActivity).success
+    ).toBe(true)
+
+    // Over-cap sessions are held back, not dropped: they go out next tick.
+    markUploaded(state)
+    expect(state.prompts.dirtySessions).toHaveLength(40)
+  })
+
+  it('honours the date cap the server enforces', () => {
+    const state = emptyState()
+    for (let i = 0; i < PROMPT_ACTIVITY_DATE_CAP + 30; i++) {
+      const date = new Date(Date.UTC(2024, 0, 1) + i * 86_400_000)
+        .toISOString()
+        .slice(0, 10)
+      state.prompts.daily[date] = { prompts: 1, words: 4 }
+      state.prompts.dirtyDates.push(date)
+    }
+
+    const payload = tickPayload(state, { promptActivity: true })
+    expect(payload.promptActivity?.dailyPrompts).toHaveLength(
+      PROMPT_ACTIVITY_DATE_CAP
+    )
+    expect(
+      serverPromptActivitySchema.safeParse(payload.promptActivity).success
+    ).toBe(true)
+  })
+
+  it('re-sends everything when the POST was never acked', () => {
+    // The server's upserts are idempotent (GREATEST wins), so the CLI is free
+    // to resend — and must, or a failed minute silently loses a session.
+    const state = stateWithPrompts(3)
+    const first = tickPayload(state, { promptActivity: true })
+    const second = tickPayload(state, { promptActivity: true })
+
+    expect(second.promptActivity).toEqual(first.promptActivity)
+  })
+
+  it('is absent entirely at the none tier', () => {
+    const payload = tickPayload(stateWithPrompts(3))
+    expect(payload.promptActivity).toBeUndefined()
+    expect('promptActivity' in payload).toBe(false)
+  })
+
+  it('never claims a session with no prompts, which the server rejects', () => {
+    const payload = tickPayload(stateWithPrompts(5), { promptActivity: true })
+    expect(
+      payload.promptActivity?.sessions.every((s) => s.promptCount >= 1)
+    ).toBe(true)
   })
 })

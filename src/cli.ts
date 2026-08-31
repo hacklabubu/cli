@@ -166,7 +166,7 @@ const HELP_GROUPS: Array<{
       },
       {
         label: 'config <key> <val>',
-        summary: 'cursor key, email, prompt-stats',
+        summary: 'cursor key, email, prompt-sync',
       },
     ],
   },

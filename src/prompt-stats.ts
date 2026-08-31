@@ -1,20 +1,26 @@
 import { execFile } from 'node:child_process'
-import { readFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 
-import { findFiles } from './scanners/util.js'
+import { findFiles, toDateStr } from './scanners/util.js'
 
 /**
  * Prompt statistics, computed entirely on this machine from the local Claude
  * Code transcripts and uploaded only under an explicit consent tier (see
  * prompt-consent.ts).
  *
- * Two numbers come out of a scan:
+ * Three things come out of a full scan:
  *
- *   - a histogram of how long the user's own prompts are, in words
+ *   - a histogram of how long the user's own prompts are, in words — every
+ *     bucket an exact word count — plus the tail, which is where the prompts
+ *     longer than the axis are reported, and their only home
  *   - a per-project prompt count, keyed by the project's git origin
+ *   - the prompt *activity* aggregate: per-session start/end/count and a
+ *     per-day prompt/word tally. That one is also what the minutely tick
+ *     accumulates incrementally (scanners/incremental.ts), so a full scan can
+ *     re-base the tick's state without either drifting from the other.
  *
  * and, under the `full` tier only, a sample of the raw prompt text so the
  * backend can score "how technical is this person's prompting". The backend
@@ -30,8 +36,10 @@ const execFileAsync = promisify(execFile)
 /** Buckets are `1..bucketMax`, so the axis stays readable at any prompt length. */
 export const PROMPT_LENGTH_BUCKET_MIN = 10
 export const PROMPT_LENGTH_BUCKET_MAX = 100
-/** The percentile that sets `bucketMax`; everything above lands in the overflow. */
-export const PROMPT_LENGTH_OVERFLOW_PERCENTILE = 0.9
+/** The percentile that sets `bucketMax`; everything above it lands in `tail`. */
+export const PROMPT_LENGTH_AXIS_PERCENTILE = 0.9
+/** The server's cap on `tail` entries; longer distributions are coarsened. */
+export const PROMPT_TAIL_MAX_ENTRIES = 400
 /** Matches the backend's cap — anything longer is truncated before upload. */
 export const CONVERSATION_SAMPLE_MAX_CHARS = 20_000
 
@@ -41,11 +49,49 @@ export type PromptStatsProject = {
   lastActiveAt: string
 }
 
+/** One session's running aggregate, as both the tick and a full scan build it. */
+export type PromptSessionAggregate = {
+  /** ISO timestamp of the first prompt seen in this session. */
+  startedAt: string
+  /** ISO timestamp of the most recent one. */
+  lastActiveAt: string
+  promptCount: number
+}
+
+/** One day's running tally. Cumulative for this machine, never a delta. */
+export type PromptDayAggregate = { prompts: number; words: number }
+
+/**
+ * The whole prompt-activity aggregate, keyed for cheap merging: sessions by
+ * session id, days by YYYY-MM-DD.
+ */
+export type PromptActivityAggregate = {
+  sessions: Record<string, PromptSessionAggregate>
+  daily: Record<string, PromptDayAggregate>
+}
+
 export type PromptStats = {
   totalPrompts: number
   bucketMax: number
   histogram: { length: number; count: number }[]
+  /**
+   * The exact distribution above `bucketMax`, and the only place those prompts
+   * are reported — the histogram stops at `bucketMax`. One entry per distinct
+   * word count, ascending, coarsened if there are more than
+   * `PROMPT_TAIL_MAX_ENTRIES` of them. Always present, empty when nothing
+   * exceeds `bucketMax`: the field's presence is what tells the server this
+   * histogram is exact, as opposed to a legacy snapshot whose last bar lumped
+   * everything at or above `bucketMax`.
+   */
+  tail: { length: number; count: number }[]
   projects: PromptStatsProject[]
+  /**
+   * Sessions and per-day counts for the whole local history. Not part of the
+   * `promptStats` block on the wire — the caller hands it to `stageFullScan`,
+   * which re-bases the tick's incremental state on it and works out which rows
+   * this upload still has to carry.
+   */
+  activity: PromptActivityAggregate
   /** Only ever set under the `full` consent tier. */
   conversationSample?: string
 }
@@ -92,9 +138,104 @@ export function countWords(text: string): number {
   return matches ? matches.length : 0
 }
 
+/** The server's cap on a session id. Longer than this and the row is rejected. */
+export const PROMPT_SESSION_ID_MAX_CHARS = 128
+
+/** One prompt, reduced to the three facts the activity aggregate needs. */
+export type PromptLine = {
+  sessionId: string
+  /** Canonical ISO-8601 UTC, so string order is time order. */
+  timestamp: string
+  words: number
+}
+
 /**
- * The overflow threshold for this user's own distribution: their p90 prompt
- * length rounded up to a multiple of 10, clamped to [10, 100].
+ * A transcript line as prompt activity, or null when it isn't one.
+ *
+ * Stricter than `promptTextFrom` on purpose: a prompt with no session id or no
+ * usable timestamp can't be placed on a session or a day, and the server's
+ * schema would reject it, so it counts towards the histogram (which needs
+ * neither) and nothing else.
+ */
+export function parsePromptLine(line: string): PromptLine | null {
+  if (!line.trim()) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(line)
+  } catch {
+    return null
+  }
+  const text = promptTextFrom(parsed)
+  if (text === null) return null
+  const words = countWords(text)
+  if (words <= 0) return null
+
+  const entry = parsed as { sessionId?: unknown; timestamp?: unknown }
+  const sessionId =
+    typeof entry.sessionId === 'string' ? entry.sessionId.trim() : ''
+  if (!sessionId || sessionId.length > PROMPT_SESSION_ID_MAX_CHARS) return null
+
+  const timestamp = normalizeTimestamp(entry.timestamp)
+  if (!timestamp) return null
+
+  return { sessionId, timestamp, words }
+}
+
+/** An ISO-8601 UTC string, or null when the value isn't a usable instant. */
+export function normalizeTimestamp(value: unknown): string | null {
+  if (typeof value !== 'string' && typeof value !== 'number') return null
+  const at = typeof value === 'number' ? value : Date.parse(value)
+  if (!Number.isFinite(at)) return null
+  return new Date(at).toISOString()
+}
+
+export function emptyPromptActivity(): PromptActivityAggregate {
+  return { sessions: {}, daily: {} }
+}
+
+/**
+ * Fold one prompt into an activity aggregate, returning the session and date it
+ * landed on so an incremental caller can mark exactly those dirty.
+ *
+ * The date is the UTC day of the timestamp — the same attribution
+ * `toDateStr` gives every token daily row, so the two halves of a sync agree
+ * about which day a piece of work belongs to.
+ */
+export function addPromptToActivity(
+  activity: PromptActivityAggregate,
+  line: PromptLine
+): { sessionId: string; date: string } {
+  const session = activity.sessions[line.sessionId]
+  if (session) {
+    if (line.timestamp < session.startedAt) session.startedAt = line.timestamp
+    if (line.timestamp > session.lastActiveAt) {
+      session.lastActiveAt = line.timestamp
+    }
+    session.promptCount += 1
+  } else {
+    activity.sessions[line.sessionId] = {
+      startedAt: line.timestamp,
+      lastActiveAt: line.timestamp,
+      promptCount: 1,
+    }
+  }
+
+  const date = toDateStr(line.timestamp)
+  const day = activity.daily[date]
+  if (day) {
+    day.prompts += 1
+    day.words += line.words
+  } else {
+    activity.daily[date] = { prompts: 1, words: line.words }
+  }
+
+  return { sessionId: line.sessionId, date }
+}
+
+/**
+ * Where the histogram's axis ends for this user's own distribution: their p90
+ * prompt length rounded up to a multiple of 10, clamped to [10, 100]. Anything
+ * longer is reported by `buildTail` instead.
  *
  * Per-user rather than fixed because prompt length varies enormously between
  * people — a fixed axis would either crush a terse user's histogram into the
@@ -105,7 +246,7 @@ export function bucketMaxFor(wordCounts: number[]): number {
   const sorted = [...wordCounts].sort((a, b) => a - b)
   const index = Math.min(
     sorted.length - 1,
-    Math.floor(sorted.length * PROMPT_LENGTH_OVERFLOW_PERCENTILE)
+    Math.floor(sorted.length * PROMPT_LENGTH_AXIS_PERCENTILE)
   )
   const p90 = sorted[index] ?? PROMPT_LENGTH_BUCKET_MIN
   const rounded = Math.ceil(p90 / 10) * 10
@@ -116,9 +257,12 @@ export function bucketMaxFor(wordCounts: number[]): number {
 }
 
 /**
- * Bucket the word counts. Buckets `1..bucketMax-1` are exact word counts; the
- * bucket at `bucketMax` is the overflow, holding every prompt that long or
- * longer. Empty buckets are omitted — the chart fills the gaps.
+ * Bucket the word counts. Every bucket `1..bucketMax` is an exact word count —
+ * there is no overflow bar. Empty buckets are omitted; the chart fills the gaps.
+ *
+ * Prompts longer than `bucketMax` are not in here at all: they are reported by
+ * `buildTail`, and only there. So the histogram and the tail partition the
+ * scan — sum(histogram counts) + sum(tail counts) === totalPrompts, always.
  */
 export function buildHistogram(
   wordCounts: number[],
@@ -127,9 +271,58 @@ export function buildHistogram(
   const counts = new Map<number, number>()
   for (const words of wordCounts) {
     if (words <= 0) continue
-    const bucket = words >= bucketMax ? bucketMax : words
-    counts.set(bucket, (counts.get(bucket) ?? 0) + 1)
+    if (words > bucketMax) continue
+    counts.set(words, (counts.get(words) ?? 0) + 1)
   }
+  return [...counts.entries()]
+    .map(([length, count]) => ({ length, count }))
+    .sort((a, b) => a.length - b.length)
+}
+
+/**
+ * The exact distribution of everything *longer* than `bucketMax`, which the
+ * histogram does not cover at all. One entry per distinct word count,
+ * ascending; empty (never absent) when nothing exceeds `bucketMax` — the
+ * field's presence on the wire is the marker that the histogram's bars are
+ * exact.
+ *
+ * Lengths only — no prompt text is involved here, or anywhere near it.
+ *
+ * A machine with a long history can have thousands of distinct long lengths,
+ * far past what the server accepts, so an over-cap tail is coarsened: lengths
+ * are rounded to multiples of 2, then 4, 8, … until at most
+ * `PROMPT_TAIL_MAX_ENTRIES` entries remain, summing the counts that collapse
+ * together. Rounding is *up* so that a coarsened entry still sits above
+ * `bucketMax` — rounding down could claim a length inside the histogram's own
+ * exact range for a prompt the histogram never counted.
+ *
+ * Deterministic: the result depends only on the multiset of word counts.
+ */
+export function buildTail(
+  wordCounts: number[],
+  bucketMax: number
+): { length: number; count: number }[] {
+  const exact = new Map<number, number>()
+  for (const words of wordCounts) {
+    if (words <= bucketMax) continue
+    exact.set(words, (exact.get(words) ?? 0) + 1)
+  }
+  if (exact.size === 0) return []
+
+  let counts = exact
+  let step = 1
+  while (counts.size > PROMPT_TAIL_MAX_ENTRIES) {
+    step *= 2
+    const coarser = new Map<number, number>()
+    // Always coarsen from the exact counts, so the rounding is one clean
+    // division rather than a rounding of a rounding.
+    for (const [length, count] of exact) {
+      const rounded = Math.ceil(length / step) * step
+      coarser.set(rounded, (coarser.get(rounded) ?? 0) + count)
+    }
+    counts = coarser
+  }
+
   return [...counts.entries()]
     .map(([length, count]) => ({ length, count }))
     .sort((a, b) => a.length - b.length)
@@ -162,6 +355,25 @@ type ProjectAccumulator = {
 }
 
 /**
+ * Newest transcript first. The sample is meant to be the user's *recent*
+ * prompting, so the walk order has to be time order — the directory walk's own
+ * order is alphabetical and would hand the scorer whatever happens to sort
+ * first, which for a long-lived machine is usually a project abandoned years
+ * ago. A file we can't stat sorts last rather than dropping out.
+ */
+async function byMtimeDesc(paths: string[]): Promise<string[]> {
+  const stamped = await Promise.all(
+    paths.map(async (path) => ({
+      path,
+      mtimeMs: await stat(path)
+        .then((s) => s.mtimeMs)
+        .catch(() => 0),
+    }))
+  )
+  return stamped.sort((a, b) => b.mtimeMs - a.mtimeMs).map((f) => f.path)
+}
+
+/**
  * Scan the local Claude Code transcripts.
  *
  * `includeSample` gates the raw prompt text: only the `full` consent tier
@@ -172,10 +384,11 @@ export async function scanPromptStats(
   options: { includeSample?: boolean } = {}
 ): Promise<PromptStats | null> {
   const root = join(homedir(), '.claude', 'projects')
-  const files = await findFiles(root, '.jsonl')
+  const files = await byMtimeDesc(await findFiles(root, '.jsonl'))
   if (files.length === 0) return null
 
   const wordCounts: number[] = []
+  const activity = emptyPromptActivity()
   const sampleParts: string[] = []
   let sampleChars = 0
   // Keyed by the transcript's project directory, which is Claude Code's own
@@ -197,6 +410,14 @@ export async function scanPromptStats(
     } catch {
       continue
     }
+
+    // Within a file the newest prompts are last, so the sample is drained in
+    // reverse after the file is read. Only collected while the budget is still
+    // open, so a full sample doesn't hold a whole history in memory.
+    const collectSample =
+      options.includeSample === true &&
+      sampleChars < CONVERSATION_SAMPLE_MAX_CHARS
+    const fileSample: string[] = []
 
     for (const line of content.split('\n')) {
       if (!line.trim()) continue
@@ -220,20 +441,22 @@ export async function scanPromptStats(
       wordCounts.push(words)
       project.promptCount += 1
 
-      if (typeof entry.timestamp === 'string') {
-        const at = Date.parse(entry.timestamp)
-        if (Number.isFinite(at) && at > project.lastActiveAt) {
-          project.lastActiveAt = at
-        }
+      const at = Date.parse(String(entry.timestamp))
+      if (Number.isFinite(at) && at > project.lastActiveAt) {
+        project.lastActiveAt = at
       }
 
-      if (
-        options.includeSample &&
-        sampleChars < CONVERSATION_SAMPLE_MAX_CHARS
-      ) {
-        sampleParts.push(text)
-        sampleChars += text.length + 2
-      }
+      const promptLine = parsePromptLine(line)
+      if (promptLine) addPromptToActivity(activity, promptLine)
+
+      if (collectSample) fileSample.push(text)
+    }
+
+    for (let i = fileSample.length - 1; i >= 0; i--) {
+      if (sampleChars >= CONVERSATION_SAMPLE_MAX_CHARS) break
+      const text = fileSample[i] as string
+      sampleParts.push(text)
+      sampleChars += text.length + 2
     }
   }
 
@@ -244,7 +467,9 @@ export async function scanPromptStats(
     totalPrompts: wordCounts.length,
     bucketMax,
     histogram: buildHistogram(wordCounts, bucketMax),
+    tail: buildTail(wordCounts, bucketMax),
     projects: await resolveProjects(byProjectDir),
+    activity,
   }
 
   if (options.includeSample && sampleParts.length > 0) {
@@ -254,6 +479,18 @@ export async function scanPromptStats(
   }
 
   return stats
+}
+
+/**
+ * The `promptStats` block as the server takes it. `activity` is deliberately
+ * dropped: it is local bookkeeping for the tick's incremental state, and it
+ * travels under its own top-level `promptActivity` field instead.
+ */
+export function promptStatsPayload(
+  stats: PromptStats
+): Omit<PromptStats, 'activity'> {
+  const { activity: _activity, ...wire } = stats
+  return wire
 }
 
 /**

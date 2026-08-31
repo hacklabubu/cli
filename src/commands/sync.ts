@@ -9,20 +9,21 @@ import {
 } from '../daily-sync.js'
 import { captureEvent } from '../posthog.js'
 import {
-  loadPromptConsent,
-  parsePromptStatsFlag,
-  resolvePromptConsent,
-  savePromptConsent,
+  loadPromptSync,
+  parsePromptSyncFlag,
+  resolvePromptSync,
+  savePromptSync,
 } from '../prompt-consent.js'
 import {
   cumulativeTotals,
+  hasPromptActivity,
   loadScanState,
   markUploaded,
-  rebuildScanState,
   runTick,
   type ScanState,
   sameTotals,
   saveScanState,
+  stageFullScan,
   tickPayload,
 } from '../scanners/incremental.js'
 import { collectToolScans, mergeToolScans } from '../scanners/index.js'
@@ -53,10 +54,10 @@ const SESSION_EXPIRED_REASON =
  *   --quiet           the unattended daily run (logs to a file, no output)
  */
 export async function sync(args: string[] = []): Promise<void> {
-  // Pull --share-prompt-stats out first so it works alongside every mode
+  // Pull --share-prompt-sync out first so it works alongside every mode
   // below (an agent can set consent on the same run that installs the daemon).
-  const { tier: flagTier, rest } = parsePromptStatsFlag(args)
-  if (flagTier) await savePromptConsent(flagTier)
+  const { tier: flagTier, rest } = parsePromptSyncFlag(args)
+  if (flagTier) await savePromptSync(flagTier)
   args = rest
 
   if (args.includes('--install-daily')) {
@@ -105,16 +106,30 @@ async function quietSync(): Promise<void> {
   // Whatever the user already consented to. The unattended run never asks, so
   // a machine that has never answered uploads token counts only.
   const promptStats = await scanConsentedPromptStats(
-    (await loadPromptConsent()) ?? 'none'
+    (await loadPromptSync()) ?? 'none'
   )
 
   // Upload tokens AND mirror pinned repos together, so the after-refresh retry
   // below does the exact same work as the happy path (no silently-skipped repo
-  // sync on a day the session had to be refreshed mid-run). The state rebuild
-  // rides along: everything just went out, so nothing is left dirty.
+  // sync on a day the session had to be refreshed mid-run).
+  //
+  // The state rebuild is staged first: it works out which prompt rows are still
+  // outstanding, and this upload carries them, so a machine whose minutely tick
+  // never runs still gets its prompt activity up. Re-staging on the retry is
+  // free — the failed attempt committed nothing, so the claim comes out the
+  // same.
   const push = async (s: Session) => {
-    await uploadTokenScan(s, scan, { promptStats })
-    await rebuildScanState(results)
+    const staged = await stageFullScan(results, {
+      scanned: promptStats?.activity ?? null,
+    })
+    await uploadTokenScan(
+      s,
+      staged.promptActivity
+        ? { ...scan, promptActivity: staged.promptActivity }
+        : scan,
+      { promptStats }
+    )
+    await staged.commit()
     await syncGithubRepos(s)
   }
 
@@ -205,9 +220,15 @@ async function tickSync(): Promise<void> {
   const session = await ensureFreshSession(sessionState.session)
 
   const { state, changed } = await runTick(saved)
+  // A background job never asks: an unanswered machine syncs tokens only, and
+  // the prompt activity the tick counted stays on disk.
+  const promptSync = (await loadPromptSync()) ?? 'none'
+  const promptPending = promptSync !== 'none' && hasPromptActivity(state)
+
   const totals = cumulativeTotals(state)
   if (
     state.dirty.length === 0 &&
+    !promptPending &&
     sameTotals(totals.toolTotals, state.uploaded.toolTotals) &&
     sameTotals(totals.modelTotals, state.uploaded.modelTotals)
   ) {
@@ -217,11 +238,11 @@ async function tickSync(): Promise<void> {
     return
   }
 
-  const scan = tickPayload(state)
+  const scan = tickPayload(state, { promptActivity: promptPending })
   const dates = state.dirty.length
-  // No prompt stats and no GitHub mirror: those are the daily job's work, and a
-  // minutely run has no business re-reading transcripts. Not interactive either
-  // — a background tick isn't user activity.
+  // No full prompt scan and no GitHub mirror: those are the daily job's work,
+  // and a minutely run has no business re-reading whole transcripts. Not
+  // interactive either — a background tick isn't user activity.
   try {
     const result = await uploadTokenScan(session, scan)
     markUploaded(state)
@@ -299,7 +320,7 @@ async function interactiveSync() {
 
   // Ask before scanning anything conversational. Asked once, then remembered;
   // an unanswered or non-TTY run resolves to 'none'.
-  const promptConsent = await resolvePromptConsent(null, { interactive: true })
+  const promptSync = await resolvePromptSync(null, { interactive: true })
 
   console.log('')
   console.log(bold('  hacklab sync'))
@@ -310,7 +331,7 @@ async function interactiveSync() {
   try {
     // Manual `hacklab sync` — tag the upload as interactive so the backend counts
     // it as user activity (the daily background job doesn't).
-    result = await runSync(session, { interactive: true, promptConsent })
+    result = await runSync(session, { interactive: true, promptSync })
   } catch (e) {
     error(e instanceof Error ? e.message : 'sync failed')
     process.exit(1)
@@ -365,7 +386,7 @@ async function interactiveSync() {
     const { totalPrompts } = result.promptStats
     info(
       `  prompts      ${formatTokens(totalPrompts)} scanned${
-        promptConsent === 'full' ? dim(' (+ text sample)') : ''
+        promptSync === 'full' ? dim(' (+ text sample)') : ''
       }`
     )
     // The backend can only attach a project's count if the repo matches one of

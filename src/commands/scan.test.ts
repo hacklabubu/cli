@@ -5,7 +5,8 @@ const m = vi.hoisted(() => ({
   checkSession: vi.fn(),
   ensureFreshSession: vi.fn(),
   uploadTokenScan: vi.fn(),
-  rebuildScanState: vi.fn(),
+  stageFullScan: vi.fn(),
+  stageCommit: vi.fn(),
   collectToolScans: vi.fn(),
   mergeToolScans: vi.fn(),
   detectCursorUsage: vi.fn(),
@@ -39,7 +40,7 @@ vi.mock('../sync.js', () => ({
   uploadTokenScan: m.uploadTokenScan,
 }))
 vi.mock('../scanners/incremental.js', () => ({
-  rebuildScanState: m.rebuildScanState,
+  stageFullScan: m.stageFullScan,
 }))
 vi.mock('../scanners/index.js', () => ({
   collectToolScans: m.collectToolScans,
@@ -97,7 +98,7 @@ const SESSION = {
   savedAt: '2026-06-20T00:00:00.000Z',
 }
 
-const CLAUDE_SCAN = { tool: 'claude_code', daily: [], hourly: [], models: {} }
+const CLAUDE_SCAN = { tool: 'claude_code', daily: [], models: {} }
 
 const LOCAL_SCAN = {
   grandTotal: 2_400_000_000,
@@ -109,7 +110,6 @@ const LOCAL_SCAN = {
     grok: 158_200_000,
   },
   dailyTotals: [{ date: '2026-06-20', tool: 'claude_code', tokens: 100 }],
-  hourlyTotals: [],
   modelTotals: {
     'gpt-5.3': 502_000_000,
     'gpt-5.0': 120_000_000,
@@ -161,7 +161,7 @@ beforeEach(() => {
     emailSource: 'none',
   })
   m.uploadTokenScan.mockResolvedValue(SERVER)
-  m.rebuildScanState.mockResolvedValue(undefined)
+  m.stageFullScan.mockResolvedValue({ commit: m.stageCommit })
   m.renderShareCard.mockResolvedValue('/tmp/hacklab-card.png')
   m.dailySyncState.mockResolvedValue('current')
   m.installDailySync.mockResolvedValue({
@@ -234,7 +234,11 @@ describe('hacklab scan', () => {
     expect(m.uploadTokenScan.mock.calls[0]?.[2]).toEqual(
       expect.objectContaining({ interactive: true })
     )
-    expect(m.rebuildScanState).toHaveBeenCalledOnce()
+    expect(m.stageFullScan).toHaveBeenCalledOnce()
+    // `scan` resolves no consent tier, so it must not rewrite the prompt state
+    // the tick has been accumulating.
+    expect(m.stageFullScan.mock.calls[0]?.[1]).toBe('untouched')
+    expect(m.stageCommit).toHaveBeenCalledOnce()
     expect(m.renderShareCard).toHaveBeenCalledOnce()
     expect(m.renderShareCard.mock.calls[0]?.[0]).toEqual(
       expect.objectContaining({

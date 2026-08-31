@@ -43,7 +43,6 @@ describe('parseGrokLine', () => {
       tokens: 33282,
       model: 'grok-4.6',
       date: '2026-08-20',
-      hour: new Date('2026-08-20T15:00:00.000Z').getHours(),
     })
   })
 
@@ -88,7 +87,7 @@ describe('scanGrok', () => {
 
   it('returns empty when Grok Build has never written logs', async () => {
     const result = await scanGrok()
-    expect(result).toEqual({ tool: 'grok', daily: [], hourly: [], models: {} })
+    expect(result).toEqual({ tool: 'grok', daily: [], models: {} })
   })
 
   it('aggregates inference_done lines from unified.jsonl', async () => {
@@ -128,7 +127,6 @@ describe('scanGrok', () => {
         model: 'grok-4.6',
       },
     ])
-    expect(result.hourly).toHaveLength(2)
     expect(result.models).toEqual({ 'grok-4.6': 350 })
   })
 })

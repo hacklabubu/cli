@@ -23,14 +23,38 @@ export type DailyToolEntry = {
   model?: string
 }
 
-export type HourlyEntry = {
-  date: string
-  hour: number
-  tool: string
-  model?: string
-  tokens: number
-  messages?: number
+/**
+ * One coding session's prompt activity, as `promptActivity.sessions` carries it.
+ * The server upserts these per (machine, sessionId) with GREATEST semantics, so
+ * a resend after a failed POST is always safe.
+ */
+export type PromptSessionEntry = {
+  sessionId: string
+  startedAt: string
+  lastActiveAt: string
+  promptCount: number
 }
+
+/** One day's prompt counts, cumulative per (machine, date). */
+export type PromptDayEntry = {
+  date: string
+  prompts: number
+  words: number
+}
+
+/**
+ * The prompt-metadata block of an upload. Present only under the `stats` or
+ * `full` tier of `promptSync` — never at `none`, and never carrying prompt text
+ * (that rides in `promptStats.conversationSample`, `full` only).
+ */
+export type PromptActivity = {
+  sessions: PromptSessionEntry[]
+  dailyPrompts: PromptDayEntry[]
+}
+
+/** The server's caps. Anything over stays dirty and goes out next tick. */
+export const PROMPT_ACTIVITY_SESSION_CAP = 500
+export const PROMPT_ACTIVITY_DATE_CAP = 400
 
 export type CursorStats = {
   totalCommits: number
@@ -53,7 +77,6 @@ export type CursorScanStatus =
 export type ScanResult = {
   tool: Tool
   daily: DailyToolEntry[]
-  hourly: HourlyEntry[]
   /** model name -> tokens, for the share card + modelTotals payload. */
   models: Record<string, number>
   /** Cursor-only: local commit stats (null for other tools). */
@@ -63,10 +86,8 @@ export type ScanResult = {
 }
 
 export function emptyResult(tool: Tool): ScanResult {
-  return { tool, daily: [], hourly: [], models: {} }
+  return { tool, daily: [], models: {} }
 }
-
-export const HOURLY_WINDOW_DAYS = 90
 
 export type TokensMessages = { tokens: number; messages: number }
 
@@ -76,9 +97,10 @@ export function toDateStr(ts: string | number | Date): string {
   return d.toISOString().slice(0, 10)
 }
 
-export function hourlyCutoff(): string {
+/** `n` days before today, as a YYYY-MM-DD cutoff. */
+export function dateDaysAgo(days: number): string {
   const d = new Date()
-  d.setUTCDate(d.getUTCDate() - HOURLY_WINDOW_DAYS)
+  d.setUTCDate(d.getUTCDate() - days)
   return d.toISOString().slice(0, 10)
 }
 
@@ -187,15 +209,13 @@ export async function findFiles(dir: string, ext: string): Promise<string[]> {
 }
 
 /**
- * Per-scanner accumulator. Replaces the old module-level modelAccumulator /
- * hourlyAccumulator globals — each scanner instantiates its own, so there is no
- * cross-scan state to clear and concurrent runs can't clobber each other.
+ * Per-scanner accumulator. Replaces the old module-level modelAccumulator
+ * globals — each scanner instantiates its own, so there is no cross-scan state
+ * to clear and concurrent runs can't clobber each other.
  */
 export class TokenCollector {
   private readonly dailyByModel = new Map<string, TokensMessages>()
-  private readonly hourly = new Map<string, TokensMessages>()
   private readonly models = new Map<string, number>()
-  private readonly cutoff = hourlyCutoff()
 
   constructor(private readonly tool: Tool) {}
 
@@ -211,24 +231,6 @@ export class TokenCollector {
     if (model) this.models.set(model, (this.models.get(model) ?? 0) + tokens)
   }
 
-  addHourly(
-    date: string,
-    hour: number,
-    model: string | undefined,
-    tokens: number,
-    messages = 1
-  ) {
-    if (date < this.cutoff) return
-    const key = `${date}|${hour}|${model ?? ''}`
-    const existing = this.hourly.get(key)
-    if (existing) {
-      existing.tokens += tokens
-      existing.messages += messages
-    } else {
-      this.hourly.set(key, { tokens, messages })
-    }
-  }
-
   result(extra?: Partial<ScanResult>): ScanResult {
     const daily: DailyToolEntry[] = Array.from(this.dailyByModel.entries()).map(
       ([key, { tokens, messages }]) => {
@@ -242,23 +244,9 @@ export class TokenCollector {
         }
       }
     )
-    const hourly: HourlyEntry[] = Array.from(this.hourly.entries()).map(
-      ([key, { tokens, messages }]) => {
-        const [date, hourStr, model] = key.split('|')
-        return {
-          date: date ?? '',
-          hour: Number(hourStr),
-          tool: this.tool,
-          model: model || undefined,
-          tokens,
-          messages,
-        }
-      }
-    )
     return {
       tool: this.tool,
       daily,
-      hourly,
       models: Object.fromEntries(this.models),
       ...extra,
     }
