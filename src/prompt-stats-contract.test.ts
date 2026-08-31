@@ -201,11 +201,12 @@ describe('promptStats payload matches the server schema', () => {
     expect(serverPromptStatsSchema.safeParse(stats).success).toBe(true)
   })
 
-  it('omits the tail entirely when nothing runs past bucketMax', () => {
-    // Absent, not `[]`: the server field is optional, and an empty array would
-    // claim a tail of long prompts that this scan does not have.
+  it('sends an empty tail when nothing runs past bucketMax', () => {
+    // Always present: an empty tail is how the server tells an exact
+    // histogram from a legacy snapshot whose last bar was a lump. The server
+    // field stays optional so pre-tail CLIs keep parsing.
     const stats = statsFrom([1, 2, 3])
-    expect('tail' in stats).toBe(false)
+    expect(stats.tail).toEqual([])
     expect(serverPromptStatsSchema.safeParse(stats).success).toBe(true)
   })
 

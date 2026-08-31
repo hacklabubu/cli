@@ -273,11 +273,12 @@ describe('buildTail', () => {
     ])
   })
 
-  it('is undefined when nothing runs past bucketMax', () => {
-    // Absent, not empty: the server field is optional and an empty array would
-    // claim a tail that does not exist.
-    expect(buildTail([1, 4, 9], 10)).toBeUndefined()
-    expect(buildTail([], 10)).toBeUndefined()
+  it('is empty when nothing runs past bucketMax', () => {
+    // Empty, never absent: the field's presence is the marker that the
+    // histogram's bars are exact (a legacy snapshot without it lumped
+    // everything at or above bucketMax into its last bar).
+    expect(buildTail([1, 4, 9], 10)).toEqual([])
+    expect(buildTail([], 10)).toEqual([])
   })
 
   it('excludes prompts of exactly bucketMax words, which the histogram counts', () => {

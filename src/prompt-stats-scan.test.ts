@@ -150,12 +150,11 @@ describe('scanPromptStats — the length tail', () => {
     expect(histogramTotal + tailTotal).toBe(stats?.totalPrompts)
   })
 
-  it('leaves the field off a scan with no long prompts', async () => {
+  it('sends an empty tail on a scan with no long prompts', async () => {
     await transcript('one', ['a b c', 'd e'], new Date(2e12), 'sess-1')
 
     const stats = await scanPromptStats()
 
-    expect(stats?.tail).toBeUndefined()
-    expect(stats && 'tail' in stats).toBe(false)
+    expect(stats?.tail).toEqual([])
   })
 })

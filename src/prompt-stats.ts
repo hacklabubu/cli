@@ -78,10 +78,12 @@ export type PromptStats = {
    * The exact distribution above `bucketMax`, and the only place those prompts
    * are reported — the histogram stops at `bucketMax`. One entry per distinct
    * word count, ascending, coarsened if there are more than
-   * `PROMPT_TAIL_MAX_ENTRIES` of them. Absent entirely when nothing exceeds
-   * `bucketMax`.
+   * `PROMPT_TAIL_MAX_ENTRIES` of them. Always present, empty when nothing
+   * exceeds `bucketMax`: the field's presence is what tells the server this
+   * histogram is exact, as opposed to a legacy snapshot whose last bar lumped
+   * everything at or above `bucketMax`.
    */
-  tail?: { length: number; count: number }[]
+  tail: { length: number; count: number }[]
   projects: PromptStatsProject[]
   /**
    * Sessions and per-day counts for the whole local history. Not part of the
@@ -280,7 +282,9 @@ export function buildHistogram(
 /**
  * The exact distribution of everything *longer* than `bucketMax`, which the
  * histogram does not cover at all. One entry per distinct word count,
- * ascending; undefined (never `[]`) when nothing exceeds `bucketMax`.
+ * ascending; empty (never absent) when nothing exceeds `bucketMax` — the
+ * field's presence on the wire is the marker that the histogram's bars are
+ * exact.
  *
  * Lengths only — no prompt text is involved here, or anywhere near it.
  *
@@ -297,13 +301,13 @@ export function buildHistogram(
 export function buildTail(
   wordCounts: number[],
   bucketMax: number
-): { length: number; count: number }[] | undefined {
+): { length: number; count: number }[] {
   const exact = new Map<number, number>()
   for (const words of wordCounts) {
     if (words <= bucketMax) continue
     exact.set(words, (exact.get(words) ?? 0) + 1)
   }
-  if (exact.size === 0) return undefined
+  if (exact.size === 0) return []
 
   let counts = exact
   let step = 1
@@ -463,14 +467,10 @@ export async function scanPromptStats(
     totalPrompts: wordCounts.length,
     bucketMax,
     histogram: buildHistogram(wordCounts, bucketMax),
+    tail: buildTail(wordCounts, bucketMax),
     projects: await resolveProjects(byProjectDir),
     activity,
   }
-
-  // Set only when there is one: the field must be absent from the payload, not
-  // an empty array, when nothing ran past `bucketMax`.
-  const tail = buildTail(wordCounts, bucketMax)
-  if (tail) stats.tail = tail
 
   if (options.includeSample && sampleParts.length > 0) {
     stats.conversationSample = sampleParts
