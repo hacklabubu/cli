@@ -139,13 +139,19 @@ function printDisclosure(): void {
   info(`  reading your Claude Code history from ${dim('~/.claude/projects')}.`)
   console.log('')
   info(`  ${bold('what would be synced, every minute:')}`)
-  info('    how many prompts you send, and how long they are in words')
-  info('    when each session started and last ran, and its session id')
-  info('    a prompt count per project, matched by its git remote')
+  info(
+    `    ${dim('-')} how many prompts you send, and how long they are in words`
+  )
+  info(
+    `    ${dim('-')} when each session started and last ran, and its session id`
+  )
+  info(`    ${dim('-')} a prompt count per project, matched by its git remote`)
   console.log('')
   info(`  ${bold('what stays on this machine:')}`)
-  info('    the text of your prompts, unless you separately say yes below')
-  info('    anything from a project without a git remote')
+  info(
+    `    ${dim('-')} the text of your prompts, unless you separately say yes below`
+  )
+  info(`    ${dim('-')} anything from a project without a git remote`)
   console.log('')
   info(dim('  your profile shows your sessions, how many you run at once, and'))
   info(dim('  your prompt counts. change or revoke this any time with'))
