@@ -7,12 +7,14 @@ import {
   addPromptToActivity,
   bucketMaxFor,
   buildHistogram,
+  buildTail,
   countWords,
   emptyPromptActivity,
   gitOriginUrl,
   PROMPT_LENGTH_BUCKET_MAX,
   PROMPT_LENGTH_BUCKET_MIN,
   PROMPT_SESSION_ID_MAX_CHARS,
+  PROMPT_TAIL_MAX_ENTRIES,
   parsePromptLine,
   promptTextFrom,
 } from './prompt-stats.js'
@@ -238,6 +240,66 @@ describe('buildHistogram', () => {
     const counts = [1, 4, 4, 9, 40, 41]
     const total = buildHistogram(counts, 20).reduce((s, b) => s + b.count, 0)
     expect(total).toBe(counts.length)
+  })
+})
+
+describe('buildTail', () => {
+  it('reports the lengths above bucketMax exactly, ascending', () => {
+    expect(buildTail([3, 5, 40, 12, 12], 10)).toEqual([
+      { length: 12, count: 2 },
+      { length: 40, count: 1 },
+    ])
+  })
+
+  it('is undefined when nothing runs past bucketMax', () => {
+    // Absent, not empty: the server field is optional and an empty array would
+    // claim a tail that does not exist.
+    expect(buildTail([1, 4, 9], 10)).toBeUndefined()
+    expect(buildTail([], 10)).toBeUndefined()
+  })
+
+  it('excludes the bucketMax bucket itself, which the histogram already has', () => {
+    expect(buildTail([10, 10, 11], 10)).toEqual([{ length: 11, count: 1 }])
+  })
+
+  it('coarsens a wide tail to the entry cap, summing what collapses', () => {
+    // 1400 distinct lengths: multiples of 2 still leave ~700, so this needs a
+    // second doubling to multiples of 4.
+    const counts = Array.from({ length: 1_400 }, (_, i) => 101 + i)
+    const tail = buildTail(counts, 100)
+    if (!tail) throw new Error('expected a tail')
+
+    expect(tail.length).toBeLessThanOrEqual(PROMPT_TAIL_MAX_ENTRIES)
+    expect(tail.reduce((sum, e) => sum + e.count, 0)).toBe(counts.length)
+    expect(tail.every((e) => e.length % 4 === 0)).toBe(true)
+    expect(tail.every((e) => e.count >= 1)).toBe(true)
+  })
+
+  it('keeps every coarsened length above bucketMax and in ascending order', () => {
+    // Rounding up matters here: 101 rounded *down* to a multiple of 4 would be
+    // 100, colliding with the histogram's own overflow bucket.
+    const tail = buildTail(
+      Array.from({ length: 2_000 }, (_, i) => 101 + i),
+      100
+    )
+    if (!tail) throw new Error('expected a tail')
+
+    expect(tail.every((e) => e.length > 100)).toBe(true)
+    const lengths = tail.map((e) => e.length)
+    expect(lengths).toEqual([...lengths].sort((a, b) => a - b))
+  })
+
+  it('is deterministic — only the multiset of lengths matters', () => {
+    const counts = Array.from({ length: 1_500 }, (_, i) => 101 + (i % 1_100))
+    const shuffled = [...counts].reverse()
+    expect(buildTail(shuffled, 100)).toEqual(buildTail(counts, 100))
+  })
+
+  it('accounts for the histogram overflow bar it expands', () => {
+    const counts = [2, 9, 11, 11, 250, 999]
+    const overflow = buildHistogram(counts, 10).find((b) => b.length === 10)
+    const tail = buildTail(counts, 10) ?? []
+    expect(tail.reduce((sum, e) => sum + e.count, 0)).toBe(overflow?.count)
   })
 })
 

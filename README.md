@@ -220,8 +220,10 @@ prompt metadata — so your profile shows your coding sessions, how many you run
 at once, and your prompt counts, kept current rather than once a day. Every
 full sync carries whatever is still outstanding too, so a machine with no
 daemon gets its prompt activity up by running `hacklab sync` by hand. The daily
-full sync also adds a histogram of your prompt lengths and a prompt count per
-project. It all comes from your local Claude Code transcripts
+full sync also adds a histogram of your prompt lengths — short lengths bar by
+bar, and the long ones as a list of length/count pairs so a tail of unusually
+long prompts stays visible instead of collapsing into one bar — and a prompt
+count per project. It all comes from your local Claude Code transcripts
 (`~/.claude/projects`), read on this machine.
 
 Nothing conversation-derived leaves your machine until you say so. The first

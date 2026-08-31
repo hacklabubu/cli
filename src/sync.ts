@@ -232,9 +232,9 @@ export async function uploadTokenScan(
       modelTotals: scan.modelTotals,
       // Both blocks are absent unless consented — the backend's fields are
       // optional, so an opted-out sync carries token counts and nothing else.
-      // `promptStats` rides on full scans (histogram, projects, and under the
-      // `full` tier the text sample); `promptActivity` rides on ticks (session
-      // and per-day metadata, no text ever).
+      // `promptStats` rides on full scans (histogram, its exact tail, projects,
+      // and under the `full` tier the text sample); `promptActivity` rides on
+      // ticks (session and per-day metadata, no text ever).
       ...(opts.promptStats
         ? { promptStats: promptStatsPayload(opts.promptStats) }
         : {}),

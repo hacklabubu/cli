@@ -3,8 +3,10 @@ import { z } from 'zod'
 import {
   bucketMaxFor,
   buildHistogram,
+  buildTail,
   CONVERSATION_SAMPLE_MAX_CHARS,
   emptyPromptActivity,
+  PROMPT_TAIL_MAX_ENTRIES,
   type PromptStats,
   promptStatsPayload,
 } from './prompt-stats.js'
@@ -41,6 +43,17 @@ const serverPromptStatsSchema = z.object({
       })
     )
     .max(200),
+  // The exact distribution behind the histogram's overflow bar. Optional: a
+  // scan with nothing past `bucketMax` omits it rather than sending `[]`.
+  tail: z
+    .array(
+      z.object({
+        length: z.number().int().positive(),
+        count: z.number().int().min(1),
+      })
+    )
+    .max(PROMPT_TAIL_MAX_ENTRIES)
+    .optional(),
   projects: z
     .array(
       z.object({
@@ -85,10 +98,14 @@ function statsFrom(
   overrides: Partial<PromptStats> = {}
 ): PromptStats {
   const bucketMax = bucketMaxFor(wordCounts)
+  const tail = buildTail(wordCounts, bucketMax)
   return promptStatsPayload({
     totalPrompts: wordCounts.length,
     bucketMax,
     histogram: buildHistogram(wordCounts, bucketMax),
+    // Assembled the way `scanPromptStats` does: the key is absent, not
+    // undefined, when there is no tail.
+    ...(tail ? { tail } : {}),
     projects: [],
     activity: emptyPromptActivity(),
     ...overrides,
@@ -171,6 +188,98 @@ describe('promptStats payload matches the server schema', () => {
       conversationSample: 'x'.repeat(CONVERSATION_SAMPLE_MAX_CHARS + 1),
     })
     expect(serverPromptStatsSchema.safeParse(stats).success).toBe(false)
+  })
+
+  it('carries the tail when prompts run past bucketMax', () => {
+    const stats = statsFrom([...Array.from({ length: 38 }, () => 5), 40, 120])
+    expect(stats.bucketMax).toBe(10)
+    expect(stats.tail).toEqual([
+      { length: 40, count: 1 },
+      { length: 120, count: 1 },
+    ])
+    expect(serverPromptStatsSchema.safeParse(stats).success).toBe(true)
+  })
+
+  it('omits the tail entirely when nothing runs past bucketMax', () => {
+    // Absent, not `[]`: the server field is optional, and an empty array would
+    // assert an overflow bar that the histogram does not have.
+    const stats = statsFrom([1, 2, 3])
+    expect('tail' in stats).toBe(false)
+    expect(serverPromptStatsSchema.safeParse(stats).success).toBe(true)
+  })
+
+  it('coarsens a very wide tail down to the server entry cap', () => {
+    // A long-lived machine easily has thousands of distinct long prompt
+    // lengths; unrounded that is an instant 400 on the whole sync.
+    const counts = [
+      ...Array.from({ length: 200 }, () => 5),
+      ...Array.from({ length: 3_000 }, (_, i) => 101 + i),
+    ]
+    const stats = statsFrom(counts)
+
+    expect(stats.bucketMax).toBe(100)
+    expect(stats.tail?.length).toBeLessThanOrEqual(PROMPT_TAIL_MAX_ENTRIES)
+    expect(serverPromptStatsSchema.safeParse(stats).success).toBe(true)
+  })
+
+  it('rejects an over-cap tail, proving the coarsening is load-bearing', () => {
+    const stats = statsFrom([3], {
+      tail: Array.from({ length: PROMPT_TAIL_MAX_ENTRIES + 1 }, (_, i) => ({
+        length: 11 + i,
+        count: 1,
+      })),
+    })
+    expect(serverPromptStatsSchema.safeParse(stats).success).toBe(false)
+  })
+
+  it('sorts the tail ascending, coarsened or not', () => {
+    const narrow = statsFrom([1, 2, 900, 12, 300])
+    const wide = statsFrom(Array.from({ length: 3_000 }, (_, i) => 101 + i))
+
+    for (const stats of [narrow, wide]) {
+      const lengths = (stats.tail ?? []).map((e) => e.length)
+      expect(lengths.length).toBeGreaterThan(0)
+      expect(lengths).toEqual([...lengths].sort((a, b) => a - b))
+      expect(lengths.every((length) => length > stats.bucketMax)).toBe(true)
+    }
+  })
+
+  it('never emits a zero-count tail entry, which the server rejects', () => {
+    const stats = statsFrom([0, ...Array.from({ length: 38 }, () => 5), 44, 44])
+    expect(stats.tail?.every((e) => e.count > 0)).toBe(true)
+    expect(serverPromptStatsSchema.safeParse(stats).success).toBe(true)
+  })
+
+  it('adds up to the histogram overflow bucket the server can check against', () => {
+    // The overflow bar holds everything `>= bucketMax`, the tail everything
+    // `> bucketMax`, so the two agree exactly when no prompt is bucketMax words
+    // long — as here, where bucketMax is 10 and nothing is 10 words.
+    const counts = [...Array.from({ length: 38 }, () => 5), 11, 11, 40, 120]
+    const stats = statsFrom(counts)
+    const overflow = stats.histogram.find((b) => b.length === stats.bucketMax)
+    const tailTotal = (stats.tail ?? []).reduce((sum, e) => sum + e.count, 0)
+
+    expect(counts.filter((c) => c === stats.bucketMax)).toEqual([])
+    expect(tailTotal).toBe(overflow?.count)
+  })
+
+  it('leaves prompts of exactly bucketMax words to the overflow bar alone', () => {
+    // The one case where the sums differ, and deliberately: a `bucketMax`-word
+    // prompt is already reported exactly by the bucket at `bucketMax`, and the
+    // tail only ever describes lengths beyond it.
+    const stats = statsFrom([
+      ...Array.from({ length: 38 }, () => 5),
+      10,
+      10,
+      40,
+    ])
+    const overflow = stats.histogram.find((b) => b.length === stats.bucketMax)
+    const tailTotal = (stats.tail ?? []).reduce((sum, e) => sum + e.count, 0)
+
+    expect(stats.bucketMax).toBe(10)
+    expect(overflow?.count).toBe(3)
+    expect(tailTotal).toBe(1)
+    expect(serverPromptStatsSchema.safeParse(stats).success).toBe(true)
   })
 })
 

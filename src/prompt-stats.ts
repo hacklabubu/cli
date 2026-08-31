@@ -13,7 +13,8 @@ import { findFiles, toDateStr } from './scanners/util.js'
  *
  * Three things come out of a full scan:
  *
- *   - a histogram of how long the user's own prompts are, in words
+ *   - a histogram of how long the user's own prompts are, in words, plus the
+ *     exact tail of the lengths its overflow bucket flattens
  *   - a per-project prompt count, keyed by the project's git origin
  *   - the prompt *activity* aggregate: per-session start/end/count and a
  *     per-day prompt/word tally. That one is also what the minutely tick
@@ -36,6 +37,8 @@ export const PROMPT_LENGTH_BUCKET_MIN = 10
 export const PROMPT_LENGTH_BUCKET_MAX = 100
 /** The percentile that sets `bucketMax`; everything above lands in the overflow. */
 export const PROMPT_LENGTH_OVERFLOW_PERCENTILE = 0.9
+/** The server's cap on `tail` entries; longer distributions are coarsened. */
+export const PROMPT_TAIL_MAX_ENTRIES = 400
 /** Matches the backend's cap — anything longer is truncated before upload. */
 export const CONVERSATION_SAMPLE_MAX_CHARS = 20_000
 
@@ -70,6 +73,13 @@ export type PromptStats = {
   totalPrompts: number
   bucketMax: number
   histogram: { length: number; count: number }[]
+  /**
+   * The exact distribution above `bucketMax`, which the histogram's overflow
+   * bucket flattens into a single bar: one entry per distinct word count,
+   * ascending, coarsened if there are more than `PROMPT_TAIL_MAX_ENTRIES` of
+   * them. Absent entirely when nothing exceeds `bucketMax`.
+   */
+  tail?: { length: number; count: number }[]
   projects: PromptStatsProject[]
   /**
    * Sessions and per-day counts for the whole local history. Not part of the
@@ -245,6 +255,9 @@ export function bucketMaxFor(wordCounts: number[]): number {
  * Bucket the word counts. Buckets `1..bucketMax-1` are exact word counts; the
  * bucket at `bucketMax` is the overflow, holding every prompt that long or
  * longer. Empty buckets are omitted — the chart fills the gaps.
+ *
+ * The exact lengths the overflow bar flattens are reported separately, by
+ * `buildTail`; this shape is what the main chart renders and never changes.
  */
 export function buildHistogram(
   wordCounts: number[],
@@ -256,6 +269,53 @@ export function buildHistogram(
     const bucket = words >= bucketMax ? bucketMax : words
     counts.set(bucket, (counts.get(bucket) ?? 0) + 1)
   }
+  return [...counts.entries()]
+    .map(([length, count]) => ({ length, count }))
+    .sort((a, b) => a.length - b.length)
+}
+
+/**
+ * The exact distribution of everything *longer* than `bucketMax`, which the
+ * histogram flattens into its single overflow bar. One entry per distinct word
+ * count, ascending; undefined (never `[]`) when nothing exceeds `bucketMax`.
+ *
+ * Lengths only — no prompt text is involved here, or anywhere near it.
+ *
+ * A machine with a long history can have thousands of distinct long lengths,
+ * far past what the server accepts, so an over-cap tail is coarsened: lengths
+ * are rounded to multiples of 2, then 4, 8, … until at most
+ * `PROMPT_TAIL_MAX_ENTRIES` entries remain, summing the counts that collapse
+ * together. Rounding is *up* so that a coarsened entry still sits above
+ * `bucketMax` — rounding down could push the shortest tail lengths back into
+ * the range the histogram already covers exactly.
+ *
+ * Deterministic: the result depends only on the multiset of word counts.
+ */
+export function buildTail(
+  wordCounts: number[],
+  bucketMax: number
+): { length: number; count: number }[] | undefined {
+  const exact = new Map<number, number>()
+  for (const words of wordCounts) {
+    if (words <= bucketMax) continue
+    exact.set(words, (exact.get(words) ?? 0) + 1)
+  }
+  if (exact.size === 0) return undefined
+
+  let counts = exact
+  let step = 1
+  while (counts.size > PROMPT_TAIL_MAX_ENTRIES) {
+    step *= 2
+    const coarser = new Map<number, number>()
+    // Always coarsen from the exact counts, so the rounding is one clean
+    // division rather than a rounding of a rounding.
+    for (const [length, count] of exact) {
+      const rounded = Math.ceil(length / step) * step
+      coarser.set(rounded, (coarser.get(rounded) ?? 0) + count)
+    }
+    counts = coarser
+  }
+
   return [...counts.entries()]
     .map(([length, count]) => ({ length, count }))
     .sort((a, b) => a.length - b.length)
@@ -403,6 +463,11 @@ export async function scanPromptStats(
     projects: await resolveProjects(byProjectDir),
     activity,
   }
+
+  // Set only when there is one: the field must be absent from the payload, not
+  // an empty array, when nothing ran past the overflow threshold.
+  const tail = buildTail(wordCounts, bucketMax)
+  if (tail) stats.tail = tail
 
   if (options.includeSample && sampleParts.length > 0) {
     stats.conversationSample = sampleParts

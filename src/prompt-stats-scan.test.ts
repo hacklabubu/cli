@@ -117,3 +117,37 @@ describe('scanPromptStats — the activity aggregate', () => {
     expect(await scanPromptStats()).toBeNull()
   })
 })
+
+describe('scanPromptStats — the length tail', () => {
+  /** `words` words of prompt text. */
+  const words = (n: number) => Array.from({ length: n }, () => 'x').join(' ')
+
+  it('reports the lengths behind the overflow bar', async () => {
+    // 38 short prompts keep bucketMax at its floor, so the two long ones land
+    // in the overflow bucket — and in the tail, exactly.
+    await transcript(
+      'one',
+      [...Array.from({ length: 38 }, () => words(5)), words(40), words(120)],
+      new Date(2e12),
+      'sess-1'
+    )
+
+    const stats = await scanPromptStats()
+
+    expect(stats?.bucketMax).toBe(10)
+    expect(stats?.histogram).toContainEqual({ length: 10, count: 2 })
+    expect(stats?.tail).toEqual([
+      { length: 40, count: 1 },
+      { length: 120, count: 1 },
+    ])
+  })
+
+  it('leaves the field off a scan with no long prompts', async () => {
+    await transcript('one', ['a b c', 'd e'], new Date(2e12), 'sess-1')
+
+    const stats = await scanPromptStats()
+
+    expect(stats?.tail).toBeUndefined()
+    expect(stats && 'tail' in stats).toBe(false)
+  })
+})
