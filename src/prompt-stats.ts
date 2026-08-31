@@ -13,8 +13,9 @@ import { findFiles, toDateStr } from './scanners/util.js'
  *
  * Three things come out of a full scan:
  *
- *   - a histogram of how long the user's own prompts are, in words, plus the
- *     exact tail of the lengths its overflow bucket flattens
+ *   - a histogram of how long the user's own prompts are, in words — every
+ *     bucket an exact word count — plus the tail, which is where the prompts
+ *     longer than the axis are reported, and their only home
  *   - a per-project prompt count, keyed by the project's git origin
  *   - the prompt *activity* aggregate: per-session start/end/count and a
  *     per-day prompt/word tally. That one is also what the minutely tick
@@ -35,8 +36,8 @@ const execFileAsync = promisify(execFile)
 /** Buckets are `1..bucketMax`, so the axis stays readable at any prompt length. */
 export const PROMPT_LENGTH_BUCKET_MIN = 10
 export const PROMPT_LENGTH_BUCKET_MAX = 100
-/** The percentile that sets `bucketMax`; everything above lands in the overflow. */
-export const PROMPT_LENGTH_OVERFLOW_PERCENTILE = 0.9
+/** The percentile that sets `bucketMax`; everything above it lands in `tail`. */
+export const PROMPT_LENGTH_AXIS_PERCENTILE = 0.9
 /** The server's cap on `tail` entries; longer distributions are coarsened. */
 export const PROMPT_TAIL_MAX_ENTRIES = 400
 /** Matches the backend's cap — anything longer is truncated before upload. */
@@ -74,10 +75,11 @@ export type PromptStats = {
   bucketMax: number
   histogram: { length: number; count: number }[]
   /**
-   * The exact distribution above `bucketMax`, which the histogram's overflow
-   * bucket flattens into a single bar: one entry per distinct word count,
-   * ascending, coarsened if there are more than `PROMPT_TAIL_MAX_ENTRIES` of
-   * them. Absent entirely when nothing exceeds `bucketMax`.
+   * The exact distribution above `bucketMax`, and the only place those prompts
+   * are reported — the histogram stops at `bucketMax`. One entry per distinct
+   * word count, ascending, coarsened if there are more than
+   * `PROMPT_TAIL_MAX_ENTRIES` of them. Absent entirely when nothing exceeds
+   * `bucketMax`.
    */
   tail?: { length: number; count: number }[]
   projects: PromptStatsProject[]
@@ -229,8 +231,9 @@ export function addPromptToActivity(
 }
 
 /**
- * The overflow threshold for this user's own distribution: their p90 prompt
- * length rounded up to a multiple of 10, clamped to [10, 100].
+ * Where the histogram's axis ends for this user's own distribution: their p90
+ * prompt length rounded up to a multiple of 10, clamped to [10, 100]. Anything
+ * longer is reported by `buildTail` instead.
  *
  * Per-user rather than fixed because prompt length varies enormously between
  * people — a fixed axis would either crush a terse user's histogram into the
@@ -241,7 +244,7 @@ export function bucketMaxFor(wordCounts: number[]): number {
   const sorted = [...wordCounts].sort((a, b) => a - b)
   const index = Math.min(
     sorted.length - 1,
-    Math.floor(sorted.length * PROMPT_LENGTH_OVERFLOW_PERCENTILE)
+    Math.floor(sorted.length * PROMPT_LENGTH_AXIS_PERCENTILE)
   )
   const p90 = sorted[index] ?? PROMPT_LENGTH_BUCKET_MIN
   const rounded = Math.ceil(p90 / 10) * 10
@@ -252,12 +255,12 @@ export function bucketMaxFor(wordCounts: number[]): number {
 }
 
 /**
- * Bucket the word counts. Buckets `1..bucketMax-1` are exact word counts; the
- * bucket at `bucketMax` is the overflow, holding every prompt that long or
- * longer. Empty buckets are omitted — the chart fills the gaps.
+ * Bucket the word counts. Every bucket `1..bucketMax` is an exact word count —
+ * there is no overflow bar. Empty buckets are omitted; the chart fills the gaps.
  *
- * The exact lengths the overflow bar flattens are reported separately, by
- * `buildTail`; this shape is what the main chart renders and never changes.
+ * Prompts longer than `bucketMax` are not in here at all: they are reported by
+ * `buildTail`, and only there. So the histogram and the tail partition the
+ * scan — sum(histogram counts) + sum(tail counts) === totalPrompts, always.
  */
 export function buildHistogram(
   wordCounts: number[],
@@ -266,8 +269,8 @@ export function buildHistogram(
   const counts = new Map<number, number>()
   for (const words of wordCounts) {
     if (words <= 0) continue
-    const bucket = words >= bucketMax ? bucketMax : words
-    counts.set(bucket, (counts.get(bucket) ?? 0) + 1)
+    if (words > bucketMax) continue
+    counts.set(words, (counts.get(words) ?? 0) + 1)
   }
   return [...counts.entries()]
     .map(([length, count]) => ({ length, count }))
@@ -276,8 +279,8 @@ export function buildHistogram(
 
 /**
  * The exact distribution of everything *longer* than `bucketMax`, which the
- * histogram flattens into its single overflow bar. One entry per distinct word
- * count, ascending; undefined (never `[]`) when nothing exceeds `bucketMax`.
+ * histogram does not cover at all. One entry per distinct word count,
+ * ascending; undefined (never `[]`) when nothing exceeds `bucketMax`.
  *
  * Lengths only — no prompt text is involved here, or anywhere near it.
  *
@@ -286,8 +289,8 @@ export function buildHistogram(
  * are rounded to multiples of 2, then 4, 8, … until at most
  * `PROMPT_TAIL_MAX_ENTRIES` entries remain, summing the counts that collapse
  * together. Rounding is *up* so that a coarsened entry still sits above
- * `bucketMax` — rounding down could push the shortest tail lengths back into
- * the range the histogram already covers exactly.
+ * `bucketMax` — rounding down could claim a length inside the histogram's own
+ * exact range for a prompt the histogram never counted.
  *
  * Deterministic: the result depends only on the multiset of word counts.
  */
@@ -465,7 +468,7 @@ export async function scanPromptStats(
   }
 
   // Set only when there is one: the field must be absent from the payload, not
-  // an empty array, when nothing ran past the overflow threshold.
+  // an empty array, when nothing ran past `bucketMax`.
   const tail = buildTail(wordCounts, bucketMax)
   if (tail) stats.tail = tail
 

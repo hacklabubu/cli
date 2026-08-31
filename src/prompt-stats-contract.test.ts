@@ -43,8 +43,9 @@ const serverPromptStatsSchema = z.object({
       })
     )
     .max(200),
-  // The exact distribution behind the histogram's overflow bar. Optional: a
-  // scan with nothing past `bucketMax` omits it rather than sending `[]`.
+  // The exact distribution past the end of the histogram's axis, which the
+  // histogram itself does not cover. Optional: a scan with nothing past
+  // `bucketMax` omits it rather than sending `[]`.
   tail: z
     .array(
       z.object({
@@ -202,7 +203,7 @@ describe('promptStats payload matches the server schema', () => {
 
   it('omits the tail entirely when nothing runs past bucketMax', () => {
     // Absent, not `[]`: the server field is optional, and an empty array would
-    // assert an overflow bar that the histogram does not have.
+    // claim a tail of long prompts that this scan does not have.
     const stats = statsFrom([1, 2, 3])
     expect('tail' in stats).toBe(false)
     expect(serverPromptStatsSchema.safeParse(stats).success).toBe(true)
@@ -250,35 +251,34 @@ describe('promptStats payload matches the server schema', () => {
     expect(serverPromptStatsSchema.safeParse(stats).success).toBe(true)
   })
 
-  it('adds up to the histogram overflow bucket the server can check against', () => {
-    // The overflow bar holds everything `>= bucketMax`, the tail everything
-    // `> bucketMax`, so the two agree exactly when no prompt is bucketMax words
-    // long — as here, where bucketMax is 10 and nothing is 10 words.
+  it('splits totalPrompts between the histogram and the tail', () => {
+    // The histogram covers `1..bucketMax` exactly, the tail everything above,
+    // and nothing is in both — so the two sums always reconstruct
+    // `totalPrompts`. That is the arithmetic the server can check us against.
     const counts = [...Array.from({ length: 38 }, () => 5), 11, 11, 40, 120]
     const stats = statsFrom(counts)
-    const overflow = stats.histogram.find((b) => b.length === stats.bucketMax)
-    const tailTotal = (stats.tail ?? []).reduce((sum, e) => sum + e.count, 0)
-
-    expect(counts.filter((c) => c === stats.bucketMax)).toEqual([])
-    expect(tailTotal).toBe(overflow?.count)
-  })
-
-  it('leaves prompts of exactly bucketMax words to the overflow bar alone', () => {
-    // The one case where the sums differ, and deliberately: a `bucketMax`-word
-    // prompt is already reported exactly by the bucket at `bucketMax`, and the
-    // tail only ever describes lengths beyond it.
-    const stats = statsFrom([
-      ...Array.from({ length: 38 }, () => 5),
-      10,
-      10,
-      40,
-    ])
-    const overflow = stats.histogram.find((b) => b.length === stats.bucketMax)
+    const histogramTotal = stats.histogram.reduce((sum, b) => sum + b.count, 0)
     const tailTotal = (stats.tail ?? []).reduce((sum, e) => sum + e.count, 0)
 
     expect(stats.bucketMax).toBe(10)
-    expect(overflow?.count).toBe(3)
+    expect(histogramTotal).toBe(38)
+    expect(tailTotal).toBe(4)
+    expect(histogramTotal + tailTotal).toBe(stats.totalPrompts)
+  })
+
+  it('counts prompts of exactly bucketMax words in the histogram, not the tail', () => {
+    // The bar at `bucketMax` is an exact word count like every other one; the
+    // tail only ever describes lengths beyond it.
+    const counts = [...Array.from({ length: 38 }, () => 5), 10, 10, 40]
+    const stats = statsFrom(counts)
+    const last = stats.histogram.find((b) => b.length === stats.bucketMax)
+    const histogramTotal = stats.histogram.reduce((sum, b) => sum + b.count, 0)
+    const tailTotal = (stats.tail ?? []).reduce((sum, e) => sum + e.count, 0)
+
+    expect(stats.bucketMax).toBe(10)
+    expect(last?.count).toBe(2)
     expect(tailTotal).toBe(1)
+    expect(histogramTotal + tailTotal).toBe(stats.totalPrompts)
     expect(serverPromptStatsSchema.safeParse(stats).success).toBe(true)
   })
 })

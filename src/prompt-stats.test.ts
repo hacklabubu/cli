@@ -218,9 +218,18 @@ describe('buildHistogram', () => {
     ])
   })
 
-  it('collapses everything at or above bucketMax into the overflow bucket', () => {
-    expect(buildHistogram([10, 11, 500], 10)).toEqual([
-      { length: 10, count: 3 },
+  it('counts a prompt of exactly bucketMax words in the bucketMax bar', () => {
+    // The last bar is an exact word count like every other one, not a bucket
+    // that swallows the long prompts too.
+    expect(buildHistogram([10, 10], 10)).toEqual([{ length: 10, count: 2 }])
+  })
+
+  it('leaves prompts longer than bucketMax out of every bucket', () => {
+    // They are reported by `buildTail`, and only there.
+    expect(buildHistogram([11, 500], 10)).toEqual([])
+    expect(buildHistogram([3, 10, 11, 500], 10)).toEqual([
+      { length: 3, count: 1 },
+      { length: 10, count: 1 },
     ])
   })
 
@@ -236,10 +245,23 @@ describe('buildHistogram', () => {
     expect(buildHistogram([0, -3, 4], 10)).toEqual([{ length: 4, count: 1 }])
   })
 
-  it('preserves the total across buckets', () => {
-    const counts = [1, 4, 4, 9, 40, 41]
+  it('preserves the total across buckets when nothing runs past the axis', () => {
+    const counts = [1, 4, 4, 9, 19, 20]
     const total = buildHistogram(counts, 20).reduce((s, b) => s + b.count, 0)
     expect(total).toBe(counts.length)
+  })
+
+  it('accounts for every prompt once, together with the tail', () => {
+    const counts = [1, 4, 4, 9, 20, 21, 40, 41]
+    const histogramTotal = buildHistogram(counts, 20).reduce(
+      (s, b) => s + b.count,
+      0
+    )
+    const tailTotal = (buildTail(counts, 20) ?? []).reduce(
+      (s, e) => s + e.count,
+      0
+    )
+    expect(histogramTotal + tailTotal).toBe(counts.length)
   })
 })
 
@@ -258,7 +280,7 @@ describe('buildTail', () => {
     expect(buildTail([], 10)).toBeUndefined()
   })
 
-  it('excludes the bucketMax bucket itself, which the histogram already has', () => {
+  it('excludes prompts of exactly bucketMax words, which the histogram counts', () => {
     expect(buildTail([10, 10, 11], 10)).toEqual([{ length: 11, count: 1 }])
   })
 
@@ -277,7 +299,7 @@ describe('buildTail', () => {
 
   it('keeps every coarsened length above bucketMax and in ascending order', () => {
     // Rounding up matters here: 101 rounded *down* to a multiple of 4 would be
-    // 100, colliding with the histogram's own overflow bucket.
+    // 100, a length the histogram already reports exactly.
     const tail = buildTail(
       Array.from({ length: 2_000 }, (_, i) => 101 + i),
       100
@@ -295,11 +317,19 @@ describe('buildTail', () => {
     expect(buildTail(shuffled, 100)).toEqual(buildTail(counts, 100))
   })
 
-  it('accounts for the histogram overflow bar it expands', () => {
-    const counts = [2, 9, 11, 11, 250, 999]
-    const overflow = buildHistogram(counts, 10).find((b) => b.length === 10)
+  it('holds every long prompt, since no histogram bucket does', () => {
+    const counts = [2, 9, 10, 11, 11, 250, 999]
+    const histogram = buildHistogram(counts, 10)
     const tail = buildTail(counts, 10) ?? []
-    expect(tail.reduce((sum, e) => sum + e.count, 0)).toBe(overflow?.count)
+
+    // The 10-word prompt is the histogram's, the four longer ones the tail's,
+    // and between them they hold all seven exactly once.
+    expect(histogram.reduce((sum, b) => sum + b.count, 0)).toBe(3)
+    expect(tail.reduce((sum, e) => sum + e.count, 0)).toBe(4)
+    expect(
+      histogram.reduce((sum, b) => sum + b.count, 0) +
+        tail.reduce((sum, e) => sum + e.count, 0)
+    ).toBe(counts.length)
   })
 })
 

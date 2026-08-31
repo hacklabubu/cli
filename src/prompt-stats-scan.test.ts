@@ -122,9 +122,9 @@ describe('scanPromptStats — the length tail', () => {
   /** `words` words of prompt text. */
   const words = (n: number) => Array.from({ length: n }, () => 'x').join(' ')
 
-  it('reports the lengths behind the overflow bar', async () => {
-    // 38 short prompts keep bucketMax at its floor, so the two long ones land
-    // in the overflow bucket — and in the tail, exactly.
+  it('reports the lengths past the axis, and only in the tail', async () => {
+    // 38 short prompts keep bucketMax at its floor, so the two long ones fall
+    // outside the histogram entirely and are reported exactly by the tail.
     await transcript(
       'one',
       [...Array.from({ length: 38 }, () => words(5)), words(40), words(120)],
@@ -135,11 +135,19 @@ describe('scanPromptStats — the length tail', () => {
     const stats = await scanPromptStats()
 
     expect(stats?.bucketMax).toBe(10)
-    expect(stats?.histogram).toContainEqual({ length: 10, count: 2 })
+    expect(stats?.histogram).toEqual([{ length: 5, count: 38 }])
     expect(stats?.tail).toEqual([
       { length: 40, count: 1 },
       { length: 120, count: 1 },
     ])
+
+    // The two halves partition the scan: nothing counted twice, nothing lost.
+    const histogramTotal = (stats?.histogram ?? []).reduce(
+      (sum, b) => sum + b.count,
+      0
+    )
+    const tailTotal = (stats?.tail ?? []).reduce((sum, e) => sum + e.count, 0)
+    expect(histogramTotal + tailTotal).toBe(stats?.totalPrompts)
   })
 
   it('leaves the field off a scan with no long prompts', async () => {
