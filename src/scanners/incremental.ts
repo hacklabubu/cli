@@ -51,7 +51,24 @@ import {
 // don't track which file contributed which tokens. And the daily `sync --quiet`
 // rebuilds the whole state from its full scan, so drift can never last a day.
 
-export const SCAN_STATE_VERSION = 2
+/**
+ * Bumping this makes `loadScanState` return null, which re-reads every log
+ * from scratch and re-derives the aggregates.
+ *
+ * 3: the prompt scanner learned to skip harness-written `user` entries
+ * (PROMPT_SCANNER_VERSION 2). The server is wiping the prompt tables once that
+ * ships, and `replacePromptActivity` only re-sends sessions and dates whose
+ * numbers *moved* — so a day that happened to contain no harness noise would
+ * stay identical locally and never be re-uploaded after the wipe. A cold
+ * rebuild marks every session and date within local retention dirty exactly
+ * once, and they all go back out.
+ *
+ * Token totals are unaffected: they travel as cumulative absolutes that the
+ * server diffs against its own per-machine snapshot, and `state.uploaded` is
+ * only the tick's "nothing moved" short-circuit — so a rebuild re-baselines
+ * rather than double-counting.
+ */
+export const SCAN_STATE_VERSION = 3
 
 /** How long a session is kept in the state after its last prompt. */
 export const PROMPT_SESSION_RETENTION_DAYS = 45

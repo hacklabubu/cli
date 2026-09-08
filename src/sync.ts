@@ -1,6 +1,7 @@
 import { getMachineIdentity } from './machine.js'
 import type { PromptSyncTier } from './prompt-consent.js'
 import {
+  PROMPT_SCANNER_VERSION,
   type PromptStats,
   promptStatsPayload,
   scanPromptStats,
@@ -230,6 +231,11 @@ export async function uploadTokenScan(
       dailyTotals: scan.dailyTotals,
       toolTotals: toolTotalsRecord(scan),
       modelTotals: scan.modelTotals,
+      // Which definition of "a prompt" produced the two blocks below. The
+      // server drops prompt data from anything under 2, so this field is what
+      // keeps it flowing — sent on every sync, tick and full scan alike, so
+      // there is only ever one answer to "what built this payload".
+      scannerVersion: PROMPT_SCANNER_VERSION,
       // Both blocks are absent unless consented — the backend's fields are
       // optional, so an opted-out sync carries token counts and nothing else.
       // `promptStats` rides on full scans (histogram, the exact tail of the

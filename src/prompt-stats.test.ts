@@ -11,6 +11,7 @@ import {
   countWords,
   emptyPromptActivity,
   gitOriginUrl,
+  isHarnessNoise,
   PROMPT_LENGTH_BUCKET_MAX,
   PROMPT_LENGTH_BUCKET_MIN,
   PROMPT_SESSION_ID_MAX_CHARS,
@@ -73,6 +74,84 @@ describe('promptTextFrom', () => {
     expect(promptTextFrom({ type: 'user' })).toBeNull()
     expect(promptTextFrom(null)).toBeNull()
     expect(promptTextFrom('nonsense')).toBeNull()
+  })
+})
+
+describe('promptTextFrom — harness noise', () => {
+  // Every one of these arrives as a `type: 'user'`, non-sidechain, all-text
+  // entry: shape alone can't tell them from a typed prompt.
+  const noise: [label: string, text: string][] = [
+    ['a skill body', 'Base directory for this skill: /Users/x/.claude/skills'],
+    [
+      'a subagent report',
+      '<task-notification>agent finished</task-notification>',
+    ],
+    [
+      'a local-command caveat',
+      '<local-command-caveat>Caveat: …</local-command-caveat>',
+    ],
+    ['a slash-command echo', '<command-name>/browse</command-name>'],
+    [
+      'a slash-command message',
+      '<command-message>browse is running…</command-message>',
+    ],
+    ['slash-command args', '<command-args>hacklab.so</command-args>'],
+    ['local command output', '<local-command-stdout>ok</local-command-stdout>'],
+    ['an injected reminder', '<system-reminder>be nice</system-reminder>'],
+    ['an interrupt marker', '[Request interrupted by user for tool use]'],
+    ['bash-mode input', '<bash-input>ls -la</bash-input>'],
+    ['bash-mode stdout', '<bash-stdout>total 0</bash-stdout>'],
+    ['bash-mode stderr', '<bash-stderr>no such file</bash-stderr>'],
+    [
+      'a submit hook',
+      '<user-prompt-submit-hook>branch: main</user-prompt-submit-hook>',
+    ],
+  ]
+
+  for (const [label, text] of noise) {
+    it(`rejects ${label}`, () => {
+      expect(isHarnessNoise(text)).toBe(true)
+      expect(promptTextFrom(userLine(text))).toBeNull()
+      // Same via the text-block shape, which is how most of them actually land.
+      expect(promptTextFrom(userLine([{ type: 'text', text }]))).toBeNull()
+    })
+  }
+
+  it('rejects a marker the harness indented', () => {
+    expect(promptTextFrom(userLine('\n  <task-notification>done'))).toBeNull()
+  })
+
+  it('rejects an isMeta entry whatever its text says', () => {
+    // The caveat lines and friends the prefixes miss are all flagged this way.
+    expect(
+      promptTextFrom(userLine('ordinary looking text', { isMeta: true }))
+    ).toBeNull()
+  })
+
+  it('keeps a typed prompt that quotes a marker mid-sentence', () => {
+    const text = 'why does <command-name> show up twice in the transcript?'
+    expect(isHarnessNoise(text)).toBe(false)
+    expect(promptTextFrom(userLine(text))).toBe(text)
+  })
+
+  it('keeps an ordinary typed prompt', () => {
+    expect(promptTextFrom(userLine('fix the flaky login test'))).toBe(
+      'fix the flaky login test'
+    )
+    expect(isHarnessNoise('fix the flaky login test')).toBe(false)
+  })
+
+  it('drops a noise entry from the activity aggregate too', () => {
+    // Same chokepoint, so the tick and the histogram agree by construction.
+    const line = JSON.stringify({
+      type: 'user',
+      sessionId: 's1',
+      timestamp: '2026-09-01T10:00:00.000Z',
+      message: {
+        content: '<task-notification>a very long report</task-notification>',
+      },
+    })
+    expect(parsePromptLine(line)).toBeNull()
   })
 })
 

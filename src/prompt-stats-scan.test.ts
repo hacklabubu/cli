@@ -118,6 +118,33 @@ describe('scanPromptStats — the activity aggregate', () => {
   })
 })
 
+describe('scanPromptStats — harness noise', () => {
+  it('leaves the harness out of every number and out of the sample', async () => {
+    await transcript(
+      'mixed',
+      [
+        'fix the auth bug',
+        `<task-notification>${'report '.repeat(400)}</task-notification>`,
+        'Base directory for this skill: /skills/browse',
+        '[Request interrupted by user]',
+        'ship it',
+      ],
+      new Date(2e12),
+      'sess-1'
+    )
+
+    const stats = await scanPromptStats({ includeSample: true })
+
+    expect(stats?.totalPrompts).toBe(2)
+    expect(stats?.activity.sessions['sess-1']?.promptCount).toBe(2)
+    expect(stats?.activity.daily['2026-03-02']).toEqual({
+      prompts: 2,
+      words: 6,
+    })
+    expect(stats?.conversationSample).toBe('ship it\n\nfix the auth bug')
+  })
+})
+
 describe('scanPromptStats — the length tail', () => {
   /** `words` words of prompt text. */
   const words = (n: number) => Array.from({ length: n }, () => 'x').join(' ')
