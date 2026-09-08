@@ -38,6 +38,7 @@ vi.mock('./prompt-stats.js', async (importOriginal) => {
   return { ...actual, scanPromptStats: m.scanPromptStats }
 })
 
+import { PROMPT_SCANNER_VERSION } from './prompt-stats.js'
 import { loadScanState } from './scanners/incremental.js'
 import { runSync } from './sync.js'
 
@@ -144,6 +145,18 @@ describe('runSync — prompt activity without a daemon', () => {
       projects: [],
     })
     expect(body.promptStats.activity).toBeUndefined()
+  })
+
+  it('stamps every upload with the prompt scanner version', async () => {
+    // The server drops prompt data from a CLI that doesn't claim >= 2, so
+    // this field is what keeps the two blocks above alive.
+    await runSync(SESSION, { interactive: true, promptSync: 'stats' })
+    expect(uploadBody().scannerVersion).toBe(PROMPT_SCANNER_VERSION)
+    expect(PROMPT_SCANNER_VERSION).toBeGreaterThanOrEqual(2)
+
+    // Sent on an opted-out sync too: one answer to "what built this payload".
+    await runSync(SESSION, { interactive: true, promptSync: 'none' })
+    expect(uploadBody(1).scannerVersion).toBe(PROMPT_SCANNER_VERSION)
   })
 
   it('clears the claim once the server takes it', async () => {

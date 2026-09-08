@@ -226,6 +226,17 @@ pairs instead, so a tail of unusually long prompts keeps its real lengths
 rather than piling into a final catch-all bar — and a prompt count per project. It all comes from your local Claude Code transcripts
 (`~/.claude/projects`), read on this machine.
 
+**Only what you actually typed counts.** A transcript records far more than
+your prompts, and a lot of it is stored in the same shape: a background
+subagent's report, the body of a skill that got invoked, the echo of a slash
+command and its output, the marker left when you hit escape, bash-mode
+commands, hook output, and the context Claude Code injects into a turn. Left
+in, those were 39% of the "prompts" and 65% of the words on a typical machine —
+one `/browse` looked like a 7,268-word prompt. The scan drops any entry the
+harness flagged as its own, plus anything that *starts* with one of those
+markers. Starts with, not contains: a real prompt that quotes
+`<command-name>` while asking about it is still your prompt, and still counts.
+
 Nothing conversation-derived leaves your machine until you say so. The first
 interactive `sync` asks, remembers the answer, and never asks again. There are
 three tiers:

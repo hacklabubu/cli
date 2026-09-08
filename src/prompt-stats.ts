@@ -43,6 +43,73 @@ export const PROMPT_TAIL_MAX_ENTRIES = 400
 /** Matches the backend's cap — anything longer is truncated before upload. */
 export const CONVERSATION_SAMPLE_MAX_CHARS = 20_000
 
+/**
+ * Which definition of "a prompt the user typed" produced this upload.
+ *
+ * Version 1 is implicit — every CLI shipped before this field existed counted
+ * harness-generated `user` entries (subagent task notifications, skill bodies,
+ * slash-command echoes, interrupt markers) as prompts, which inflated the
+ * counts and blew out the word tallies. Version 2 is the scan with
+ * `isHarnessNoise` in it.
+ *
+ * It rides on every sync as a top-level `scannerVersion`; the server ignores
+ * `promptStats` / `promptActivity` from anything below 2, so an un-upgraded CLI
+ * can't keep writing the old numbers into a table that was wiped to fix them.
+ */
+export const PROMPT_SCANNER_VERSION = 2
+
+/**
+ * Prefixes that mark a `user` transcript entry as written by Claude Code
+ * itself rather than typed by the person at the keyboard.
+ *
+ * These all arrive in exactly the shape a real prompt does — `type: 'user'`,
+ * not a sidechain, content a plain string or `text` blocks — so nothing but the
+ * text tells them apart. Measured over 194 local transcripts they were 39% of
+ * everything the scan called a prompt and 65% of its words, because a machine's
+ * report or an injected skill body is an order of magnitude longer than
+ * anything a human types.
+ *
+ * Matched against the entry's text after `trimStart()`, and anchored to the
+ * start on purpose: a prompt that *quotes* one of these tags mid-sentence
+ * ("why does <command-name> show up twice?") is a real prompt and still counts.
+ */
+const HARNESS_NOISE_PREFIXES = [
+  // The body of a skill, injected when one is invoked. Up to ~11.5k words.
+  'Base directory for this skill:',
+  // A background subagent's report, handed back as a user turn: ~400 words
+  // each and the single largest source of fake prompts.
+  '<task-notification>',
+  // The wrapper around a slash command's expansion, its echo and its output.
+  '<local-command-caveat>',
+  '<command-name>',
+  '<command-message>',
+  '<command-args>',
+  '<local-command-stdout>',
+  // Context the harness injects into a turn. Nobody types it.
+  '<system-reminder>',
+  // Written when the user hits escape — the absence of a prompt, not one.
+  '[Request interrupted',
+  // `!`-prefixed bash mode: the command and whatever it printed.
+  '<bash-input>',
+  '<bash-stdout>',
+  '<bash-stderr>',
+  // Text a UserPromptSubmit hook appended to the turn.
+  '<user-prompt-submit-hook>',
+]
+
+/**
+ * Is this entry text something the harness wrote rather than the user?
+ *
+ * Deliberately a prefix test and nothing more — no stripping of inline
+ * `<system-reminder>` blocks out of otherwise-typed prompts. Those measured at
+ * zero words of real contribution, and rewriting prompt text in place is a
+ * bigger risk than the noise it would remove.
+ */
+export function isHarnessNoise(text: string): boolean {
+  const start = text.trimStart()
+  return HARNESS_NOISE_PREFIXES.some((prefix) => start.startsWith(prefix))
+}
+
 export type PromptStatsProject = {
   repoUrl: string
   promptCount: number
@@ -105,19 +172,33 @@ export type PromptStats = {
  * blocks, so a line only counts when its content is a plain string or an array
  * of nothing but `text` blocks. Sidechain entries (subagent conversations) are
  * the agent talking to itself, not the person typing, so they're excluded.
+ *
+ * That still leaves the harness's own writing, which is indistinguishable by
+ * shape: subagent reports, injected skill bodies, slash-command echoes,
+ * interrupt markers. Those are dropped two ways — `isMeta`, which Claude Code
+ * sets on the entries it generates, and the text prefixes in
+ * `isHarnessNoise` for the ones it doesn't.
+ *
+ * This is the single chokepoint: both the full scan and the minutely tick go
+ * through here, so the histogram, the tail, the per-project counts, the
+ * activity aggregate and the technical-score sample all see the same prompts.
  */
 export function promptTextFrom(entry: unknown): string | null {
   if (!entry || typeof entry !== 'object') return null
   const line = entry as {
     type?: unknown
     isSidechain?: unknown
+    isMeta?: unknown
     message?: { content?: unknown }
   }
   if (line.type !== 'user') return null
   if (line.isSidechain === true) return null
+  if (line.isMeta === true) return null
 
   const content = line.message?.content
-  if (typeof content === 'string') return content
+  if (typeof content === 'string') {
+    return isHarnessNoise(content) ? null : content
+  }
   if (!Array.isArray(content)) return null
 
   const texts: string[] = []
@@ -129,7 +210,9 @@ export function promptTextFrom(entry: unknown): string | null {
     if (type !== 'text' || typeof text !== 'string') return null
     texts.push(text)
   }
-  return texts.length > 0 ? texts.join('\n') : null
+  if (texts.length === 0) return null
+  const joined = texts.join('\n')
+  return isHarnessNoise(joined) ? null : joined
 }
 
 /** Whitespace-separated word count. Zero-word prompts are dropped by callers. */
