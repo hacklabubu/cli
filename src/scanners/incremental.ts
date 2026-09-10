@@ -63,12 +63,21 @@ import {
  * rebuild marks every session and date within local retention dirty exactly
  * once, and they all go back out.
  *
+ * 4: the same wipe, for the machines 3 couldn't save. The wipe landed
+ * 2026-09-10, and a machine that had already upgraded to 0.21.0 did its one
+ * cold rebuild *before* that — it re-uploaded everything, cleared every dirty
+ * flag, and then watched the server delete the lot. Nothing on that machine
+ * moves afterwards, so `replacePromptActivity` re-sends nothing and the history
+ * is simply gone. This bump is the one-shot rescue: another cold rebuild, after
+ * the wipe this time. For anyone still on an older CLI it costs one extra
+ * rescan and nothing else.
+ *
  * Token totals are unaffected: they travel as cumulative absolutes that the
  * server diffs against its own per-machine snapshot, and `state.uploaded` is
  * only the tick's "nothing moved" short-circuit — so a rebuild re-baselines
  * rather than double-counting.
  */
-export const SCAN_STATE_VERSION = 3
+export const SCAN_STATE_VERSION = 4
 
 /** How long a session is kept in the state after its last prompt. */
 export const PROMPT_SESSION_RETENTION_DAYS = 45
