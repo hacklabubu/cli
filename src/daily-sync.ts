@@ -30,10 +30,15 @@ const SYSTEMD_TICK_UNIT = 'hacklab-tick'
 const SCHTASKS_TASK = 'hacklab-sync'
 const SCHTASKS_TICK_TASK = 'hacklab-tick'
 
-/** Bump when the plist/unit/wrapper templates or the log path derivation change,
- * so machines with the old artifacts reinstall instead of keeping a schedule
- * this version would no longer write. Part of the stored fingerprint. */
-const TEMPLATE_VERSION = 1
+/** Bump when the plist/unit/wrapper templates, the log path derivation, or the
+ * way the command is resolved change, so machines with the old artifacts
+ * reinstall instead of keeping a schedule this version would no longer write.
+ * Part of the stored fingerprint.
+ *
+ * 2: the scheduled node path is now the version-stable one where there is one
+ * (see stableNodePath) — every existing install points at whatever
+ * `process.execPath` happened to be, so they all need re-arming. */
+const TEMPLATE_VERSION = 2
 
 export type SyncCommand = { node: string; script: string }
 
@@ -151,6 +156,60 @@ export async function clearSyncPaused(): Promise<void> {
   }
 }
 
+/** realpath, or null when the path doesn't resolve (missing, dangling symlink). */
+function realOrNull(path: string): string | null {
+  try {
+    return realpathSync(path)
+  } catch {
+    return null
+  }
+}
+
+/** Well-known absolute paths that keep pointing at the current node across an
+ * upgrade. Windows has none to add: `process.execPath` there is already a
+ * version-stable install location, not a per-version keg. */
+function stableNodeCandidates(): string[] {
+  if (platform() === 'win32') return []
+  const voltaHome = process.env.VOLTA_HOME
+  const candidates = [
+    '/opt/homebrew/bin/node',
+    '/usr/local/bin/node',
+    '/usr/bin/node',
+    voltaHome ? join(voltaHome, 'bin', 'node') : null,
+    join(homedir(), '.volta', 'bin', 'node'),
+  ]
+  return [...new Set(candidates.filter((c): c is string => c !== null))]
+}
+
+/**
+ * An absolute path to *this* node that survives the next upgrade of it.
+ *
+ * `process.execPath` under a package manager is version-scoped:
+ * `/opt/homebrew/Cellar/node/26.5.0/bin/node`. `brew upgrade node` relinks
+ * `/opt/homebrew/bin/node` to the new keg and moves the shared libraries with
+ * it, leaving the old absolute path resolving to a binary that can no longer
+ * start ("Library not loaded: …/libada.3.dylib"). A scheduler holding that path
+ * dies silently, which is exactly what happened.
+ *
+ * So: resolve each well-known stable location and take the first that is
+ * *literally the same binary* as the one running now — identity by resolved
+ * real path, never by version string and never by trusting the symlink blindly.
+ * No match (fnm/nvm/asdf shims are per-shell and version-scoped, so they never
+ * match) falls back to `process.execPath`, which is what shipped before.
+ *
+ * It stays an absolute path either way, never a bare `node`: launchd, systemd
+ * and Task Scheduler run with almost no PATH, which is the whole reason this
+ * function returns a path at all. Don't "simplify" it to `node`.
+ */
+export function stableNodePath(): string {
+  const real = realOrNull(process.execPath)
+  if (!real) return process.execPath
+  for (const candidate of stableNodeCandidates()) {
+    if (realOrNull(candidate) === real) return candidate
+  }
+  return process.execPath
+}
+
 /** Absolute `node` + the CLI's own entry script, so the scheduler doesn't depend
  * on a `hacklab` bin being on its PATH. */
 export function resolveSyncCommand(): SyncCommand {
@@ -161,7 +220,7 @@ export function resolveSyncCommand(): SyncCommand {
   } catch {
     // argv1 not resolvable (unusual) — fall back to the raw path.
   }
-  return { node: process.execPath, script }
+  return { node: stableNodePath(), script }
 }
 
 /** Identity of what the jobs were installed with: the command they run plus the

@@ -10,6 +10,7 @@ const m = vi.hoisted(() => ({
   rm: vi.fn(),
   readFile: vi.fn(),
   appendFile: vi.fn(),
+  realpathSync: vi.fn((path: string) => path),
   spawn: vi.fn(),
   loadConfig: vi.fn(),
   saveConfig: vi.fn(),
@@ -29,6 +30,7 @@ vi.mock('node:fs/promises', () => ({
   readFile: m.readFile,
   appendFile: m.appendFile,
 }))
+vi.mock('node:fs', () => ({ realpathSync: m.realpathSync }))
 vi.mock('node:child_process', () => ({ spawn: m.spawn }))
 vi.mock('./session.js', () => ({
   getSessionPath: () => join(m.home, '.hacklab', 'session.json'),
@@ -51,6 +53,7 @@ import {
   schtasksTickCreateArgs,
   schtasksTickWrapper,
   schtasksWrapper,
+  stableNodePath,
   syncCommandFingerprint,
   systemdService,
   systemdTickService,
@@ -209,10 +212,96 @@ describe('daily-sync content builders', () => {
   })
 
   it('resolveSyncCommand uses the absolute node binary + a concrete script path', () => {
+    // Nothing resolves to the running binary under the identity mock, so this
+    // is the fallback half of stableNodePath.
     const resolved = resolveSyncCommand()
     expect(resolved.node).toBe(process.execPath)
     expect(typeof resolved.script).toBe('string')
     expect(resolved.script.length).toBeGreaterThan(0)
+  })
+})
+
+// The version-specific node path is what killed background sync on a Homebrew
+// machine: `brew upgrade node` moved the libraries out from under the exact
+// binary the plist named, and the daemon died on a dyld error for three days.
+describe('stableNodePath', () => {
+  /** What Homebrew's `process.execPath` looks like: a version-scoped keg. */
+  const KEG = '/opt/homebrew/Cellar/node/26.5.0/bin/node'
+  const OTHER_KEG = '/opt/homebrew/Cellar/node/25.1.0/bin/node'
+  const BREW = '/opt/homebrew/bin/node'
+
+  /** Resolve exactly these paths; everything else is ENOENT. process.execPath
+   * is read live, so it goes in the map rather than getting reassigned. */
+  const resolving = (map: Record<string, string>) => {
+    m.realpathSync.mockImplementation((path: string) => {
+      const real = map[String(path)]
+      if (!real) throw new Error('ENOENT')
+      return real
+    })
+  }
+
+  it('prefers a stable path that resolves to the same binary', () => {
+    resolving({ [process.execPath]: KEG, [BREW]: KEG })
+
+    expect(stableNodePath()).toBe(BREW)
+  })
+
+  it('falls back to execPath when no candidate resolves at all', () => {
+    // fnm/nvm/asdf: the shims are per-shell and version-scoped, so none of the
+    // well-known paths exist. Pinning execPath is the best available answer.
+    resolving({ [process.execPath]: KEG })
+
+    expect(stableNodePath()).toBe(process.execPath)
+  })
+
+  it('falls back when a candidate is a different node install', () => {
+    // Identity is by resolved real path, never by name: a second node parked at
+    // the stable path would silently swap the interpreter under the daemon.
+    resolving({ [process.execPath]: KEG, [BREW]: OTHER_KEG })
+
+    expect(stableNodePath()).toBe(process.execPath)
+  })
+
+  it('walks the candidates in order', () => {
+    resolving({
+      [process.execPath]: KEG,
+      '/usr/local/bin/node': KEG,
+      '/usr/bin/node': KEG,
+    })
+
+    expect(stableNodePath()).toBe('/usr/local/bin/node')
+  })
+
+  it('honors VOLTA_HOME', () => {
+    vi.stubEnv('VOLTA_HOME', '/opt/volta')
+    resolving({
+      [process.execPath]: KEG,
+      [join('/opt/volta', 'bin', 'node')]: KEG,
+    })
+
+    expect(stableNodePath()).toBe(join('/opt/volta', 'bin', 'node'))
+    vi.unstubAllEnvs()
+  })
+
+  it('invents no candidates on windows', () => {
+    // There execPath is already a version-stable install location.
+    m.platform.mockReturnValue('win32')
+    resolving({ [process.execPath]: KEG, [BREW]: KEG })
+
+    expect(stableNodePath()).toBe(process.execPath)
+    expect(m.realpathSync).not.toHaveBeenCalledWith(BREW)
+  })
+
+  it('falls back when the running binary itself cannot be resolved', () => {
+    resolving({})
+
+    expect(stableNodePath()).toBe(process.execPath)
+  })
+
+  it('changes the fingerprint, so an install pointing at the keg is rebuilt', () => {
+    expect(syncCommandFingerprint({ node: BREW, script: cmd.script })).not.toBe(
+      syncCommandFingerprint({ node: KEG, script: cmd.script })
+    )
   })
 })
 
@@ -254,6 +343,9 @@ beforeEach(() => {
   m.spawned.length = 0
   m.platform.mockReturnValue('darwin')
   present()
+  // Identity by default: every path resolves to itself, so no stable candidate
+  // is ever the same binary as process.execPath (see the stableNodePath block).
+  m.realpathSync.mockImplementation((path: string) => path)
   m.mkdir.mockResolvedValue(undefined)
   m.writeFile.mockResolvedValue(undefined)
   m.rm.mockResolvedValue(undefined)
@@ -375,27 +467,37 @@ describe('dailySyncState', () => {
   it('is stale once the scheduled command is gone', async () => {
     // The node binary survives an uninstall of that version, the script doesn't
     // (or vice versa) — either way the jobs are now dead and need rebuilding.
-    present(DAILY_PLIST, TICK_PLIST, OTHER.node)
-    m.loadConfig.mockResolvedValue({
-      dailySync: { command: syncCommandFingerprint(OTHER), hour: 7, minute: 3 },
-    })
+    for (const stillThere of [OTHER.node, OTHER.script]) {
+      present(DAILY_PLIST, TICK_PLIST, stillThere)
+      m.loadConfig.mockResolvedValue({
+        dailySync: {
+          command: syncCommandFingerprint(OTHER),
+          hour: 7,
+          minute: 3,
+        },
+      })
 
-    expect(await dailySyncState()).toBe('stale')
+      expect(await dailySyncState()).toBe('stale')
+    }
   })
 
   it('is stale when the jobs came from an older template generation', async () => {
     // Everything still resolves, but the artifacts were written by templates
-    // this version has since changed, so they get rebuilt.
-    present(DAILY_PLIST, TICK_PLIST, OTHER.node, OTHER.script)
-    m.loadConfig.mockResolvedValue({
-      dailySync: {
-        command: JSON.stringify({ v: 0, ...OTHER }),
-        hour: 7,
-        minute: 3,
-      },
-    })
+    // this version has since changed, so they get rebuilt. v:1 is what every
+    // pre-0.21.1 install recorded, and re-arming those with a node path that
+    // survives an upgrade is the only way the corrected path ever lands.
+    for (const v of [0, 1]) {
+      present(DAILY_PLIST, TICK_PLIST, OTHER.node, OTHER.script)
+      m.loadConfig.mockResolvedValue({
+        dailySync: {
+          command: JSON.stringify({ v, ...OTHER }),
+          hour: 7,
+          minute: 3,
+        },
+      })
 
-    expect(await dailySyncState()).toBe('stale')
+      expect(await dailySyncState()).toBe('stale')
+    }
   })
 
   it('is current on a machine whose policy refused the tick task', async () => {
@@ -518,6 +620,77 @@ describe('installDailySync', () => {
 
     expect(result.ok).toBe(false)
     expect(m.saveConfig).not.toHaveBeenCalled()
+  })
+})
+
+// The point of stableNodePath is only realized if the path it returns is what
+// actually reaches the OS scheduler, so these drive the installers end to end.
+describe('the scheduled command carries the stable node path', () => {
+  const KEG = '/opt/homebrew/Cellar/node/26.5.0/bin/node'
+  const BREW = '/opt/homebrew/bin/node'
+
+  beforeEach(() => {
+    // A Homebrew machine: execPath is the keg, /opt/homebrew/bin/node is the
+    // symlink brew relinks on every upgrade, and both are the same binary now.
+    m.realpathSync.mockImplementation((path: string) => {
+      const real = { [process.execPath]: KEG, [BREW]: KEG }[String(path)]
+      if (!real) throw new Error('ENOENT')
+      return real
+    })
+  })
+
+  it('into both launchd plists', async () => {
+    await installDailySync()
+
+    for (const plist of [wrote(DAILY_PLIST), wrote(TICK_PLIST)]) {
+      expect(plist).toContain(`<string>${BREW}</string>`)
+      expect(plist).not.toContain(KEG)
+    }
+  })
+
+  it('into both systemd services', async () => {
+    m.platform.mockReturnValue('linux')
+
+    await installDailySync()
+
+    for (const unit of [
+      wrote(join(SYSTEMD_DIR, 'hacklab-sync.service')),
+      wrote(join(SYSTEMD_DIR, 'hacklab-tick.service')),
+    ]) {
+      expect(unit).toContain(`ExecStart="${BREW}"`)
+      expect(unit).not.toContain(KEG)
+    }
+  })
+
+  it('into both schtasks wrappers', async () => {
+    // Windows contributes no candidates — execPath there is already a stable
+    // install location — so what this pins is that the wrapper runs whatever
+    // resolveSyncCommand decided, not some second opinion.
+    m.platform.mockReturnValue('win32')
+    const { node } = resolveSyncCommand()
+
+    await installDailySync()
+
+    for (const bat of [
+      wrote(join(m.home, '.hacklab', 'hacklab-sync.cmd')),
+      wrote(join(m.home, '.hacklab', 'hacklab-tick.cmd')),
+    ]) {
+      expect(bat).toContain(`"${node}"`)
+    }
+  })
+
+  it('and gets recorded, so the next run reads as current', async () => {
+    await installDailySync()
+    present(DAILY_PLIST, TICK_PLIST)
+    m.loadConfig.mockResolvedValue({ dailySync: savedConfig()?.dailySync })
+
+    expect(savedConfig()?.dailySync).toMatchObject({
+      command: syncCommandFingerprint({
+        node: BREW,
+        script: resolveSyncCommand().script,
+      }),
+    })
+    expect(await dailySyncState()).toBe('current')
   })
 })
 
