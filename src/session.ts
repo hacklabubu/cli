@@ -207,3 +207,47 @@ export function unauthorizedHint(session: Session): string {
 export function getAppUrl(): string {
   return resolveAppUrl()
 }
+
+/**
+ * What the backend said about a saved token:
+ *
+ *   'ok'           — the token authenticates; the account is real.
+ *   'unauthorized' — the backend refused it: revoked, expired, or minted for a
+ *                    different backend. The session on disk is dead.
+ *   'unverified'   — the backend never answered the question (offline, timeout,
+ *                    5xx, a rate limit). Not the same as "logged out".
+ */
+export type SessionCheck = 'ok' | 'unauthorized' | 'unverified'
+
+/**
+ * Ask the backend whether this session still works.
+ *
+ * `GET /api/hackers/me` is the cheapest authenticated read there is, and its
+ * answer is unambiguous: the route resolves the bearer token against the live
+ * session rows, so only a token with no unexpired session behind it comes back
+ * 401. That is the *one* status that means signed out, and the only one that
+ * may cost someone their local session. The route has no 403 on GET (the one
+ * 403 it can return belongs to PATCH, for a profile that hasn't been claimed),
+ * so 403 is not treated as a refusal here.
+ *
+ * Everything else is 'unverified' — a 429 from either of the route's rate
+ * limiters (the per-IP one fires before auth is even looked at), a 5xx, a DNS
+ * failure on a plane, the 10s timeout. A machine that can't reach the server is
+ * not a machine whose account is gone, and guessing otherwise would throw away
+ * a working session over a flaky network.
+ */
+export async function verifySession(session: Session): Promise<SessionCheck> {
+  try {
+    const res = await fetch(
+      `${resolveAppUrl(session)}/api/hackers/me?src=cli`,
+      {
+        headers: { Authorization: `Bearer ${session.token}` },
+        signal: AbortSignal.timeout(10_000),
+      }
+    )
+    if (res.ok) return 'ok'
+    return res.status === 401 ? 'unauthorized' : 'unverified'
+  } catch {
+    return 'unverified'
+  }
+}

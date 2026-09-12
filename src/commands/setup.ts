@@ -21,10 +21,12 @@ import {
 } from '../scanners/index.js'
 import { formatTokens } from '../scanners/util.js'
 import {
+  clearSession,
   loadSession,
   resolveAppUrl,
   type Session,
   saveSession,
+  verifySession,
 } from '../session.js'
 import { scanConsentedPromptStats, uploadTokenScan } from '../sync.js'
 import { bold, dim } from '../ui.js'
@@ -53,6 +55,13 @@ import { canRedraw, railAgentOffer, railDeviceCode } from './setup-rail.js'
  * working — the per-tool receipt, the device code — has done its job by the time
  * the next stage starts, so it comes back off the screen. `setup-rail.ts` holds
  * the two blocks clack has no widget for.
+ *
+ * Being the front door also means it is the one command that never takes the
+ * session file's word for it. The installer runs `setup` after every install,
+ * including on a machine that already has a session, so this is where "is this
+ * account still real" gets asked of the *server* — a token that was revoked or
+ * has expired can't be allowed to pass as set up and arm a daemon that uploads
+ * into 401s.
  */
 export async function setup(): Promise<void> {
   clack.intro(bold('Hacklab CLI setup'))
@@ -60,7 +69,13 @@ export async function setup(): Promise<void> {
     dim('scans your AI usage, signs you in, and starts a background usage sync')
   )
 
-  const existing = await loadSession()
+  // A session on disk only counts once the server agrees it still works —
+  // everything below (the early return included) reads `existing` as proof of
+  // an account, so the check has to happen before any of it.
+  const saved = await loadSession()
+  const existing = saved ? await confirmSession(saved) : null
+  // Resolved after the check: a refused session is gone, and the flow now
+  // targets whatever `login` would (HACKLAB_APP_URL / --env, else production).
   const appUrl = resolveAppUrl(existing)
   const syncState = await dailySyncState()
 
@@ -68,7 +83,7 @@ export async function setup(): Promise<void> {
   // A finished account AND a live daemon means there is genuinely nothing to
   // do. Anything less falls through and skips only the stages already done.
   if (existing?.handle && existing.usernameClaimed && syncState === 'current') {
-    clack.log.step(`already set up — you're ${bold(`@${existing.handle}`)}`)
+    clack.log.success(`already set up — you're ${bold(`@${existing.handle}`)}`)
     clack.log.message(
       dim('re-scan with `hacklab scan`, re-upload with `hacklab sync`'),
       { spacing: 0 }
@@ -235,6 +250,38 @@ export async function setup(): Promise<void> {
       outcome: handoff.outcome,
     })
   }
+}
+
+/**
+ * The session to keep going with, after asking the server about it.
+ *
+ * Three answers, three outcomes. A refusal (401) is the only one that costs the
+ * user their session: the token is dead, so the file goes, one line says why,
+ * and the flow carries on from the top as if the machine had never been signed
+ * in — straight into the device flow. An unreachable or unhappy server is not a
+ * verdict, so the local session stands and the flow runs exactly as it did
+ * before this check existed; a first run on a plane still works. A confirmed
+ * session says nothing at all.
+ */
+async function confirmSession(session: Session): Promise<Session | null> {
+  const check = await verifySession(session)
+
+  if (check === 'unauthorized') {
+    await clearSession()
+    clack.log.warn('your session has expired — signing in again')
+    return null
+  }
+
+  if (check === 'unverified') {
+    clack.log.message(
+      dim(
+        `couldn't reach ${resolveAppUrl(session)} to check your session — continuing offline`
+      ),
+      { spacing: 0 }
+    )
+  }
+
+  return session
 }
 
 /**
