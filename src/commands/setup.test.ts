@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const m = vi.hoisted(() => ({
   loadSession: vi.fn(),
   saveSession: vi.fn(),
+  clearSession: vi.fn(),
   collectToolScans: vi.fn(),
   mergeToolScans: vi.fn(),
   stageFullScan: vi.fn(),
@@ -80,9 +81,16 @@ vi.mock('@clack/prompts', () => ({
   S_BAR: '|',
   S_WARN: '!',
 }))
+// `verifySession` is deliberately NOT mocked: the session check is part of what
+// these tests drive, so it runs for real against the fetch mock below.
 vi.mock('../session.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../session.js')>()
-  return { ...actual, loadSession: m.loadSession, saveSession: m.saveSession }
+  return {
+    ...actual,
+    loadSession: m.loadSession,
+    saveSession: m.saveSession,
+    clearSession: m.clearSession,
+  }
 })
 vi.mock('../posthog.js', () => ({
   captureEvent: m.captureEvent,
@@ -237,6 +245,8 @@ function failResponse(status: number) {
 let fetchMock: ReturnType<typeof vi.fn>
 let claimResponder: () => Response
 let handoffResponder: () => Response | Promise<Response>
+/** What the backend says when asked whether the saved token still works. */
+let meResponder: () => Response
 
 // Agent detection reads PATH, so the tests own it: an empty temp dir means "no
 // agent installed", and `installAgents` drops executables into it in the shape
@@ -315,6 +325,7 @@ beforeEach(async () => {
   setTTY(true)
   m.loadSession.mockResolvedValue(null)
   m.saveSession.mockResolvedValue(undefined)
+  m.clearSession.mockResolvedValue(true)
   m.collectToolScans.mockResolvedValue([{ tool: 'claude_code' }])
   m.mergeToolScans.mockReturnValue(SCAN)
   m.stageFullScan.mockResolvedValue({
@@ -340,9 +351,15 @@ beforeEach(async () => {
 
   claimResponder = () => jsonResponse({ handle: 'ada' })
   handoffResponder = () => jsonResponse({})
+  meResponder = () =>
+    jsonResponse({
+      schemaVersion: 1,
+      profile: { handle: 'ada', claimed: true },
+    })
 
   fetchMock = vi.fn(async (url: string) => {
     const u = String(url)
+    if (u.includes('/api/hackers/me')) return meResponder()
     if (u.includes('/api/cli/agent-handoff')) return handoffResponder()
     if (u.includes('/api/cli/device/start')) return jsonResponse(START)
     if (u.includes('/api/cli/device/poll')) {
@@ -775,6 +792,89 @@ describe('setup — agent handoff', () => {
   })
 })
 
+// The installer runs `setup` after every install, so a session on disk is only
+// ever a claim until the server backs it. What the tests pin down: a refusal
+// (401) is the *only* answer that costs the user their session — a server that
+// can't answer leaves the local session exactly where it was, because "offline"
+// is not "logged out".
+describe('setup — session check', () => {
+  const mePath = 'https://hacklab.so/api/hackers/me?src=cli'
+
+  it('closes out a finished machine once the server confirms the token', async () => {
+    m.loadSession.mockResolvedValue(CLAIMED_SESSION)
+    m.dailySyncState.mockResolvedValue('current')
+
+    await setup()
+
+    const req = callsTo('/api/hackers/me')[0]?.[1] as RequestInit
+    expect(urls()).toEqual([mePath])
+    expect((req.headers as Record<string, string>).Authorization).toBe(
+      'Bearer t'
+    )
+    expect(m.clearSession).not.toHaveBeenCalled()
+    expect(callIndex('/api/cli/device/start')).toBe(-1)
+    expect(callIndex('/api/claim/sync')).toBe(-1)
+    expect(m.logs.join('\n')).toContain("already set up — you're @ada")
+  })
+
+  it('drops a session the server refuses and signs in again', async () => {
+    // The revoked-token case the whole check exists for: local state says
+    // finished, the server says no. Arming the daemon here would upload into
+    // 401s forever.
+    m.loadSession.mockResolvedValue(CLAIMED_SESSION)
+    m.dailySyncState.mockResolvedValue('current')
+    meResponder = () => failResponse(401)
+
+    await setup()
+
+    expect(m.clearSession).toHaveBeenCalledOnce()
+    expect(m.logs.join('\n')).toContain(
+      'your session has expired — signing in again'
+    )
+    expect(m.logs.join('\n')).not.toContain('already set up')
+    // And it goes the whole way round: device flow, claim, upload.
+    expect(callIndex('/api/cli/device/start')).toBeGreaterThanOrEqual(0)
+    expect(callIndex('/api/cli/claim')).toBeGreaterThanOrEqual(0)
+    expect(callIndex('/api/claim/sync')).toBeGreaterThanOrEqual(0)
+  })
+
+  it('keeps the local session when the server cannot be reached', async () => {
+    m.loadSession.mockResolvedValue(CLAIMED_SESSION)
+    meResponder = () => {
+      throw new Error('offline')
+    }
+
+    await setup()
+
+    expect(m.logs.join('\n')).toContain(
+      "couldn't reach https://hacklab.so to check your session — continuing offline"
+    )
+    expect(m.clearSession).not.toHaveBeenCalled()
+    // Same flow as before the check existed: the saved token is reused, and
+    // nobody is asked to sign in again.
+    expect(callIndex('/api/cli/device/start')).toBe(-1)
+    const upload = callsTo('/api/claim/sync')[0]?.[1] as RequestInit
+    expect((upload.headers as Record<string, string>).Authorization).toBe(
+      'Bearer t'
+    )
+    expect(m.logs.join('\n')).toContain('signed in as @ada')
+  })
+
+  it('reads a rate limit as unverified, not as a refusal', async () => {
+    // 429 comes from the route's per-IP limiter, which fires before the token
+    // is looked at — it says nothing about the account.
+    m.loadSession.mockResolvedValue(CLAIMED_SESSION)
+    meResponder = () => failResponse(429)
+
+    await setup()
+
+    expect(m.clearSession).not.toHaveBeenCalled()
+    expect(m.logs.join('\n')).toContain('continuing offline')
+    expect(callIndex('/api/cli/device/start')).toBe(-1)
+    expect(callIndex('/api/claim/sync')).toBeGreaterThanOrEqual(0)
+  })
+})
+
 describe('setup — guards and edge cases', () => {
   it('short-circuits when the account is finished and the daemon is live', async () => {
     m.loadSession.mockResolvedValue(CLAIMED_SESSION)
@@ -783,7 +883,8 @@ describe('setup — guards and edge cases', () => {
     await setup()
 
     expect(m.collectToolScans).not.toHaveBeenCalled()
-    expect(fetchMock).not.toHaveBeenCalled()
+    // The session check is the only thing that goes out — nothing else runs.
+    expect(urls()).toEqual(['https://hacklab.so/api/hackers/me?src=cli'])
     expect(m.installDailySync).not.toHaveBeenCalled()
     expect(m.logs.join('\n')).toContain("already set up — you're @ada")
     expect(m.logs.join('\n')).toContain('hacklab scan')

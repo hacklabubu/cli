@@ -9,6 +9,7 @@ import {
   resolveHacklabEnv,
   type Session,
   unauthorizedHint,
+  verifySession,
 } from './session'
 
 const baseSession: Session = {
@@ -75,6 +76,82 @@ describe('session expiry', () => {
     expect(
       isSessionExpired(baseSession, new Date('2026-05-07T23:59:59.999Z'))
     ).toBe(false)
+  })
+})
+
+// The one question that can cost someone their saved session, so the line
+// between "refused" and "couldn't ask" is the whole test.
+describe('verifySession', () => {
+  const session: Session = {
+    token: 'tok',
+    email: 'user@example.com',
+    appUrl: 'https://hacklab.so',
+    savedAt: '2026-05-01T00:00:00.000Z',
+  }
+
+  const respond = (status: number) => {
+    const fetchMock = vi.fn(async () => ({
+      ok: status >= 200 && status < 300,
+      status,
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.unstubAllEnvs()
+  })
+
+  it('asks the session backend, with the token on it', async () => {
+    const fetchMock = respond(200)
+
+    expect(await verifySession(session)).toBe('ok')
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://hacklab.so/api/hackers/me?src=cli',
+      expect.objectContaining({
+        headers: { Authorization: 'Bearer tok' },
+      })
+    )
+  })
+
+  it('follows --env to the backend the command actually targets', async () => {
+    // A token is per-backend, so checking it against the wrong one would report
+    // a perfectly good session as dead.
+    vi.stubEnv('HACKLAB_APP_URL', 'http://localhost:3000')
+    const fetchMock = respond(200)
+
+    await verifySession(session)
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      'http://localhost:3000/api/hackers/me?src=cli'
+    )
+  })
+
+  it('reads a 401 as signed out', async () => {
+    respond(401)
+    expect(await verifySession(session)).toBe('unauthorized')
+  })
+
+  it('reads everything else as unverified — the server never answered', async () => {
+    // 429 is the route's rate limiter (the per-IP one fires before auth), 403
+    // is not a refusal this route's GET can produce, 500 is the server's
+    // problem. None of them is evidence the account is gone.
+    for (const status of [403, 429, 500, 503]) {
+      respond(status)
+      expect(await verifySession(session)).toBe('unverified')
+    }
+  })
+
+  it('never reads offline as logged out', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('getaddrinfo ENOTFOUND')
+      })
+    )
+
+    expect(await verifySession(session)).toBe('unverified')
   })
 })
 

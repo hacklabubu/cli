@@ -73,7 +73,10 @@ machine's usage to your profile. Cursor users with no API key are offered one
 
 - `hacklab setup` — the guided first run: scan, sign-in, one question
   about syncing your prompt activity, upload, background sync on. Safe to
-  re-run; it skips whatever is already done and stops early once everything is.
+  re-run; it checks your saved session with the server first, skips whatever is
+  already done, and stops early once everything is. If that session has expired
+  or been revoked it signs you in again instead of reporting you as set up; if
+  the server can't be reached it says so and carries on with what's on disk.
 - `hacklab scan` — scan this machine, upload to your profile, share the card.
   Requires login. Summons the daemon afterwards (`--no-daemon` to skip).
 - `hacklab sync` — re-scan local AI usage and sync it to your profile.
