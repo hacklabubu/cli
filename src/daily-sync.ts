@@ -12,6 +12,7 @@ import { homedir, platform } from 'node:os'
 import { dirname, join } from 'node:path'
 import { type DailySyncRecord, loadConfig, updateConfig } from './config.js'
 import { getSessionPath } from './session.js'
+import { bold, dim } from './ui.js'
 
 // Sets up (and tears down) the two OS-native background jobs: a `hacklab sync
 // --tick` every minute (the incremental one — reads only what the AI tools
@@ -55,7 +56,7 @@ type ScheduledJobs = {
 type InstallFailure = {
   ok: false
   mechanism: 'manual' | 'unsupported'
-  instructions: string
+  instructions: ManualSchedule
 }
 
 /** What the platform installers report: the jobs, or nothing scheduled. */
@@ -499,17 +500,38 @@ export function schtasksTickCreateArgs(wrapperPath: string): string[] {
   ]
 }
 
-// Generic fallback text, reused for both "Linux without a systemd user manager"
-// and "OS we don't auto-schedule on" — so it must not name a specific mechanism.
-export function manualInstructions(cmd: SyncCommand): string {
+/** Two jobs the user must schedule by hand, each with the cadence it needs and
+ * the full absolute command to run — the paths are long because a scheduler's
+ * bare PATH can't find `node` or `hacklab` on its own. */
+export type ManualSchedule = {
+  cadence: string
+  command: string
+}[]
+
+// The fallback for "Linux without a systemd user manager" and "an OS we don't
+// auto-schedule on" alike, so it names no specific mechanism it tried.
+export function manualInstructions(cmd: SyncCommand): ManualSchedule {
+  const bin = `"${cmd.node}" "${cmd.script}"`
   return [
-    "Couldn't set up the automatic background sync on this system.",
-    'To run it yourself, schedule these two commands with cron, a systemd timer,',
-    "or your init system's scheduler — the tick every minute, the full sync once",
-    'a day:',
-    `  "${cmd.node}" "${cmd.script}" sync --tick`,
-    `  "${cmd.node}" "${cmd.script}" sync --quiet`,
-  ].join('\n')
+    { cadence: 'every minute', command: `${bin} sync --tick` },
+    { cadence: 'once a day', command: `${bin} sync --quiet` },
+  ]
+}
+
+/** Render a ManualSchedule as ready-to-print lines: a dim explainer, then each
+ * job as a dim cadence label above its bold, copy-pasteable command. Blank
+ * lines separate the two commands so neither reads as a wrapped continuation of
+ * the other. */
+export function formatManualSchedule(schedule: ManualSchedule): string[] {
+  const lines = [
+    dim(
+      "Schedule these with cron, a systemd timer, or your init system's scheduler:"
+    ),
+  ]
+  for (const { cadence, command } of schedule) {
+    lines.push('', dim(`${cadence}:`), bold(command))
+  }
+  return lines
 }
 
 function launchAgentPath(label: string): string {

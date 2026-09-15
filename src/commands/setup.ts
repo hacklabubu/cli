@@ -5,7 +5,11 @@ import {
   launchAgentCli,
   notifyAgentHandoff,
 } from '../agent-handoff.js'
-import { dailySyncState, installDailySync } from '../daily-sync.js'
+import {
+  dailySyncState,
+  formatManualSchedule,
+  installDailySync,
+} from '../daily-sync.js'
 import { captureEvent, identifyUser } from '../posthog.js'
 import {
   loadPromptSync,
@@ -524,10 +528,9 @@ async function installDaemon(
     // instructions there talks the user into a second, duplicate schedule.
     if (state === 'missing') {
       clack.log.warn('background sync · schedule it yourself')
-      clack.log.message(
-        result.instructions.split('\n').map((line) => dim(line)),
-        { spacing: 0 }
-      )
+      clack.log.message(formatManualSchedule(result.instructions), {
+        spacing: 0,
+      })
       if (handle) {
         await captureEvent(handle, 'cli_daily_sync_manual', {
           mechanism: result.mechanism,

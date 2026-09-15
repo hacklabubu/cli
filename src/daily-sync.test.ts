@@ -44,6 +44,7 @@ vi.mock('./config.js', () => ({
 import {
   dailySyncInstalled,
   dailySyncState,
+  formatManualSchedule,
   installDailySync,
   launchdPlist,
   launchdTickPlist,
@@ -110,11 +111,29 @@ describe('daily-sync content builders', () => {
     expect(timer).toContain('WantedBy=timers.target')
   })
 
-  it('manual instructions include both runnable commands', () => {
-    const text = manualInstructions(cmd)
-    expect(text).toContain(`"${cmd.node}" "${cmd.script}" sync --tick`)
-    expect(text).toContain(`"${cmd.node}" "${cmd.script}" sync --quiet`)
-    expect(text.toLowerCase()).toContain('systemd')
+  it('manual instructions carry both runnable commands with their cadence', () => {
+    const schedule = manualInstructions(cmd)
+    expect(schedule).toEqual([
+      {
+        cadence: 'every minute',
+        command: `"${cmd.node}" "${cmd.script}" sync --tick`,
+      },
+      {
+        cadence: 'once a day',
+        command: `"${cmd.node}" "${cmd.script}" sync --quiet`,
+      },
+    ])
+  })
+
+  it('formatted schedule labels each command and keeps it copy-pasteable', () => {
+    const plain = formatManualSchedule(manualInstructions(cmd)).map((line) =>
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: strip ANSI
+      line.replace(/\u001b\[[0-9;]*m/g, '')
+    )
+    expect(plain).toContain('every minute:')
+    expect(plain).toContain('once a day:')
+    expect(plain).toContain(`"${cmd.node}" "${cmd.script}" sync --tick`)
+    expect(plain).toContain(`"${cmd.node}" "${cmd.script}" sync --quiet`)
   })
 
   it('schtasks wrapper .cmd runs node + script (quoted) and logs to the sync log', () => {

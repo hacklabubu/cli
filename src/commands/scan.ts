@@ -2,7 +2,11 @@ import * as clack from '@clack/prompts'
 
 import { beltForTokens } from '../belt.js'
 import { loadConfig, resolveCursorAuth, saveConfig } from '../config.js'
-import { dailySyncState, installDailySync } from '../daily-sync.js'
+import {
+  dailySyncState,
+  formatManualSchedule,
+  installDailySync,
+} from '../daily-sync.js'
 import { captureEvent } from '../posthog.js'
 import { stageFullScan } from '../scanners/incremental.js'
 import {
@@ -157,7 +161,7 @@ export async function scan(args: string[] = []): Promise<void> {
         // both spams every scan and talks the user into a second, duplicate
         // schedule.
         if (state === 'missing') {
-          console.log(dim(result.instructions))
+          console.log(formatManualSchedule(result.instructions).join('\n'))
           await captureEvent(session.handle, 'cli_daily_sync_manual', {
             mechanism: result.mechanism,
             source: 'scan',
