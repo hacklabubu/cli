@@ -101,6 +101,8 @@ vi.mock('../posthog.js', () => ({
 vi.mock('../daily-sync.js', () => ({
   dailySyncState: m.dailySyncState,
   installDailySync: m.installDailySync,
+  formatManualSchedule: (schedule: { cadence: string; command: string }[]) =>
+    schedule.flatMap((j) => [`${j.cadence}:`, j.command]),
   clearSyncPaused: vi.fn(),
   markSyncPaused: vi.fn(),
   readSyncPaused: vi.fn(),

@@ -21,6 +21,8 @@ vi.mock('../daily-sync.js', () => ({
   uninstallDailySync: m.uninstallDailySync,
   clearSyncPaused: m.clearSyncPaused,
   syncLogPath: () => '/home/ada/.hacklab/sync.log',
+  formatManualSchedule: (schedule: { cadence: string; command: string }[]) =>
+    schedule.flatMap((j) => [`${j.cadence}:`, j.command]),
 }))
 vi.mock('../session.js', () => ({ loadSession: m.loadSession }))
 vi.mock('../posthog.js', () => ({ captureEvent: m.captureEvent }))
@@ -112,19 +114,21 @@ describe('hacklab daemon', () => {
   })
 
   it('reports a failure as a failure and prints the manual fallback', async () => {
-    // BSD (or a blocked scheduler write): nothing is scheduled, so a success
     // line here would cost the user the streak they think they just secured.
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
     m.installDailySync.mockResolvedValue({
       ok: false,
       mechanism: 'unsupported',
-      instructions: 'schedule this with cron: node cli sync --quiet',
+      instructions: [
+        { cadence: 'once a day', command: 'node cli sync --quiet' },
+      ],
     })
 
     await daemon([])
 
     expect(m.success).not.toHaveBeenCalled()
     expect(said(m.error, "couldn't schedule")).toBe(true)
-    expect(said(m.info, 'cron')).toBe(true)
+    expect(said(log, 'node cli sync --quiet')).toBe(true)
   })
 
   it('tears the schedule down with `off`, no session required', async () => {

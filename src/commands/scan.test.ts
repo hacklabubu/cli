@@ -60,6 +60,8 @@ vi.mock('../share.js', () => ({
 vi.mock('../daily-sync.js', () => ({
   installDailySync: m.installDailySync,
   dailySyncState: m.dailySyncState,
+  formatManualSchedule: (schedule: { cadence: string; command: string }[]) =>
+    schedule.flatMap((j) => [`${j.cadence}:`, j.command]),
 }))
 vi.mock('../ui.js', () => ({
   bold: (s: string) => s,
@@ -87,7 +89,7 @@ const installEvents = () => events('cli_daily_sync_installed')
 const FAILED_INSTALL = {
   ok: false,
   mechanism: 'manual',
-  instructions: 'schedule this with cron: node cli sync --quiet',
+  instructions: [{ cadence: 'once a day', command: 'node cli sync --quiet' }],
 }
 
 const SESSION = {
@@ -340,7 +342,7 @@ describe('hacklab scan', () => {
 
     await scan()
 
-    expect(m.logs).toContain('schedule this with cron: node cli sync --quiet')
+    expect(m.logs.join('\n')).toMatch(/once a day:\nnode cli sync --quiet/)
     expect(installEvents()).toEqual([])
     expect(events('cli_daily_sync_manual')).toEqual([
       { mechanism: 'manual', source: 'scan' },
@@ -357,7 +359,7 @@ describe('hacklab scan', () => {
 
     await scan()
 
-    expect(m.logs.join('\n')).not.toMatch(/cron/)
+    expect(m.logs.join('\n')).not.toMatch(/sync --quiet/)
     expect(events('cli_daily_sync_manual')).toEqual([])
     expect(installEvents()).toEqual([])
   })

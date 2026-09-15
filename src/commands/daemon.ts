@@ -1,5 +1,6 @@
 import {
   clearSyncPaused,
+  formatManualSchedule,
   installDailySync,
   syncLogPath,
   uninstallDailySync,
@@ -62,7 +63,9 @@ async function summon(): Promise<void> {
   // failed scheduler write. Say so plainly and print the copy-paste cron
   // commands — silently reporting success here would cost the user their streak.
   error("couldn't schedule the background sync on this system")
-  info(result.instructions)
+  for (const line of formatManualSchedule(result.instructions)) {
+    console.log(line)
+  }
   await captureEvent(session.handle, 'cli_daily_sync_manual', {
     mechanism: result.mechanism,
   })
