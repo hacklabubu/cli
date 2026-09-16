@@ -346,6 +346,8 @@ async function interactiveSync() {
     hermesTotal,
     opencodeTotal,
     grokTotal,
+    copilotTotal,
+    antigravityTotal,
     cursorScanStatus,
     result: r,
   } = result
@@ -362,6 +364,10 @@ async function interactiveSync() {
   if (opencodeTotal > 0)
     info(`  OpenCode     ${formatTokens(opencodeTotal)} tokens`)
   if (grokTotal > 0) info(`  Grok Build   ${formatTokens(grokTotal)} tokens`)
+  if (copilotTotal > 0)
+    info(`  Copilot      ${formatTokens(copilotTotal)} tokens`)
+  if (antigravityTotal > 0)
+    info(`  Antigravity  ${formatTokens(antigravityTotal)} tokens`)
 
   // A key Cursor rejected must never be silent: the Cursor line above would be
   // the local estimate while the user believes they're getting exact counts.
@@ -425,6 +431,8 @@ async function interactiveSync() {
     tokens_hermes: hermesTotal,
     tokens_opencode: opencodeTotal,
     tokens_grok: grokTotal,
+    tokens_github_copilot: copilotTotal,
+    tokens_antigravity: antigravityTotal,
     level: r.level,
     title: r.title,
   })

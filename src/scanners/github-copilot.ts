@@ -1,8 +1,13 @@
 import { readdir, readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 
-import { findFiles } from './util.js'
+import {
+  copilotTelemetrySources,
+  readCopilotTelemetry,
+} from './github-copilot-telemetry.js'
+import type { ScanResult } from './util.js'
+import { findFiles, TokenCollector } from './util.js'
 
 /** A user-authored Copilot prompt retained by a local Copilot transcript. */
 export type GitHubCopilotPrompt = {
@@ -109,12 +114,7 @@ export async function githubCopilotFiles(): Promise<string[]> {
       ).flat()
     })
   )
-  return [
-    ...vscodeFiles.flat(),
-    ...(await findFiles(githubCopilotCliSessionStateDir(), '.jsonl')).filter(
-      (path) => /[\\/]session-state[\\/][^\\/]+[\\/]events\.jsonl$/i.test(path)
-    ),
-  ]
+  return [...vscodeFiles.flat(), ...(await githubCopilotSessionFiles())]
 }
 
 /** Keep a source prefix because VS Code and the CLI may reuse a UUID. */
@@ -197,9 +197,8 @@ export function parseGitHubCopilotJsonl(
 }
 
 /**
- * Read raw local prompts for the prompt-consent pipeline. This is intentionally
- * not a token scanner: local VS Code transcripts and Copilot CLI event logs do
- * not contain billable token totals.
+ * Read raw local prompts only for the consented prompt pipeline. Token scanning
+ * below uses numeric usage records independently of prompt-sharing consent.
  */
 export async function scanGitHubCopilotPrompts(): Promise<
   GitHubCopilotPrompt[]
@@ -223,4 +222,169 @@ export async function scanGitHubCopilotPrompts(): Promise<
     })
   )
   return prompts.flat()
+}
+
+async function githubCopilotSessionFiles(): Promise<string[]> {
+  return (await findFiles(githubCopilotCliSessionStateDir(), '.jsonl')).filter(
+    (path) => /[\\/]session-state[\\/][^\\/]+[\\/]events\.jsonl$/i.test(path)
+  )
+}
+
+export async function githubCopilotTokenFiles(): Promise<string[]> {
+  const telemetry = await copilotTelemetrySources(
+    githubCopilotVsCodeWorkspaceStorageRoots().map((root) => dirname(root))
+  )
+  return [
+    ...(await githubCopilotSessionFiles()),
+    ...telemetry.files,
+    ...telemetry.databases.flatMap((path) => [path, `${path}-wal`]),
+  ]
+}
+
+export type CopilotUsageSnapshot = {
+  sessionId: string
+  model: string
+  timestamp: string
+  tokens: number
+  messages: number
+}
+
+function tokenCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+
+/**
+ * SDK session.shutdown is durable, unlike ephemeral assistant.usage events.
+ * modelMetrics is cumulative across resumes. Input already includes both cache
+ * buckets, output already includes reasoning; agentMetrics is a breakdown of
+ * these same modelMetrics, not additional usage.
+ * Sources: github/copilot-sdk generated/session-events.ts; ccusage.com/guide/copilot/
+ */
+export function parseGitHubCopilotUsage(
+  content: string,
+  fallbackSessionId: string
+): CopilotUsageSnapshot[] {
+  let sessionId = fallbackSessionId
+  const snapshots: CopilotUsageSnapshot[] = []
+  for (const line of content.split('\n')) {
+    let event: {
+      type?: unknown
+      timestamp?: unknown
+      agentId?: unknown
+      data?: {
+        sessionId?: unknown
+        modelMetrics?: Record<
+          string,
+          {
+            usage?: { inputTokens?: unknown; outputTokens?: unknown }
+            requests?: { count?: unknown }
+          }
+        >
+      }
+    }
+    try {
+      event = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (!event || typeof event !== 'object') continue
+    if (
+      event.type === 'session.start' &&
+      typeof event.data?.sessionId === 'string'
+    ) {
+      sessionId = event.data.sessionId.trim() || sessionId
+    }
+    if (event.type !== 'session.shutdown' || event.agentId) continue
+    const at = timestamp(event.timestamp)
+    const metrics = event.data?.modelMetrics
+    if (
+      !at ||
+      !sessionId ||
+      !metrics ||
+      typeof metrics !== 'object' ||
+      Array.isArray(metrics)
+    )
+      continue
+    for (const [model, metric] of Object.entries(metrics)) {
+      const input = metric?.usage?.inputTokens
+      const output = metric?.usage?.outputTokens
+      if (!model || !tokenCount(input) || !tokenCount(output)) continue
+      const tokens = input + output
+      if (!Number.isSafeInteger(tokens)) continue
+      snapshots.push({
+        sessionId,
+        model,
+        timestamp: at,
+        tokens,
+        messages: tokenCount(metric?.requests?.count)
+          ? metric.requests.count
+          : 0,
+      })
+    }
+  }
+  return snapshots
+}
+
+export async function scanGitHubCopilot(): Promise<ScanResult> {
+  const snapshots: CopilotUsageSnapshot[] = []
+  for (const path of await githubCopilotSessionFiles()) {
+    try {
+      snapshots.push(
+        ...parseGitHubCopilotUsage(
+          await readFile(path, 'utf8'),
+          basename(dirname(path))
+        )
+      )
+    } catch (error) {
+      console.warn(
+        `Copilot usage unavailable in ${basename(dirname(path))}: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+  snapshots.sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+  const collector = new TokenCollector('github_copilot')
+  const previous = new Map<string, { tokens: number; messages: number }>()
+  const latestShutdown = new Map<string, string>()
+  for (const snapshot of snapshots) {
+    const key = JSON.stringify([snapshot.sessionId, snapshot.model])
+    latestShutdown.set(
+      JSON.stringify([
+        snapshot.sessionId,
+        snapshot.model.replace(/-1m(?:-internal)?$/, ''),
+      ]),
+      snapshot.timestamp
+    )
+    const before = previous.get(key) ?? { tokens: 0, messages: 0 }
+    const tokens = Math.max(before.tokens, snapshot.tokens)
+    const messages = Math.max(before.messages, snapshot.messages)
+    if (tokens > before.tokens) {
+      collector.addDaily(
+        snapshot.timestamp.slice(0, 10),
+        snapshot.model,
+        tokens - before.tokens,
+        messages - before.messages
+      )
+    }
+    previous.set(key, { tokens, messages })
+  }
+  const telemetry = await copilotTelemetrySources(
+    githubCopilotVsCodeWorkspaceStorageRoots().map((root) => dirname(root))
+  )
+  for (const inference of await readCopilotTelemetry(telemetry)) {
+    const key = JSON.stringify([
+      inference.sessionId,
+      inference.model.replace(/-1m(?:-internal)?$/, ''),
+    ])
+    const shutdown = latestShutdown.get(key)
+    // A later resumed call is new; earlier calls already belong to the durable
+    // cumulative snapshot. Never add two representations of the same usage.
+    if (shutdown && inference.timestamp <= shutdown) continue
+    collector.addDaily(
+      inference.timestamp.slice(0, 10),
+      inference.model,
+      inference.tokens,
+      1
+    )
+  }
+  return collector.result()
 }

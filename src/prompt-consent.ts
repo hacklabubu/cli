@@ -143,7 +143,7 @@ function printDisclosure(): void {
   console.log('')
   info('  hacklab can keep your profile up to date with how you work with AI,')
   info('  reading Claude Code, GitHub Copilot (VS Code/CLI), and readable')
-  info('  legacy Antigravity IDE chat history stored on this machine.')
+  info('  Antigravity CLI/IDE chat history stored on this machine.')
   console.log('')
   info(`  ${bold('what would be synced, every minute:')}`)
   info(

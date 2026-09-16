@@ -41,6 +41,8 @@ export const TOOL_LABELS: Record<string, string> = {
   hermes: 'hermes',
   opencode: 'opencode',
   grok: 'grok',
+  github_copilot: 'copilot',
+  antigravity: 'antigravity',
 }
 
 /**
@@ -317,6 +319,8 @@ function estimateCost(toolTotals: Record<string, number>): number {
     hermes: 0.5,
     opencode: 0.5,
     grok: 0.5,
+    github_copilot: 0.5,
+    antigravity: 0.5,
   }
   let cost = 0
   for (const [tool, tokens] of Object.entries(toolTotals)) {

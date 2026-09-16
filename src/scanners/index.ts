@@ -3,6 +3,8 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import { resolveCursorAuth } from '../config.js'
+import { scanAntigravity } from './antigravity.js'
+import { scanGitHubCopilot } from './github-copilot.js'
 import { num, queryDb, str } from './sqlite.js'
 import {
   type CursorScanStatus,
@@ -763,6 +765,8 @@ export async function collectToolScans(): Promise<ScanResult[]> {
     hermes,
     opencode,
     grok,
+    copilot,
+    antigravity,
   ] = await Promise.all([
     scanClaudeCode(),
     scanCodex(),
@@ -772,10 +776,22 @@ export async function collectToolScans(): Promise<ScanResult[]> {
     scanHermes(),
     scanOpenCode(),
     scanGrok(),
+    scanGitHubCopilot(),
+    scanAntigravity(),
   ])
 
   const cursor = resolveCursor(cursorApi, cursorLocal)
-  return [claude, codex, cursor, openclaw, hermes, opencode, grok]
+  return [
+    claude,
+    codex,
+    cursor,
+    openclaw,
+    hermes,
+    opencode,
+    grok,
+    copilot,
+    antigravity,
+  ]
 }
 
 /**

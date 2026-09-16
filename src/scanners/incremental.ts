@@ -13,6 +13,8 @@ import {
   type ScannedPromptActivity,
 } from '../prompt-stats.js'
 import { getSessionPath } from '../session.js'
+import { antigravityTokenFiles, scanAntigravity } from './antigravity.js'
+import { githubCopilotTokenFiles, scanGitHubCopilot } from './github-copilot.js'
 import {
   type AggregateScan,
   claudeCodeFiles,
@@ -462,11 +464,18 @@ export type SqliteSource = {
   scan: () => Promise<ScanResult>
 }
 
+export type SnapshotSource = {
+  tool: Tool
+  files: () => Promise<string[]>
+  scan: () => Promise<ScanResult>
+}
+
 export type TickSources = {
   jsonl: JsonlSource[]
   codex: CodexSource
   sqlite: SqliteSource[]
   prompts?: typeof IDE_PROMPT_SOURCES
+  snapshots?: SnapshotSource[]
 }
 
 /** The real harnesses. Injectable so the tick can be tested against a tmp dir. */
@@ -488,6 +497,18 @@ export function defaultSources(): TickSources {
       { tool: 'opencode', dbPath: opencodeDbPath, scan: scanOpenCode },
     ],
     prompts: IDE_PROMPT_SOURCES,
+    snapshots: [
+      {
+        tool: 'github_copilot',
+        files: githubCopilotTokenFiles,
+        scan: scanGitHubCopilot,
+      },
+      {
+        tool: 'antigravity',
+        files: antigravityTokenFiles,
+        scan: scanAntigravity,
+      },
+    ],
   }
 }
 
@@ -670,6 +691,34 @@ async function tickSqlite(
   return true
 }
 
+/** Cumulative session records need replacement, never additive tail parsing. */
+async function tickSnapshot(
+  state: ScanState,
+  source: SnapshotSource,
+  dirty: Set<string>
+): Promise<boolean> {
+  const files = await statFiles(await source.files())
+  const h = harness(state, source.tool)
+  if (
+    Object.keys(h.files).length === files.length &&
+    files.every(
+      (file) =>
+        h.files[file.path]?.size === file.size &&
+        h.files[file.path]?.mtimeMs === file.mtimeMs
+    )
+  )
+    return false
+
+  replaceAggregates(h, aggregatesOfResult(await source.scan()), dirty)
+  h.files = Object.fromEntries(
+    files.map((file) => [
+      file.path,
+      { size: file.size, mtimeMs: file.mtimeMs, offset: 0 },
+    ])
+  )
+  return true
+}
+
 async function tickPromptSnapshot(
   state: ScanState,
   source: (typeof IDE_PROMPT_SOURCES)[number]
@@ -747,6 +796,9 @@ export async function runTick(
   if (await tickCodex(state, sources.codex, dirty)) changed = true
   for (const src of sources.sqlite) {
     if (await tickSqlite(state, src, dirty)) changed = true
+  }
+  for (const source of sources.snapshots ?? []) {
+    if (await tickSnapshot(state, source, dirty)) changed = true
   }
   if (options.promptActivity !== false) {
     for (const source of sources.prompts ?? []) {

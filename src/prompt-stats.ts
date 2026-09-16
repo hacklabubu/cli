@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 
 import {
-  antigravityLegacyTranscriptFiles,
+  antigravityTranscriptFiles,
   scanAntigravityPrompts,
 } from './scanners/antigravity.js'
 import {
@@ -149,7 +149,7 @@ export type PromptActivityAggregate = {
 export const IDE_PROMPT_SOURCES = [
   {
     id: 'antigravity',
-    files: antigravityLegacyTranscriptFiles,
+    files: antigravityTranscriptFiles,
     scan: scanAntigravityPrompts,
   },
   {
