@@ -121,7 +121,8 @@ describe('consented IDE prompt integration', () => {
       line({
         source: 'USER_EXPLICIT',
         type: 'USER_INPUT',
-        content: 'write docs',
+        content:
+          '<USER_REQUEST>write docs</USER_REQUEST>\n<ADDITIONAL_METADATA>harness-only metadata</ADDITIONAL_METADATA>',
       })
     )
 
@@ -130,9 +131,10 @@ describe('consented IDE prompt integration', () => {
     expect(stats?.histogram).toEqual([{ length: 2, count: 3 }])
     expect(stats?.activity.daily[day]).toEqual({ prompts: 2, words: 4 })
     expect(stats?.conversationSample).toBeUndefined()
-    expect(
-      (await scanPromptStats({ includeSample: true }))?.conversationSample
-    ).toContain('write docs')
+    const sample = (await scanPromptStats({ includeSample: true }))
+      ?.conversationSample
+    expect(sample).toContain('write docs')
+    expect(sample).not.toContain('harness-only metadata')
     const { state } = await runTick(null, sources)
     expect(
       tickPayload(state, { promptActivity: true }).toolTotals
