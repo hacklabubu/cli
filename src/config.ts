@@ -25,11 +25,12 @@ export type HacklabConfig = {
   cursorEmail?: string
   dailySync?: DailySyncRecord
   /**
-   * Consent for syncing Claude Code conversation data: 'none' | 'stats' |
-   * 'full'. Absent means never asked — see prompt-consent.ts, which owns the
-   * tiers and treats an unset value as "ask", never as a yes.
+   * Consent for syncing supported local harness conversations: 'none' |
+   * 'stats' | 'full'. A positive answer also needs the current source scope
+   * version — see prompt-consent.ts. An unset value never means yes.
    */
   promptSync?: string
+  promptSyncVersion?: number
   /**
    * The obsolete one-off prompt-stats consent. Declared only so
    * `savePromptSync` can delete it: it answered a narrower question (a scan

@@ -4,11 +4,19 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 
+import {
+  antigravityLegacyTranscriptFiles,
+  scanAntigravityPrompts,
+} from './scanners/antigravity.js'
+import {
+  githubCopilotFiles,
+  scanGitHubCopilotPrompts,
+} from './scanners/github-copilot.js'
 import { findFiles, toDateStr } from './scanners/util.js'
 
 /**
- * Prompt statistics, computed entirely on this machine from the local Claude
- * Code transcripts and uploaded only under an explicit consent tier (see
+ * Prompt statistics, computed on this machine from supported local harness
+ * transcripts and uploaded only under an explicit consent tier (see
  * prompt-consent.ts).
  *
  * Three things come out of a full scan:
@@ -137,6 +145,43 @@ export type PromptActivityAggregate = {
   daily: Record<string, PromptDayAggregate>
 }
 
+/** Prompt-only sources: no token estimates and no token harness registration. */
+export const IDE_PROMPT_SOURCES = [
+  {
+    id: 'antigravity',
+    files: antigravityLegacyTranscriptFiles,
+    scan: scanAntigravityPrompts,
+  },
+  {
+    id: 'github_copilot',
+    files: githubCopilotFiles,
+    scan: scanGitHubCopilotPrompts,
+  },
+]
+
+export type ScannedPromptActivity = PromptActivityAggregate & {
+  /** Local-only partitions, so replacing one source never erases another. */
+  sources?: Record<string, PromptActivityAggregate>
+}
+
+export function mergePromptActivities(
+  sources: Iterable<PromptActivityAggregate>
+): PromptActivityAggregate {
+  const merged = emptyPromptActivity()
+  for (const source of sources) {
+    for (const [id, session] of Object.entries(source.sessions)) {
+      merged.sessions[id] = { ...session }
+    }
+    for (const [date, day] of Object.entries(source.daily)) {
+      merged.daily[date] ??= { prompts: 0, words: 0 }
+      const target = merged.daily[date]
+      target.prompts += day.prompts
+      target.words += day.words
+    }
+  }
+  return merged
+}
+
 export type PromptStats = {
   totalPrompts: number
   bucketMax: number
@@ -158,7 +203,7 @@ export type PromptStats = {
    * which re-bases the tick's incremental state on it and works out which rows
    * this upload still has to carry.
    */
-  activity: PromptActivityAggregate
+  activity: ScannedPromptActivity
   /** Only ever set under the `full` consent tier. */
   conversationSample?: string
 }
@@ -268,8 +313,8 @@ export function parsePromptLine(line: string): PromptLine | null {
 export function normalizeTimestamp(value: unknown): string | null {
   if (typeof value !== 'string' && typeof value !== 'number') return null
   const at = typeof value === 'number' ? value : Date.parse(value)
-  if (!Number.isFinite(at)) return null
-  return new Date(at).toISOString()
+  const date = new Date(at)
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null
 }
 
 export function emptyPromptActivity(): PromptActivityAggregate {
@@ -457,7 +502,7 @@ async function byMtimeDesc(paths: string[]): Promise<string[]> {
 }
 
 /**
- * Scan the local Claude Code transcripts.
+ * Scan local Claude Code and supported IDE/agent chat transcripts.
  *
  * `includeSample` gates the raw prompt text: only the `full` consent tier
  * passes true, and the sample never touches disk here — it goes straight into
@@ -468,12 +513,29 @@ export async function scanPromptStats(
 ): Promise<PromptStats | null> {
   const root = join(homedir(), '.claude', 'projects')
   const files = await byMtimeDesc(await findFiles(root, '.jsonl'))
-  if (files.length === 0) return null
 
   const wordCounts: number[] = []
   const activity = emptyPromptActivity()
-  const sampleParts: string[] = []
+  const samples: { text: string; at: number }[] = []
   let sampleChars = 0
+  const addSample = (text: string, timestamp: string | null) => {
+    if (!options.includeSample) return
+    const at = timestamp ? Date.parse(timestamp) : 0
+    const clipped = text.slice(0, CONVERSATION_SAMPLE_MAX_CHARS)
+    const index = samples.findIndex((sample) => sample.at < at)
+    samples.splice(index < 0 ? samples.length : index, 0, { text: clipped, at })
+    sampleChars += clipped.length + 2
+    while (samples.length > 1) {
+      const oldest = samples.at(-1)
+      if (
+        !oldest ||
+        sampleChars - (oldest.text.length + 2) < CONVERSATION_SAMPLE_MAX_CHARS
+      )
+        break
+      sampleChars -= oldest.text.length + 2
+      samples.pop()
+    }
+  }
   // Keyed by the transcript's project directory, which is Claude Code's own
   // grouping. The directory name is a lossy encoding of the path, so the real
   // working directory comes from the `cwd` recorded inside the entries.
@@ -493,14 +555,6 @@ export async function scanPromptStats(
     } catch {
       continue
     }
-
-    // Within a file the newest prompts are last, so the sample is drained in
-    // reverse after the file is read. Only collected while the budget is still
-    // open, so a full sample doesn't hold a whole history in memory.
-    const collectSample =
-      options.includeSample === true &&
-      sampleChars < CONVERSATION_SAMPLE_MAX_CHARS
-    const fileSample: string[] = []
 
     for (const line of content.split('\n')) {
       if (!line.trim()) continue
@@ -532,15 +586,33 @@ export async function scanPromptStats(
       const promptLine = parsePromptLine(line)
       if (promptLine) addPromptToActivity(activity, promptLine)
 
-      if (collectSample) fileSample.push(text)
+      addSample(text, normalizeTimestamp(entry.timestamp))
     }
+  }
 
-    for (let i = fileSample.length - 1; i >= 0; i--) {
-      if (sampleChars >= CONVERSATION_SAMPLE_MAX_CHARS) break
-      const text = fileSample[i] as string
-      sampleParts.push(text)
-      sampleChars += text.length + 2
+  const sources: Record<string, PromptActivityAggregate> = {
+    claude_code: activity,
+  }
+  for (const source of IDE_PROMPT_SOURCES) {
+    const sourceActivity = emptyPromptActivity()
+    const prompts = await source.scan()
+    // Reverse preserves the newest-first sample order for equal timestamps.
+    for (let i = prompts.length - 1; i >= 0; i--) {
+      const prompt = prompts[i]
+      if (!prompt) continue
+      const words = countWords(prompt.text)
+      if (words === 0) continue
+      wordCounts.push(words)
+      if (prompt.timestamp) {
+        addPromptToActivity(sourceActivity, {
+          sessionId: prompt.sessionId,
+          timestamp: prompt.timestamp,
+          words,
+        })
+      }
+      addSample(prompt.text, prompt.timestamp)
     }
+    sources[source.id] = sourceActivity
   }
 
   if (wordCounts.length === 0) return null
@@ -552,11 +624,12 @@ export async function scanPromptStats(
     histogram: buildHistogram(wordCounts, bucketMax),
     tail: buildTail(wordCounts, bucketMax),
     projects: await resolveProjects(byProjectDir),
-    activity,
+    activity: { ...mergePromptActivities(Object.values(sources)), sources },
   }
 
-  if (options.includeSample && sampleParts.length > 0) {
-    stats.conversationSample = sampleParts
+  if (options.includeSample && samples.length > 0) {
+    stats.conversationSample = samples
+      .map((sample) => sample.text)
       .join('\n\n')
       .slice(0, CONVERSATION_SAMPLE_MAX_CHARS)
   }

@@ -6,6 +6,7 @@ import {
 } from '../config.js'
 import {
   isPromptSyncTier,
+  loadPromptSync,
   PROMPT_SYNC_TIERS,
   type PromptSyncTier,
   savePromptSync,
@@ -46,8 +47,8 @@ export async function configCommand(args: string[]) {
         `  cursor-email:   ${auth.email}${sourceNote(auth.emailSource, 'CURSOR_EMAIL')}`
       )
     }
-    const consent = (await loadConfig()).promptSync
-    if (isPromptSyncTier(consent)) {
+    const consent = await loadPromptSync()
+    if (consent) {
       info(`  prompt-sync:    ${consent}`)
       info(`    ${dim(PROMPT_SYNC_DESCRIPTIONS[consent])}`)
     } else {

@@ -226,8 +226,9 @@ daemon gets its prompt activity up by running `hacklab sync` by hand. The daily
 full sync also adds a histogram of your prompt lengths — every bar an exact
 word count, and everything past the end of the axis as a list of length/count
 pairs instead, so a tail of unusually long prompts keeps its real lengths
-rather than piling into a final catch-all bar — and a prompt count per project. It all comes from your local Claude Code transcripts
-(`~/.claude/projects`), read on this machine.
+rather than piling into a final catch-all bar — and a prompt count per project.
+Sources are local Claude Code transcripts (`~/.claude/projects`), GitHub Copilot
+transcripts, and readable legacy Antigravity IDE logs.
 
 **Only what you actually typed counts.** A transcript records far more than
 your prompts, and a lot of it is stored in the same shape: a background
@@ -241,8 +242,10 @@ markers. Starts with, not contains: a real prompt that quotes
 `<command-name>` while asking about it is still your prompt, and still counts.
 
 Nothing conversation-derived leaves your machine until you say so. The first
-interactive `sync` asks, remembers the answer, and never asks again. There are
-three tiers:
+interactive `sync` asks and remembers the answer for the disclosed sources.
+Adding IDE chats requires fresh consent from anyone whose previous answer
+covered only Claude Code; an earlier `none` remains a refusal. Until you answer
+again, unattended sync uploads tokens only. There are three tiers:
 
 | Tier    | What leaves your machine |
 | ------- | ------------------------ |
@@ -250,9 +253,10 @@ three tiers:
 | `stats` | + prompt counts, word counts, timestamps and session ids, synced continuously, plus the length histogram and per-project counts. Your prompt text never leaves the machine |
 | `full`  | + a rolling sample of your most recent prompts (≤20k chars) sent with the daily sync, used only to estimate a technical-level score and then discarded server-side. Never stored |
 
-Projects are matched by their git `origin` remote, so a prompt count only lands
-on a project you've already added to hacklab. Directories without a git remote
-are skipped entirely.
+Project counts currently come from Claude Code and are matched by git `origin`
+remote, so a project count only lands on a project you've already added to
+hacklab. Missing remotes skip **project attribution**, not the aggregate prompt
+statistics or the separately consented text sample.
 
 Answer up front, without the prompt — the agent-friendly path:
 
@@ -271,6 +275,40 @@ hacklab config                     # show the current tier
 
 The unattended daily sync and the minutely tick never ask. A machine that has
 never answered uploads token counts only.
+
+### IDE and agent-chat coverage
+
+These additions contribute **prompts, not tokens**. No token totals are
+estimated from words, quota, context-window size, or file modification times.
+
+| Source | Supported local data |
+| ------ | -------------------- |
+| GitHub Copilot in VS Code Stable / Insiders | Agent transcript JSONL in `User/workspaceStorage/<workspace>/github.copilot-chat/transcripts/`. Only the Copilot producer and user messages count. |
+| GitHub Copilot CLI | `${COPILOT_HOME:-~/.copilot}/session-state/<session-id>/events.jsonl`; synthetic user events are excluded. |
+| Legacy Antigravity IDE | `~/.gemini/antigravity-ide/brain/<UUID>/.system_generated/logs/transcript_full.jsonl` (or `transcript.jsonl` when the full variant is absent). Only explicit user input counts; the two variants are never counted together. |
+| Antigravity CLI / current desktop opaque cache | Not supported. The CLI's documented cache contains conversation IDs, not transcripts; desktop `.pb` files are not parsed. |
+| Android Studio's built-in Gemini | Not supported: no reliable local chat/export schema with activity timestamps or token totals was found. Saved Prompt Library entries are reusable templates, not chat activity. |
+
+VS Code roots are `%APPDATA%/Code[ - Insiders]` on Windows,
+`~/Library/Application Support/Code[ - Insiders]` on macOS, and
+`${XDG_CONFIG_HOME:-~/.config}/Code[ - Insiders]` on Linux. Custom user-data
+directories, remote extension hosts, other Copilot IDEs, and generic VS Code
+chat exports are not scanned.
+
+Only retained local history is available. VS Code's transcript writer normally
+keeps 20 sessions per workspace, plus active sessions. Missing timestamps still
+allow prompt-length statistics and a `full`-tier sample, but **never** create
+session or daily-activity rows. In particular, legacy Antigravity logs do not
+guarantee timestamps. The minutely tick fingerprints prompt-only source files
+and re-reads a source only when its files change; full syncs rebuild all sources.
+No transcript text is saved in Hacklab's incremental state.
+
+Storage evidence:
+[VS Code transcript writer](https://github.com/microsoft/vscode/blob/main/extensions/copilot/src/extension/chat/vscode-node/sessionTranscriptService.ts),
+[Copilot CLI storage](https://github.com/microsoft/vscode/blob/main/extensions/copilot/src/extension/chatSessions/copilotcli/node/cliHelpers.ts),
+[legacy Antigravity exporter](https://github.com/mehdawimohamed/antigravity-conversation-exporter/blob/main/export_chat.py),
+[Antigravity CLI cache](https://antigravity.google/docs/cli/commands/resume),
+[Android Studio chat](https://developer.android.com/studio/gemini/chat).
 
 ## Choosing a backend
 

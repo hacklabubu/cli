@@ -219,10 +219,11 @@ async function tickSync(): Promise<void> {
   }
   const session = await ensureFreshSession(sessionState.session)
 
-  const { state, changed } = await runTick(saved)
-  // A background job never asks: an unanswered machine syncs tokens only, and
-  // the prompt activity the tick counted stays on disk.
+  // An unattended job never expands an older consent scope.
   const promptSync = (await loadPromptSync()) ?? 'none'
+  const { state, changed } = await runTick(saved, undefined, {
+    promptActivity: promptSync !== 'none',
+  })
   const promptPending = promptSync !== 'none' && hasPromptActivity(state)
 
   const totals = cumulativeTotals(state)
