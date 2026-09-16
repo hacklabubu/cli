@@ -242,6 +242,14 @@ harness flagged as its own, plus anything that *starts* with one of those
 markers. Starts with, not contains: a real prompt that quotes
 `<command-name>` while asking about it is still your prompt, and still counts.
 
+For Antigravity, an explicit-user-input entry counts only when it contains a
+nonempty `<USER_REQUEST>` body. That body is preserved verbatim, including blank
+lines; surrounding metadata, model-setting changes, and artifact-comment prose
+are excluded from both word counts and the `full`-tier sample. Empty request
+bodies, including artifact approvals, do not count as prompts. `created_at` is
+the preferred timestamp, with a valid `timestamp` as fallback. If neither is
+valid, the prompt stays undated — no timestamp is inferred.
+
 Nothing conversation-derived leaves your machine until you say so. The first
 interactive `sync` asks and remembers the answer for the disclosed sources.
 Adding IDE chats requires fresh consent from anyone whose previous answer
