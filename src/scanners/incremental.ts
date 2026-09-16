@@ -3,12 +3,18 @@ import { dirname, join } from 'node:path'
 
 import {
   addPromptToActivity,
+  countWords,
   emptyPromptActivity,
+  IDE_PROMPT_SOURCES,
+  mergePromptActivities,
   type PromptActivityAggregate,
   type PromptLine,
   parsePromptLine,
+  type ScannedPromptActivity,
 } from '../prompt-stats.js'
 import { getSessionPath } from '../session.js'
+import { antigravityTokenFiles, scanAntigravity } from './antigravity.js'
+import { githubCopilotTokenFiles, scanGitHubCopilot } from './github-copilot.js'
 import {
   type AggregateScan,
   claudeCodeFiles,
@@ -72,12 +78,15 @@ import {
  * the wipe this time. For anyone still on an older CLI it costs one extra
  * rescan and nothing else.
  *
+ * 5: prompt activity is partitioned by source, so rebuilding a Claude log or
+ * rotating an IDE transcript cannot erase or double-count another harness.
+ *
  * Token totals are unaffected: they travel as cumulative absolutes that the
  * server diffs against its own per-machine snapshot, and `state.uploaded` is
  * only the tick's "nothing moved" short-circuit — so a rebuild re-baselines
  * rather than double-counting.
  */
-export const SCAN_STATE_VERSION = 4
+export const SCAN_STATE_VERSION = 5
 
 /** How long a session is kept in the state after its last prompt. */
 export const PROMPT_SESSION_RETENTION_DAYS = 45
@@ -139,6 +148,9 @@ export type ScanState = {
   dirty: string[]
   /** Prompt sessions and per-day counts, plus what's outstanding. */
   prompts: PromptState
+  promptSources: Record<string, PromptActivityAggregate>
+  /** Prompt-only snapshots are re-read only when their file set changes. */
+  promptFiles: Record<string, Record<string, FileState>>
   /** Cumulative totals as of the last accepted upload. */
   uploaded: {
     toolTotals: Record<string, number>
@@ -169,6 +181,8 @@ export function emptyState(): ScanState {
     harnesses: {},
     dirty: [],
     prompts: emptyPromptState(),
+    promptSources: {},
+    promptFiles: {},
     uploaded: { toolTotals: {}, modelTotals: {} },
   }
 }
@@ -211,7 +225,7 @@ export async function loadScanState(): Promise<ScanState | null> {
  * forever on a machine that never consented (the tick still counts prompts at
  * the `none` tier — it just never sends them).
  */
-function prunePrompts(prompts: PromptState): void {
+function prunePromptAggregate(prompts: PromptActivityAggregate): void {
   const sessionCutoff = dateDaysAgo(PROMPT_SESSION_RETENTION_DAYS)
   for (const [id, session] of Object.entries(prompts.sessions)) {
     if (session.lastActiveAt.slice(0, 10) < sessionCutoff) {
@@ -222,6 +236,10 @@ function prunePrompts(prompts: PromptState): void {
   for (const date of Object.keys(prompts.daily)) {
     if (date < dateCutoff) delete prompts.daily[date]
   }
+}
+
+function prunePrompts(prompts: PromptState): void {
+  prunePromptAggregate(prompts)
   prompts.dirtySessions = prompts.dirtySessions.filter(
     (id) => prompts.sessions[id] !== undefined
   )
@@ -234,6 +252,9 @@ function prunePrompts(prompts: PromptState): void {
  * window (they'd otherwise accumulate forever). Best-effort. */
 export async function saveScanState(state: ScanState): Promise<void> {
   prunePrompts(state.prompts)
+  for (const source of Object.values(state.promptSources)) {
+    prunePromptAggregate(source)
+  }
   try {
     await mkdir(dirname(scanStatePath()), { recursive: true })
     await writeFile(scanStatePath(), `${JSON.stringify(state)}\n`, 'utf8')
@@ -443,10 +464,18 @@ export type SqliteSource = {
   scan: () => Promise<ScanResult>
 }
 
+export type SnapshotSource = {
+  tool: Tool
+  files: () => Promise<string[]>
+  scan: () => Promise<ScanResult>
+}
+
 export type TickSources = {
   jsonl: JsonlSource[]
   codex: CodexSource
   sqlite: SqliteSource[]
+  prompts?: typeof IDE_PROMPT_SOURCES
+  snapshots?: SnapshotSource[]
 }
 
 /** The real harnesses. Injectable so the tick can be tested against a tmp dir. */
@@ -466,6 +495,19 @@ export function defaultSources(): TickSources {
     sqlite: [
       { tool: 'hermes', dbPath: hermesDbPath, scan: scanHermes },
       { tool: 'opencode', dbPath: opencodeDbPath, scan: scanOpenCode },
+    ],
+    prompts: IDE_PROMPT_SOURCES,
+    snapshots: [
+      {
+        tool: 'github_copilot',
+        files: githubCopilotTokenFiles,
+        scan: scanGitHubCopilot,
+      },
+      {
+        tool: 'antigravity',
+        files: antigravityTokenFiles,
+        scan: scanAntigravity,
+      },
     ],
   }
 }
@@ -517,14 +559,12 @@ async function tickJsonl(
   const target = invalidated ? new Set<string>() : dirty
   if (invalidated) resetHarness(h)
 
-  // Same story for prompts: a re-read has to rebuild the aggregate from
-  // scratch, or every session in it would be counted twice.
-  const rebuildPrompts = invalidated && src.parsePrompt !== undefined
-  const prompts: PromptActivityAggregate = rebuildPrompts
-    ? emptyPromptActivity()
-    : state.prompts
-  const dirtySessions = new Set(state.prompts.dirtySessions)
-  const dirtyDates = new Set(state.prompts.dirtyDates)
+  // Keep each source independent: a rewritten Claude transcript must not
+  // discard Copilot/Antigravity activity on the same date.
+  if (src.parsePrompt && (invalidated || !state.promptSources[src.tool])) {
+    state.promptSources[src.tool] = emptyPromptActivity()
+  }
+  const prompts = state.promptSources[src.tool]
 
   let changed = invalidated
   for (const file of files) {
@@ -541,10 +581,8 @@ async function tickJsonl(
     let fallbackDate: string | null = null
     for (const line of text.split('\n')) {
       const prompt = src.parsePrompt?.(line)
-      if (prompt) {
-        const touched = addPromptToActivity(prompts, prompt)
-        dirtySessions.add(touched.sessionId)
-        dirtyDates.add(touched.date)
+      if (prompt && prompts) {
+        addPromptToActivity(prompts, prompt)
       }
 
       const usage = src.parse(line)
@@ -562,12 +600,11 @@ async function tickJsonl(
 
   if (before) markMovedDates(before, aggregatesOf(h), dirty)
 
-  if (rebuildPrompts) {
-    // The rebuilt aggregate replaces the old one, dirtying only what moved.
-    replacePromptActivity(state.prompts, prompts)
-  } else if (src.parsePrompt) {
-    state.prompts.dirtySessions = [...dirtySessions]
-    state.prompts.dirtyDates = [...dirtyDates].sort()
+  if (src.parsePrompt && changed) {
+    replacePromptActivity(
+      state.prompts,
+      mergePromptActivities(Object.values(state.promptSources))
+    )
   }
   return changed
 }
@@ -654,6 +691,77 @@ async function tickSqlite(
   return true
 }
 
+/** Cumulative session records need replacement, never additive tail parsing. */
+async function tickSnapshot(
+  state: ScanState,
+  source: SnapshotSource,
+  dirty: Set<string>
+): Promise<boolean> {
+  const files = await statFiles(await source.files())
+  const h = harness(state, source.tool)
+  if (
+    Object.keys(h.files).length === files.length &&
+    files.every(
+      (file) =>
+        h.files[file.path]?.size === file.size &&
+        h.files[file.path]?.mtimeMs === file.mtimeMs
+    )
+  )
+    return false
+
+  replaceAggregates(h, aggregatesOfResult(await source.scan()), dirty)
+  h.files = Object.fromEntries(
+    files.map((file) => [
+      file.path,
+      { size: file.size, mtimeMs: file.mtimeMs, offset: 0 },
+    ])
+  )
+  return true
+}
+
+async function tickPromptSnapshot(
+  state: ScanState,
+  source: (typeof IDE_PROMPT_SOURCES)[number]
+): Promise<boolean> {
+  const files = await statFiles(await source.files())
+  const previous = state.promptFiles[source.id]
+  if (
+    previous &&
+    Object.keys(previous).length === files.length &&
+    files.every(
+      (file) =>
+        previous[file.path]?.size === file.size &&
+        previous[file.path]?.mtimeMs === file.mtimeMs
+    )
+  )
+    return false
+
+  const activity = emptyPromptActivity()
+  for (const prompt of await source.scan()) {
+    if (!prompt.timestamp) continue
+    const words = countWords(prompt.text)
+    if (words > 0) {
+      addPromptToActivity(activity, {
+        sessionId: prompt.sessionId,
+        timestamp: prompt.timestamp,
+        words,
+      })
+    }
+  }
+  state.promptSources[source.id] = activity
+  state.promptFiles[source.id] = Object.fromEntries(
+    files.map((file) => [
+      file.path,
+      { size: file.size, mtimeMs: file.mtimeMs, offset: 0 },
+    ])
+  )
+  replacePromptActivity(
+    state.prompts,
+    mergePromptActivities(Object.values(state.promptSources))
+  )
+  return true
+}
+
 export type TickOutcome = {
   state: ScanState
   /** Did anything on disk move? (If not, the state file isn't worth rewriting.) */
@@ -674,7 +782,8 @@ export type TickOutcome = {
  */
 export async function runTick(
   prev: ScanState | null,
-  sources: TickSources = defaultSources()
+  sources: TickSources = defaultSources(),
+  options: { promptActivity?: boolean } = {}
 ): Promise<TickOutcome> {
   const cold = prev === null
   const state = prev ?? emptyState()
@@ -687,6 +796,14 @@ export async function runTick(
   if (await tickCodex(state, sources.codex, dirty)) changed = true
   for (const src of sources.sqlite) {
     if (await tickSqlite(state, src, dirty)) changed = true
+  }
+  for (const source of sources.snapshots ?? []) {
+    if (await tickSnapshot(state, source, dirty)) changed = true
+  }
+  if (options.promptActivity !== false) {
+    for (const source of sources.prompts ?? []) {
+      if (await tickPromptSnapshot(state, source)) changed = true
+    }
   }
 
   if (cold) {
@@ -874,7 +991,7 @@ async function snapshotFileCursors(h: HarnessState, paths: string[]) {
  */
 export type StagedPrompts =
   /** A prompt scan ran — re-base the prompt state on its aggregate. */
-  | { scanned: PromptActivityAggregate }
+  | { scanned: ScannedPromptActivity }
   /** The user is at the `none` tier — drop the prompt state entirely. */
   | { scanned: null }
   /** This command never reads prompts (`hacklab scan`) — leave them alone. */
@@ -930,11 +1047,21 @@ export async function stageFullScan(
     const previous = await loadScanState()
     const state = emptyState()
     state.prompts = previous?.prompts ?? emptyPromptState()
+    state.promptSources = previous?.promptSources ?? {}
+    state.promptFiles = previous?.promptFiles ?? {}
     // Nothing is claimed as in-flight any more: whatever the last upload sent
     // was either acked (and cleared) or lost. A caller with authority re-derives
     // the claim below; one without leaves the rows dirty for the tick.
     state.prompts.sent = undefined
     if (prompts !== 'untouched') {
+      state.promptSources = prompts.scanned
+        ? (prompts.scanned.sources ?? {
+            claude_code: mergePromptActivities([prompts.scanned]),
+          })
+        : {}
+      // A fresh scan's partitions are authoritative. Recheck IDE snapshots on
+      // the next tick rather than advancing a cursor past concurrent writes.
+      state.promptFiles = {}
       replacePromptActivity(
         state.prompts,
         prompts.scanned ?? emptyPromptActivity()

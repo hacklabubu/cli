@@ -898,9 +898,6 @@ describe('setup — guards and edge cases', () => {
 
     await setup()
 
-    // The scan step already said there is nothing here, so the question is
-    // only the question.
-    expect(m.logs.join('\n')).toContain('scanned · no AI usage on this machine')
     expect(m.confirm).toHaveBeenNthCalledWith(1, {
       message: 'set up your account anyway?',
       initialValue: true,

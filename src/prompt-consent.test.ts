@@ -107,12 +107,42 @@ describe('resolvePromptSync', () => {
   it('uses the stored answer without asking again', async () => {
     vi.resetModules()
     vi.doMock('./config.js', () => ({
-      loadConfig: async () => ({ promptSync: 'full' }),
+      loadConfig: async () => ({ promptSync: 'full', promptSyncVersion: 2 }),
       updateConfig: async () => true,
     }))
     const { resolvePromptSync } = await import('./prompt-consent.js')
     try {
       expect(await resolvePromptSync(null, { interactive: true })).toBe('full')
+    } finally {
+      vi.doUnmock('./config.js')
+      vi.resetModules()
+    }
+  })
+
+  it('does not extend a Claude-only yes to IDE chats', async () => {
+    vi.resetModules()
+    vi.doMock('./config.js', () => ({
+      loadConfig: async () => ({ promptSync: 'full' }),
+      updateConfig: async () => true,
+    }))
+    const { resolvePromptSync } = await import('./prompt-consent.js')
+    try {
+      expect(await resolvePromptSync(null, { interactive: false })).toBe('none')
+    } finally {
+      vi.doUnmock('./config.js')
+      vi.resetModules()
+    }
+  })
+
+  it('preserves an earlier refusal without asking again', async () => {
+    vi.resetModules()
+    vi.doMock('./config.js', () => ({
+      loadConfig: async () => ({ promptSync: 'none' }),
+      updateConfig: async () => true,
+    }))
+    const { loadPromptSync } = await import('./prompt-consent.js')
+    try {
+      expect(await loadPromptSync()).toBe('none')
     } finally {
       vi.doUnmock('./config.js')
       vi.resetModules()
@@ -164,7 +194,7 @@ describe('resolvePromptSync', () => {
       expect(await resolvePromptSync('none')).toBe('none')
       // The obsolete key goes with the write, so a machine never carries two
       // answers to two different questions.
-      expect(written).toEqual([{ promptSync: 'none' }])
+      expect(written).toEqual([{ promptSync: 'none', promptSyncVersion: 2 }])
     } finally {
       vi.doUnmock('./config.js')
       vi.resetModules()

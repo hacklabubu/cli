@@ -311,7 +311,7 @@ function scanNotes(scan: AggregateScan): string[] {
 function scanSummary(scan: AggregateScan): string {
   return scan.grandTotal > 0
     ? `scanned · ${formatTokens(scan.grandTotal)} tokens`
-    : 'scanned · no AI usage on this machine'
+    : 'scanned · no recorded token usage on this machine'
 }
 
 type ScanStep = {
@@ -470,6 +470,8 @@ async function askPromptSyncConsent(): Promise<PromptSyncTier> {
     'hacklab scores how well you work with AI. syncing how you prompt — how',
     'many prompts, how long they are, when each session ran — puts your',
     'sessions and prompt counts on your profile and keeps them current.',
+    'sources: Claude Code, GitHub Copilot (VS Code/CLI), and readable',
+    'legacy Antigravity IDE logs. unavailable token counts are not estimated.',
     'the text of your prompts stays on this machine.',
     dim(
       'want a sample of your prompts scored too? hacklab config prompt-sync full'

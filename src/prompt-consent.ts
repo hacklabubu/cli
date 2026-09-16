@@ -4,8 +4,8 @@ import { loadConfig, updateConfig } from './config.js'
 import { bold, dim, info } from './ui.js'
 
 /**
- * Consent for syncing anything derived from the user's Claude Code
- * conversations.
+ * Consent for syncing anything derived from supported local harness
+ * conversations, including IDE chats.
  *
  * Nothing conversation-derived leaves the machine until someone has answered
  * this explicitly. The tiers are additive:
@@ -27,6 +27,9 @@ import { bold, dim, info } from './ui.js'
 export const PROMPT_SYNC_TIERS = ['none', 'stats', 'full'] as const
 export type PromptSyncTier = (typeof PROMPT_SYNC_TIERS)[number]
 
+// Version 1 disclosed only Claude Code. An old yes cannot authorize IDE chats.
+const PROMPT_SYNC_VERSION = 2
+
 export function isPromptSyncTier(value: unknown): value is PromptSyncTier {
   return (
     typeof value === 'string' &&
@@ -35,14 +38,16 @@ export function isPromptSyncTier(value: unknown): value is PromptSyncTier {
 }
 
 /**
- * The stored answer, or null when the user has never been asked *this*
- * question. The pre-continuous-sync key (`promptStatsConsent`) is deliberately
- * not read: it answered a different question — a one-off scan, not a minutely
- * sync of session metadata — so it can't stand in for this one.
+ * The stored answer for the current source scope. A refusal remains a refusal;
+ * a positive answer to the older Claude-only disclosure needs fresh consent.
  */
 export async function loadPromptSync(): Promise<PromptSyncTier | null> {
   const config = await loadConfig()
-  return isPromptSyncTier(config.promptSync) ? config.promptSync : null
+  if (config.promptSync === 'none') return 'none'
+  return config.promptSyncVersion === PROMPT_SYNC_VERSION &&
+    isPromptSyncTier(config.promptSync)
+    ? config.promptSync
+    : null
 }
 
 /**
@@ -54,6 +59,7 @@ export async function loadPromptSync(): Promise<PromptSyncTier | null> {
 export async function savePromptSync(tier: PromptSyncTier): Promise<void> {
   await updateConfig((config) => {
     config.promptSync = tier
+    config.promptSyncVersion = PROMPT_SYNC_VERSION
     delete config.promptStatsConsent
     return config
   })
@@ -136,7 +142,8 @@ function printDisclosure(): void {
   console.log(bold('  sync your prompt activity?'))
   console.log('')
   info('  hacklab can keep your profile up to date with how you work with AI,')
-  info(`  reading your Claude Code history from ${dim('~/.claude/projects')}.`)
+  info('  reading Claude Code, GitHub Copilot (VS Code/CLI), and readable')
+  info('  Antigravity CLI/IDE chat history stored on this machine.')
   console.log('')
   info(`  ${bold('what would be synced, every minute:')}`)
   info(
@@ -151,7 +158,9 @@ function printDisclosure(): void {
   info(
     `    ${dim('-')} the text of your prompts, unless you separately say yes below`
   )
-  info(`    ${dim('-')} anything from a project without a git remote`)
+  info(
+    `    ${dim('-')} local project paths; only git remotes identify projects`
+  )
   console.log('')
   info(dim('  your profile shows your sessions, how many you run at once, and'))
   info(dim('  your prompt counts. change or revoke this any time with'))

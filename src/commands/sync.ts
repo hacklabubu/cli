@@ -219,10 +219,11 @@ async function tickSync(): Promise<void> {
   }
   const session = await ensureFreshSession(sessionState.session)
 
-  const { state, changed } = await runTick(saved)
-  // A background job never asks: an unanswered machine syncs tokens only, and
-  // the prompt activity the tick counted stays on disk.
+  // An unattended job never expands an older consent scope.
   const promptSync = (await loadPromptSync()) ?? 'none'
+  const { state, changed } = await runTick(saved, undefined, {
+    promptActivity: promptSync !== 'none',
+  })
   const promptPending = promptSync !== 'none' && hasPromptActivity(state)
 
   const totals = cumulativeTotals(state)
@@ -345,6 +346,8 @@ async function interactiveSync() {
     hermesTotal,
     opencodeTotal,
     grokTotal,
+    copilotTotal,
+    antigravityTotal,
     cursorScanStatus,
     result: r,
   } = result
@@ -361,6 +364,10 @@ async function interactiveSync() {
   if (opencodeTotal > 0)
     info(`  OpenCode     ${formatTokens(opencodeTotal)} tokens`)
   if (grokTotal > 0) info(`  Grok Build   ${formatTokens(grokTotal)} tokens`)
+  if (copilotTotal > 0)
+    info(`  Copilot      ${formatTokens(copilotTotal)} tokens`)
+  if (antigravityTotal > 0)
+    info(`  Antigravity  ${formatTokens(antigravityTotal)} tokens`)
 
   // A key Cursor rejected must never be silent: the Cursor line above would be
   // the local estimate while the user believes they're getting exact counts.
@@ -424,6 +431,8 @@ async function interactiveSync() {
     tokens_hermes: hermesTotal,
     tokens_opencode: opencodeTotal,
     tokens_grok: grokTotal,
+    tokens_github_copilot: copilotTotal,
+    tokens_antigravity: antigravityTotal,
     level: r.level,
     title: r.title,
   })

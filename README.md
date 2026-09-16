@@ -60,9 +60,10 @@ login → scan this machine → upload → card → share on X → daemon on
 ```
 
 `hacklab scan` requires `hacklab login`. It reads local AI token usage from
-Claude Code, Codex, Cursor, OpenClaw, Hermes, OpenCode, and Grok Build, uploads
-it to your profile, and draws the card from the live account (real rank, belt,
-streak — not a local postcard). Then it asks whether to share that card on X.
+Claude Code, Codex, Cursor, OpenClaw, Hermes, OpenCode, Grok Build, GitHub Copilot,
+and Antigravity, uploads it to your profile, and draws the card from the live
+account (real rank, belt, streak — not a local postcard). Then it asks whether
+to share that card on X.
 A successful scan summons the daemon so the card stays current; `hacklab scan
 --no-daemon` skips the schedule, and `hacklab daemon off` tears it down.
 Skip the whole command if this computer isn't yours — it would upload that
@@ -226,8 +227,9 @@ daemon gets its prompt activity up by running `hacklab sync` by hand. The daily
 full sync also adds a histogram of your prompt lengths — every bar an exact
 word count, and everything past the end of the axis as a list of length/count
 pairs instead, so a tail of unusually long prompts keeps its real lengths
-rather than piling into a final catch-all bar — and a prompt count per project. It all comes from your local Claude Code transcripts
-(`~/.claude/projects`), read on this machine.
+rather than piling into a final catch-all bar — and a prompt count per project.
+Sources are local Claude Code transcripts (`~/.claude/projects`), GitHub Copilot
+transcripts, and readable Antigravity CLI/IDE logs.
 
 **Only what you actually typed counts.** A transcript records far more than
 your prompts, and a lot of it is stored in the same shape: a background
@@ -240,9 +242,19 @@ harness flagged as its own, plus anything that *starts* with one of those
 markers. Starts with, not contains: a real prompt that quotes
 `<command-name>` while asking about it is still your prompt, and still counts.
 
+For Antigravity, an explicit-user-input entry counts only when it contains a
+nonempty `<USER_REQUEST>` body. That body is preserved verbatim, including blank
+lines; surrounding metadata, model-setting changes, and artifact-comment prose
+are excluded from both word counts and the `full`-tier sample. Empty request
+bodies, including artifact approvals, do not count as prompts. `created_at` is
+the preferred timestamp, with a valid `timestamp` as fallback. If neither is
+valid, the prompt stays undated — no timestamp is inferred.
+
 Nothing conversation-derived leaves your machine until you say so. The first
-interactive `sync` asks, remembers the answer, and never asks again. There are
-three tiers:
+interactive `sync` asks and remembers the answer for the disclosed sources.
+Adding IDE chats requires fresh consent from anyone whose previous answer
+covered only Claude Code; an earlier `none` remains a refusal. Until you answer
+again, unattended sync uploads tokens only. There are three tiers:
 
 | Tier    | What leaves your machine |
 | ------- | ------------------------ |
@@ -250,9 +262,10 @@ three tiers:
 | `stats` | + prompt counts, word counts, timestamps and session ids, synced continuously, plus the length histogram and per-project counts. Your prompt text never leaves the machine |
 | `full`  | + a rolling sample of your most recent prompts (≤20k chars) sent with the daily sync, used only to estimate a technical-level score and then discarded server-side. Never stored |
 
-Projects are matched by their git `origin` remote, so a prompt count only lands
-on a project you've already added to hacklab. Directories without a git remote
-are skipped entirely.
+Project counts currently come from Claude Code and are matched by git `origin`
+remote, so a project count only lands on a project you've already added to
+hacklab. Missing remotes skip **project attribution**, not the aggregate prompt
+statistics or the separately consented text sample.
 
 Answer up front, without the prompt — the agent-friendly path:
 
@@ -271,6 +284,84 @@ hacklab config                     # show the current tier
 
 The unattended daily sync and the minutely tick never ask. A machine that has
 never answered uploads token counts only.
+
+## IDE and agent-chat coverage
+
+**Copilot and Antigravity are token harnesses**, like Claude Code and Codex.
+They contribute to total tokens, daily usage, model breakdowns, rank, and arena.
+A Claude model used through Copilot counts under Copilot, not Claude Code.
+Model totals are another view of the same tokens, never an extra addition.
+No tokens are estimated from prompts, quota, subscription spend, or context size.
+
+| Source | Token usage | Consented prompts |
+| ------ | ----------- | ----------------- |
+| GitHub Copilot CLI | Persisted `session.shutdown.modelMetrics` in `${COPILOT_HOME:-~/.copilot}/session-state/<session-id>/events.jsonl`; available after shutdown. Supported local trace exports can supply completed calls before the next shutdown. | User messages in the same events file; synthetic user events excluded. |
+| GitHub Copilot in VS Code Stable / Insiders | Native Copilot `chat` spans in `User/globalStorage/github.copilot-chat/agent-traces.db` (including user profiles) or configured local OTel JSONL exports. Telemetry must already be enabled; ordinary chat transcripts do not contain usage. | Agent JSONL in `User/workspaceStorage/<workspace>/github.copilot-chat/transcripts/`; only the Copilot producer and user messages count. |
+| Antigravity CLI / GUI | `~/.gemini/{antigravity-cli,antigravity,antigravity-ide}/conversations/<UUID>.db`, where the supported SQLite `steps.metadata` usage schema exists. | Readable `brain/<UUID>/.system_generated/logs/transcript_full.jsonl` or `transcript.jsonl` under those roots, when present in the explicit-user-input format. Full transcript preferred; copies not counted together. |
+| Android Studio's built-in Gemini | Not supported: no reliable local, attributable usage schema was established. API/account dashboards can include other clients and cannot safely be counted as Studio usage. | Not supported. Saved Prompt Library entries are templates, not chat activity. |
+
+### Accounting and deduplication
+
+- Copilot shutdown counters are cumulative across resumed sessions. Count the
+  first snapshot and then only positive growth, dated to each shutdown.
+  `inputTokens` includes cache reads/writes; `outputTokens` includes reasoning.
+  Never add nested `agentMetrics` to the same root totals.
+- Copilot trace exports count only completed `chat` calls with an identifiable
+  native Copilot owning agent. Root `invoke_agent` totals, metrics, and duplicate
+  log events are not extra usage. File/SQLite copies share trace/span IDs and are
+  deduplicated. Calls already covered by a session/model shutdown are suppressed;
+  later resumed calls remain until the next shutdown covers them.
+- Claude/Codex agent delegates are excluded from Copilot telemetry so their native
+  scanners own that usage. This is about the **agent**, not the model: BYOK Claude
+  calls under a native Copilot agent still count as Copilot.
+- Antigravity counts uncached input + cached input + total output. Thinking and
+  visible-answer fields are output subsets, not additions. Response IDs identify
+  duplicate generations; conversation UUID + step index is the fallback when no
+  response ID exists. Numeric model enums remain `antigravity-model-<id>` rather
+  than being assigned an unverified model name.
+
+### Local telemetry and coverage limits
+
+Hacklab never enables telemetry or overwrites harness settings. For VS Code,
+`github.copilot.chat.otel.dbSpanExporter.enabled` enables the local trace DB;
+alternatively use the documented OTel file exporter with an absolute
+`github.copilot.chat.otel.outfile`. The scanner reads that setting from default
+user/profile JSONC files, `${COPILOT_HOME:-~/.copilot}/otel/**/*.jsonl`, and
+`COPILOT_OTEL_FILE_EXPORTER_PATH` when supplied to Hacklab. Prompt/response content
+capture is **not needed**. Broken exporter records containing only `{}` cannot
+provide usage; prefer the local trace DB on affected VS Code versions.
+JSONL parsing supports the direct ReadableSpan form emitted by VS Code. The
+standalone CLI's exact exporter serialization is not a documented stable
+contract; unrecognized record forms are ignored, not interpreted as estimates.
+
+VS Code roots are `%APPDATA%/Code[ - Insiders]` on Windows,
+`~/Library/Application Support/Code[ - Insiders]` on macOS, and
+`${XDG_CONFIG_HOME:-~/.config}/Code[ - Insiders]` on Linux. Custom user-data roots,
+remote hosts, other Copilot IDEs, and generic chat exports are not swept.
+Trace calls wait for an identifiable completed owning-agent span. Unknown
+schemas/owners are not guessed. The read-only SQLite reader observes the main
+database; recent WAL-only writes become visible after the harness checkpoints.
+Antigravity's DB schema is reverse-engineered, not a vendor stability guarantee;
+opaque `.pb` histories and unsupported transcript formats remain unreadable.
+
+Only retained history is available. VS Code prompt transcripts normally retain
+20 sessions per workspace plus active sessions; trace DB retention is also
+bounded. Missing prompt timestamps allow a histogram and `full`-tier sample,
+but **never** dated activity. Token records need their own real timestamp.
+The minutely tick fingerprints snapshot sources and replaces changed aggregates,
+not adds the whole snapshot again. Full syncs rebuild the same sources. Prompt
+sharing remains separately consented; incremental state contains no prompt text.
+
+Storage evidence:
+[Copilot usage schema](https://github.com/github/copilot-sdk/blob/main/nodejs/src/generated/session-events.ts),
+[shutdown/cache semantics](https://ccusage.com/guide/copilot/),
+[VS Code telemetry](https://code.visualstudio.com/docs/agents/guides/monitoring-agents),
+[VS Code trace DB](https://github.com/microsoft/vscode/blob/main/extensions/copilot/src/platform/otel/node/sqlite/otelSqliteStore.ts),
+[VS Code transcript writer](https://github.com/microsoft/vscode/blob/main/extensions/copilot/src/extension/chat/vscode-node/sessionTranscriptService.ts),
+[Antigravity DB metadata](https://github.com/Eneasf/antigravity-token-dashboard/blob/main/docs/TELEMETRY_SPEC.md),
+[CLI/GUI schema audit](https://github.com/mjacobs/agy-reader/blob/main/COMPATIBILITY.md),
+[readable Antigravity exporter](https://github.com/mehdawimohamed/antigravity-conversation-exporter/blob/main/export_chat.py),
+[Android Studio API-key usage](https://developer.android.com/studio/gemini/add-api-key).
 
 ## Choosing a backend
 
