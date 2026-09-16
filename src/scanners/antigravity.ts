@@ -49,9 +49,9 @@ export type AntigravityPrompt = {
 
 /**
  * Parse a legacy IDE transcript line. The public exporter identifies a typed
- * user prompt as `source: USER_EXPLICIT`, `type: USER_INPUT`, with string
- * `content`. Its documented format does not guarantee timestamps, so this
- * preserves an absent or invalid timestamp as null rather than guessing.
+ * user prompt as `source: USER_EXPLICIT`, `type: USER_INPUT`, with a
+ * `USER_REQUEST` body. It prefers `created_at`, falling back to the legacy
+ * `timestamp`; absent or invalid timestamps remain null rather than guessed.
  */
 export function parseAntigravityLegacyPromptLine(
   line: string,
@@ -69,21 +69,28 @@ export function parseAntigravityLegacyPromptLine(
     source?: unknown
     type?: unknown
     content?: unknown
+    created_at?: unknown
     timestamp?: unknown
   }
   if (
     entry.source !== 'USER_EXPLICIT' ||
     entry.type !== 'USER_INPUT' ||
-    typeof entry.content !== 'string' ||
-    !entry.content.trim()
+    typeof entry.content !== 'string'
   ) {
     return null
   }
 
+  const request = entry.content.match(
+    /<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/
+  )?.[1]
+  if (!request || !request.trim()) return null
+
   return {
-    text: entry.content,
+    text: request,
     sessionId: `antigravity-ide:${sessionId}`,
-    timestamp: normalizeTimestamp(entry.timestamp),
+    timestamp:
+      normalizeTimestamp(entry.created_at) ??
+      normalizeTimestamp(entry.timestamp),
   }
 }
 
