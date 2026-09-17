@@ -3,11 +3,8 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { defineConfig } from 'vitest/config'
 
-// Only the constrained shared sandbox box throttles vitest: pin it to a single
-// thread (no file parallelism) so one `pnpm test` can't saturate CPU and freeze
-// other agents or the human terminal. A box is the sandbox only if it's marked
-// with HACKLAB_SANDBOX=1 or ~/.hacklab-sandbox. Personal laptops and CI are
-// unmarked, so they run fully parallel.
+// Opted-in machines run tests single-threaded to limit CPU use.
+// HACKLAB_SANDBOX or ~/.hacklab-sandbox enables the cap; CI bypasses it.
 const isSandbox =
   !!process.env.HACKLAB_SANDBOX ||
   existsSync(join(homedir(), '.hacklab-sandbox'))

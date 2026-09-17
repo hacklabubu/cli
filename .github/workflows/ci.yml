@@ -30,7 +30,8 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          if git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- src/; then
+          # Compare only PR changes, not changes added to main since branching.
+          if git diff --quiet "$BASE_SHA...$HEAD_SHA" -- src/; then
             echo "No src/ changes — no publish needed, no bump required."
             exit 0
           fi

@@ -40,6 +40,8 @@ export type SyncResult = {
   hermesTotal: number
   opencodeTotal: number
   grokTotal: number
+  copilotTotal: number
+  antigravityTotal: number
   messagesTotal: number
   allEntries: DailyToolEntry[]
   cursorStats: CursorStats | null
@@ -189,6 +191,8 @@ function toolTotalsRecord(scan: AggregateScan) {
     hermes: scan.toolTotals.hermes ?? 0,
     opencode: scan.toolTotals.opencode ?? 0,
     grok: scan.toolTotals.grok ?? 0,
+    github_copilot: scan.toolTotals.github_copilot ?? 0,
+    antigravity: scan.toolTotals.antigravity ?? 0,
   }
 }
 
@@ -360,6 +364,8 @@ export async function runSync(
     hermesTotal: totals.hermes,
     opencodeTotal: totals.opencode,
     grokTotal: totals.grok,
+    copilotTotal: totals.github_copilot,
+    antigravityTotal: totals.antigravity,
     messagesTotal,
     allEntries,
     cursorStats: scan.cursorStats,

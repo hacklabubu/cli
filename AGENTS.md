@@ -14,15 +14,14 @@ web app and the rest of hacklab live in the `hacklabubu/hacklab` monorepo.
 - `.posthog-events.json` — analytics event registry (events the CLI emits).
 - `.github/workflows/` — `ci.yml` (Biome + build + Vitest, incl. Windows) and
   `publish-cli.yml` (npm publish via OIDC Trusted Publishing).
-- `vitest.config.ts` — Vitest config; auto-caps to one thread on the sandbox box.
+- `vitest.config.ts` — Vitest config.
 
 ## Key files
 
 - `CLAUDE.md` — conventions, the compute/offload rule, and shipping.
 - `DESIGN.md` — terminal UI. How new commands should look and behave. `login`
   is the reference; do not copy old clack trees, boxed notes, or slogans.
-- `docs/offload.md` — full "don't build/test on the shared box" policy + how the
-  per-machine sandbox marker works.
+- `docs/offload.md` — optional, per-machine build/test offloading.
 
 ## Conventions
 

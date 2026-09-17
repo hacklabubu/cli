@@ -14,6 +14,8 @@ export type Tool =
   | 'hermes'
   | 'opencode'
   | 'grok'
+  | 'github_copilot'
+  | 'antigravity'
 
 export type DailyToolEntry = {
   date: string
