@@ -12,6 +12,7 @@ import {
   githubCopilotFiles,
   scanGitHubCopilotPrompts,
 } from './scanners/github-copilot.js'
+import { parseClaudeCodeLine } from './scanners/index.js'
 import { findFiles, toDateStr } from './scanners/util.js'
 
 /**
@@ -58,13 +59,16 @@ export const CONVERSATION_SAMPLE_MAX_CHARS = 20_000
  * harness-generated `user` entries (subagent task notifications, skill bodies,
  * slash-command echoes, interrupt markers) as prompts, which inflated the
  * counts and blew out the word tallies. Version 2 is the scan with
- * `isHarnessNoise` in it.
+ * `isHarnessNoise` in it. Version 3 adds a measured `tokenCount` to each
+ * `projects[]` entry (real per-repo tokens off the same transcripts, not an
+ * apportioned share of the account total) — purely additive, so it doesn't
+ * raise the server's floor.
  *
  * It rides on every sync as a top-level `scannerVersion`; the server ignores
  * `promptStats` / `promptActivity` from anything below 2, so an un-upgraded CLI
  * can't keep writing the old numbers into a table that was wiped to fix them.
  */
-export const PROMPT_SCANNER_VERSION = 2
+export const PROMPT_SCANNER_VERSION = 3
 
 /**
  * Prefixes that mark a `user` transcript entry as written by Claude Code
@@ -121,6 +125,10 @@ export function isHarnessNoise(text: string): boolean {
 export type PromptStatsProject = {
   repoUrl: string
   promptCount: number
+  // Measured Claude Code token spend inside this repo — summed straight off
+  // the same transcript lines promptCount comes from (the `usage` block on
+  // each assistant turn), never an apportioned share of the account total.
+  tokenCount: number
   lastActiveAt: string
 }
 
@@ -479,6 +487,7 @@ export async function gitOriginUrl(cwd: string): Promise<string | null> {
 type ProjectAccumulator = {
   cwd: string | null
   promptCount: number
+  tokenCount: number
   lastActiveAt: number
 }
 
@@ -545,7 +554,7 @@ export async function scanPromptStats(
     const projectDir = dirname(filePath)
     let project = byProjectDir.get(projectDir)
     if (!project) {
-      project = { cwd: null, promptCount: 0, lastActiveAt: 0 }
+      project = { cwd: null, promptCount: 0, tokenCount: 0, lastActiveAt: 0 }
       byProjectDir.set(projectDir, project)
     }
 
@@ -569,6 +578,13 @@ export async function scanPromptStats(
       if (!project.cwd && typeof entry.cwd === 'string' && entry.cwd) {
         project.cwd = entry.cwd
       }
+
+      // Token usage rides on the assistant's turn, not the user's prompt line,
+      // so it's measured independently of promptTextFrom below (which only
+      // ever matches user entries) — an assistant-only line still spent real
+      // tokens and must count.
+      const usage = parseClaudeCodeLine(line)
+      if (usage) project.tokenCount += usage.tokens
 
       const text = promptTextFrom(parsed)
       if (text === null) continue
@@ -662,7 +678,7 @@ async function resolveProjects(
 ): Promise<PromptStatsProject[]> {
   const byRepo = new Map<
     string,
-    { promptCount: number; lastActiveAt: number }
+    { promptCount: number; tokenCount: number; lastActiveAt: number }
   >()
 
   for (const project of byProjectDir.values()) {
@@ -673,6 +689,7 @@ async function resolveProjects(
     const existing = byRepo.get(repoUrl)
     if (existing) {
       existing.promptCount += project.promptCount
+      existing.tokenCount += project.tokenCount
       existing.lastActiveAt = Math.max(
         existing.lastActiveAt,
         project.lastActiveAt
@@ -680,6 +697,7 @@ async function resolveProjects(
     } else {
       byRepo.set(repoUrl, {
         promptCount: project.promptCount,
+        tokenCount: project.tokenCount,
         lastActiveAt: project.lastActiveAt,
       })
     }
@@ -688,6 +706,7 @@ async function resolveProjects(
   return [...byRepo.entries()].map(([repoUrl, entry]) => ({
     repoUrl,
     promptCount: entry.promptCount,
+    tokenCount: entry.tokenCount,
     // A transcript with no usable timestamp still happened; dating it now is
     // more honest than dropping the project or claiming the epoch.
     lastActiveAt: new Date(

@@ -1,4 +1,12 @@
-import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises'
+import { execFileSync } from 'node:child_process'
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  rm,
+  utimes,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -115,6 +123,51 @@ describe('scanPromptStats — the activity aggregate', () => {
 
   it('returns null when there is nothing to report', async () => {
     expect(await scanPromptStats()).toBeNull()
+  })
+})
+
+describe('scanPromptStats — project token attribution', () => {
+  it('counts assistant usage including caches without treating it as prompts', async () => {
+    execFileSync('git', ['init', '-q', dir])
+    execFileSync('git', [
+      '-C',
+      dir,
+      'remote',
+      'add',
+      'origin',
+      'https://github.com/example/project.git',
+    ])
+    const file = await transcript('project', ['build it'], new Date(2e12))
+    const assistant = (
+      input: number,
+      output: number,
+      creation: number,
+      read: number
+    ) => ({
+      type: 'assistant',
+      timestamp: '2026-03-02T09:01:00.000Z',
+      cwd: dir,
+      message: {
+        model: 'claude-sonnet-4',
+        usage: {
+          input_tokens: input,
+          output_tokens: output,
+          cache_creation_input_tokens: creation,
+          cache_read_input_tokens: read,
+        },
+      },
+    })
+    await appendFile(
+      file,
+      [assistant(100, 50, 10, 5), assistant(20, 10, 0, 0)]
+        .map((entry) => JSON.stringify(entry))
+        .join('\n')
+    )
+
+    const stats = await scanPromptStats()
+    expect(stats?.projects).toEqual([
+      expect.objectContaining({ promptCount: 1, tokenCount: 195 }),
+    ])
   })
 })
 

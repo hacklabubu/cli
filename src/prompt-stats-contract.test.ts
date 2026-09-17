@@ -61,6 +61,7 @@ const serverPromptStatsSchema = z.object({
         repoUrl: z.string().min(1).max(500),
         promptCount: z.number().int().positive(),
         lastActiveAt: z.iso.datetime(),
+        tokenCount: z.number().int().nonnegative().optional(),
       })
     )
     .max(200),
@@ -120,6 +121,7 @@ describe('promptStats payload matches the server schema', () => {
         {
           repoUrl: 'git@github.com:hacklabubu/cli.git',
           promptCount: 26,
+          tokenCount: 41_200,
           lastActiveAt: new Date().toISOString(),
         },
       ],
@@ -168,6 +170,7 @@ describe('promptStats payload matches the server schema', () => {
         {
           repoUrl: 'https://github.com/hacklabubu/hacklab',
           promptCount: 1,
+          tokenCount: 0,
           lastActiveAt: new Date(0).toISOString(),
         },
       ],
