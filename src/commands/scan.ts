@@ -46,8 +46,8 @@ export const TOOL_LABELS: Record<string, string> = {
 }
 
 /**
- * Scan this machine, upload to the logged-in profile, draw the real card,
- * offer the X share, and arm the daemon so the card stays true.
+ * Scan this machine, upload to the logged-in profile, print the usage receipt,
+ * offer the X share, and arm the daemon so the profile stays current.
  *
  * Login is required: an anonymous card says @hacker and points at the wrong
  * URL, which is how the viral loop dies. `--no-daemon` skips the schedule for

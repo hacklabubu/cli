@@ -1,28 +1,24 @@
 import { join } from 'node:path'
 
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const m = vi.hoisted(() => ({
   bareEnter: vi.fn(),
   success: vi.fn(),
   info: vi.fn(),
-  readFile: vi.fn(),
   copyFile: vi.fn(),
   generateShareCard: vi.fn(),
-  displayInTerminal: vi.fn(),
   copyToClipboard: vi.fn(),
   openBrowser: vi.fn(),
   logs: [] as string[],
 }))
 
 vi.mock('node:fs/promises', () => ({
-  readFile: m.readFile,
   copyFile: m.copyFile,
 }))
 vi.mock('node:os', () => ({ homedir: () => '/home/hacker' }))
 vi.mock('./share-card.js', () => ({
   generateShareCard: m.generateShareCard,
-  displayInTerminal: m.displayInTerminal,
   copyToClipboard: m.copyToClipboard,
 }))
 vi.mock('./utils/openBrowser.js', () => ({ openBrowser: m.openBrowser }))
@@ -64,27 +60,41 @@ beforeEach(() => {
     m.logs.push(String(msg ?? ''))
   })
   m.generateShareCard.mockResolvedValue('/tmp/card.png')
-  m.readFile.mockResolvedValue(Buffer.from('image'))
-  m.displayInTerminal.mockReturnValue(true)
   m.copyToClipboard.mockResolvedValue(true)
   m.bareEnter.mockResolvedValue(false)
+})
+
+afterEach(() => {
+  vi.restoreAllMocks()
 })
 
 const DESKTOP_CARD = join('/home/hacker', 'Desktop', 'hacklab-card.png')
 
 describe('renderShareCard', () => {
-  it('shows the png and touches nothing outside ~/.hacklab', async () => {
+  it('prepares the png silently and touches nothing outside ~/.hacklab', async () => {
+    const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true)
+    const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true)
+
     expect(await renderShareCard(card)).toBe('/tmp/card.png')
-    expect(m.displayInTerminal).toHaveBeenCalled()
+    expect(stdout).not.toHaveBeenCalled()
+    expect(stderr).not.toHaveBeenCalled()
+    expect(m.logs).toEqual([])
     expect(m.copyFile).not.toHaveBeenCalled()
     expect(m.copyToClipboard).not.toHaveBeenCalled()
     expect(m.bareEnter).not.toHaveBeenCalled()
   })
 
-  it('keeps the png path and skips a text fallback when inline images are unsupported', async () => {
-    m.displayInTerminal.mockReturnValue(false)
-    expect(await renderShareCard(card)).toBe('/tmp/card.png')
+  it('allows text-only sharing when image generation fails', async () => {
+    m.generateShareCard.mockRejectedValueOnce(new Error('render failed'))
+    m.bareEnter.mockResolvedValue(true)
+
+    await promptShareOnX(card, await renderShareCard(card))
+
+    expect(m.openBrowser).toHaveBeenCalledWith(
+      `https://x.com/intent/tweet?text=${encodeURIComponent(shareTweetText(card))}`
+    )
     expect(m.copyFile).not.toHaveBeenCalled()
+    expect(m.copyToClipboard).not.toHaveBeenCalled()
   })
 })
 
