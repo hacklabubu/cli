@@ -590,52 +590,6 @@ export async function generateShareCard(data: ShareCardData): Promise<string> {
   return filePath
 }
 
-export function displayInTerminal(pngBuffer: Buffer): boolean {
-  const env = process.env
-  const isKitty =
-    env.TERM === 'xterm-kitty' ||
-    env.TERM === 'xterm-ghostty' ||
-    env.KITTY_WINDOW_ID !== undefined ||
-    env.TERM_PROGRAM === 'WezTerm' ||
-    env.TERM_PROGRAM === 'WarpTerminal' ||
-    env.KONSOLE_VERSION !== undefined
-  const isITerm =
-    env.TERM_PROGRAM === 'iTerm.app' ||
-    env.TERM_PROGRAM === 'vscode' ||
-    (!isKitty && env.TERM_PROGRAM === 'WezTerm')
-
-  try {
-    if (isKitty) {
-      const base64 = pngBuffer.toString('base64')
-      const chunkSize = 4096
-      for (let i = 0; i < base64.length; i += chunkSize) {
-        const chunk = base64.slice(i, i + chunkSize)
-        const isLast = i + chunkSize >= base64.length
-        if (i === 0) {
-          process.stdout.write(
-            `\x1b_Ga=T,f=100,m=${isLast ? 0 : 1};${chunk}\x1b\\`
-          )
-        } else {
-          process.stdout.write(`\x1b_Gm=${isLast ? 0 : 1};${chunk}\x1b\\`)
-        }
-      }
-      process.stdout.write('\n')
-      return true
-    }
-    if (isITerm) {
-      const base64 = pngBuffer.toString('base64')
-      const filename = Buffer.from('hacklab-card.png').toString('base64')
-      process.stdout.write(
-        `\x1b]1337;File=name=${filename};size=${pngBuffer.length};inline=1:${base64}\x07\n`
-      )
-      return true
-    }
-    return false
-  } catch {
-    return false
-  }
-}
-
 export async function copyToClipboard(imagePath: string): Promise<boolean> {
   if (process.platform !== 'darwin') return false
   try {
