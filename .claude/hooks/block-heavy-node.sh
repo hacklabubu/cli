@@ -1,29 +1,16 @@
 #!/usr/bin/env bash
-# PreToolUse(Bash) hook: block heavy Node commands — but ONLY on a machine
-# explicitly marked as the constrained shared sandbox.
-#
-# Why: hacklab agents run in several places. One is a small shared box where
-# builds and test runs pile up across many agents and can bog the box (and freeze
-# the human's terminal). There, that work is offloaded: push the branch and let
-# GitHub Actions verify it — see docs/offload.md. On personal laptops and in CI,
-# building/testing locally is fine.
-#
-# This CLI is light (a tsc build + a vitest suite — seconds, no dev server / next
-# / turbo / e2e), so the heavy set is small: `pnpm build|check|test|prepack`,
-# `tsc`, `vitest`. `pnpm dev` (which just RUNS the CLI via tsx) and `pnpm install`
-# stay allowed. Tune the HEAVY pattern below if you'd rather run the fast local
-# build/test and lean only on the vitest sandbox-cap (vitest.config.ts).
+# PreToolUse(Bash) hook: opt-in build/test offloading to GitHub Actions.
+# See docs/offload.md. Running the CLI (`pnpm dev`) and `pnpm install` stay allowed.
 #
 # OPT-IN per machine, defaults to ALLOW: enforces only when HACKLAB_SANDBOX=1 is
 # set or ~/.hacklab-sandbox exists. Every unmarked machine passes commands through.
 #
-# Escape hatch (on a marked box): prefix the command with HACKLAB_ALLOW_HEAVY=1.
+# Escape hatch (on a marked machine): prefix the command with HACKLAB_ALLOW_HEAVY=1.
 # Fail-open: if we can't parse the tool input, we allow the command.
 
 set -u
 
-# Machine gate: enforce only on a box marked as the constrained sandbox. Default
-# is ALLOW, so laptops, CI, and any unmarked machine build/test freely.
+# Machine gate: unmarked machines build/test freely.
 if [ -z "${HACKLAB_SANDBOX:-}" ] && [ ! -f "${HOME:-}/.hacklab-sandbox" ]; then
   echo '{}'
   exit 0
@@ -56,7 +43,7 @@ esac
 HEAVY='(^|[[:space:];&|(])(pnpm([[:space:]]+run)?[[:space:]]+(build|check|test|prepack)|tsc|vitest)([[:space:]]|;|&|\||$)'
 
 if printf '%s' "$CMD" | grep -Eq "$HEAVY"; then
-  MSG='BLOCKED — build/test are offloaded on this box. Running them across many agents bogs the shared box. Verify remotely instead: run ./scripts/verify-remote.sh (push branch → CI builds + tests it). Running the CLI itself (pnpm dev) is fine. If you truly must build/test locally, prefix with HACKLAB_ALLOW_HEAVY=1 . Details: docs/offload.md'
+  MSG='BLOCKED — build/test offloading is enabled on this machine. Verify remotely instead: run ./scripts/verify-remote.sh (push branch → CI builds + tests it). Running the CLI itself (pnpm dev) is fine. If you truly must build/test locally, prefix with HACKLAB_ALLOW_HEAVY=1 . Details: docs/offload.md'
   printf '{"permissionDecision":"deny","message":"%s"}\n' "$MSG"
   exit 0
 fi

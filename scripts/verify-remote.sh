@@ -28,7 +28,7 @@ fi
 PR_URL=$(gh pr view "$BRANCH" --json url --jq .url)
 echo "→ PR: $PR_URL"
 
-echo "→ watching CI (network-only, cheap on this box; Ctrl-C stops watching — CI keeps running) …"
+echo "→ watching CI (Ctrl-C stops watching — CI keeps running) …"
 gh pr checks "$BRANCH" --watch --interval 15 || true
 
 echo "→ done. Green = biome + build (typecheck) + tests passed in CI."
