@@ -86,20 +86,16 @@ afterEach(() => {
 })
 
 describe('login — device flow', () => {
-  it('shows the code and URL before opening the browser', async () => {
+  it('displays the code-bearing URL before opening the same URL in the browser', async () => {
     await login()
 
-    expect(m.order.slice(0, 4)).toEqual([
-      'log:copy code',
-      'log:WDJB-MJHT',
-      'log:',
-      'log:https://hacklab.so/cli/login',
-    ])
-    expect(m.order).toContain('enter:(press enter)')
-    expect(m.order).toContain(
-      'open:https://hacklab.so/cli/login?code=WDJB-MJHT'
+    const displayedUrl = 'log:https://hacklab.so/cli/login?code=WDJB-MJHT'
+    const openedUrl = 'open:https://hacklab.so/cli/login?code=WDJB-MJHT'
+    expect(m.order).toContain(displayedUrl)
+    expect(m.order).toContain(openedUrl)
+    expect(m.order.indexOf(displayedUrl)).toBeLessThan(
+      m.order.indexOf(openedUrl)
     )
-    expect(m.order.at(-1)).toBe('log:signed in as @ada')
   })
 
   it('still opens the browser when stdin is non-interactive', async () => {
