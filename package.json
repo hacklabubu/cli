@@ -1,6 +1,6 @@
 {
   "name": "hacklab",
-  "version": "0.21.4",
+  "version": "0.22.2",
   "private": false,
   "publishConfig": {
     "access": "public"
