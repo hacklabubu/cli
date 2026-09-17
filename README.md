@@ -414,8 +414,9 @@ you logged in.
 ## Signing in
 
 `hacklab login` uses a **device flow**, everywhere (desktop or headless): it
-prints a short code and `hacklab.so/cli/login`. Open that on any device with a
-browser, enter the code, and approve — you sign in to Hacklab there with GitHub
+prints a short code and a URL like `https://hacklab.so/cli/login?code=857F-61CE`.
+Open that on any device with a browser; the code is prefilled. Approve the login —
+you sign in to Hacklab there with GitHub
 or Google, and if you don't have an account yet you create one on the spot. The
 terminal picks up the session as soon as you approve. No local server, no port
 forwarding, no localhost/app URL.
