@@ -226,7 +226,7 @@ async function loginViaDevice(
   const openUrl = start.verificationUriComplete ?? start.verificationUri
   const enterPrompt = render.show({
     userCode: start.userCode,
-    verificationUri: start.verificationUri,
+    verificationUri: openUrl,
   })
 
   const abort = new AbortController()

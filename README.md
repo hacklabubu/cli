@@ -56,14 +56,14 @@ most once a day); update with `npm i -g hacklab@latest`.
 ## Scan
 
 ```
-login → scan this machine → upload → card → share on X → daemon on
+login → scan this machine → upload → receipt → share on X → daemon on
 ```
 
 `hacklab scan` requires `hacklab login`. It reads local AI token usage from
 Claude Code, Codex, Cursor, OpenClaw, Hermes, OpenCode, Grok Build, GitHub Copilot,
-and Antigravity, uploads it to your profile, and draws the card from the live
-account (real rank, belt, streak — not a local postcard). Then it asks whether
-to share that card on X.
+and Antigravity, uploads it to your profile, and prints a text usage receipt
+without displaying a card or image in the terminal. Then it asks whether to
+share a card on X, using the live account's rank, belt, and streak.
 A successful scan summons the daemon so the card stays current; `hacklab scan
 --no-daemon` skips the schedule, and `hacklab daemon off` tears it down.
 Skip the whole command if this computer isn't yours — it would upload that
@@ -423,8 +423,9 @@ you logged in.
 ## Signing in
 
 `hacklab login` uses a **device flow**, everywhere (desktop or headless): it
-prints a short code and `hacklab.so/cli/login`. Open that on any device with a
-browser, enter the code, and approve — you sign in to Hacklab there with GitHub
+prints a short code and a URL like `https://hacklab.so/cli/login?code=857F-61CE`.
+Open that on any device with a browser; the code is prefilled. Approve the login —
+you sign in to Hacklab there with GitHub
 or Google, and if you don't have an account yet you create one on the spot. The
 terminal picks up the session as soon as you approve. No local server, no port
 forwarding, no localhost/app URL.

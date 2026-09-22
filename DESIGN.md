@@ -11,7 +11,7 @@ This is the terminal UI for this repo. It is not the web app's visual system.
 copy code
 857F-61CE
 
-https://hacklab.so/cli/login
+https://hacklab.so/cli/login?code=857F-61CE
 (press enter)
 
 signed in as @mattbratos

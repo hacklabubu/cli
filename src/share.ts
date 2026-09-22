@@ -1,4 +1,4 @@
-import { copyFile, readFile } from 'node:fs/promises'
+import { copyFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -36,19 +36,14 @@ function desktopCardPath(): string {
   return join(homedir(), 'Desktop', 'hacklab-card.png')
 }
 
-/** Generate the stats card and show it inline. Text fallback is the scan receipt. */
+/** Generate the stats card for sharing without displaying it in the terminal. */
 export async function renderShareCard(
   card: ShareCardData
 ): Promise<string | null> {
   try {
-    const { generateShareCard, displayInTerminal } = await import(
-      './share-card.js'
-    )
-
-    const cardPath = await generateShareCard(card)
-    const imgBuf = Buffer.from(await readFile(cardPath))
-    displayInTerminal(imgBuf)
-    return cardPath
+    // Keep the platform-specific native renderer optional when its binary is unavailable.
+    const { generateShareCard } = await import('./share-card.js')
+    return await generateShareCard(card)
   } catch {
     return null
   }
