@@ -32,7 +32,12 @@ import {
   saveSession,
   verifySession,
 } from '../session.js'
-import { scanConsentedPromptStats, uploadTokenScan } from '../sync.js'
+import {
+  formatUsageCreditLines,
+  parseUsageCredit,
+  scanConsentedPromptStats,
+  uploadTokenScan,
+} from '../sync.js'
 import { bold, dim } from '../ui.js'
 import { waitForBareEnter } from '../utils/waitForEnter.js'
 import { ensureHandleClaimed, performLogin } from './login.js'
@@ -216,6 +221,14 @@ export async function setup(): Promise<void> {
     const after = uploaded.rankAfter
     if (typeof after === 'number' && Number.isFinite(after)) rank = after
     spin.stop(rank ? `synced · rank #${rank}` : 'synced')
+    // Held/rejected reported growth is still a durable success (HTTP 200) —
+    // surface it as extra context, never as the sync having failed.
+    const usageCredit = parseUsageCredit(uploaded)
+    if (usageCredit) {
+      for (const line of formatUsageCreditLines(usageCredit)) {
+        clack.log.message(line, { spacing: 0 })
+      }
+    }
   } catch {
     // Never fatal — the account exists, and `hacklab sync` is the recovery.
     spin.stop('usage sync deferred')

@@ -32,13 +32,16 @@ import {
   checkSession,
   ensureFreshSession,
   formatTokens,
+  formatUsageCreditLines,
   LOGIN_EXPIRED_MESSAGE,
+  parseUsageCredit,
   refreshSession,
   runSync,
   SyncUploadError,
   scanConsentedPromptStats,
   syncGithubRepos,
   uploadTokenScan,
+  usageCreditLogNote,
 } from '../sync.js'
 import { bold, dim, error, info, success } from '../ui.js'
 import { daemon } from './daemon.js'
@@ -122,7 +125,7 @@ async function quietSync(): Promise<void> {
     const staged = await stageFullScan(results, {
       scanned: promptStats?.activity ?? null,
     })
-    await uploadTokenScan(
+    const uploaded = await uploadTokenScan(
       s,
       staged.promptActivity
         ? { ...scan, promptActivity: staged.promptActivity }
@@ -131,12 +134,15 @@ async function quietSync(): Promise<void> {
     )
     await staged.commit()
     await syncGithubRepos(s)
+    return uploaded
   }
 
   try {
-    await push(session)
+    const uploaded = await push(session)
     await clearSyncPaused()
-    await appendSyncLog('ok')
+    // A durably-stored held claim is still a successful HTTP 200 — logged as
+    // "ok" plus the held note, never as an error that would page a retry.
+    await appendSyncLog(`ok${usageCreditLogNote(parseUsageCredit(uploaded))}`)
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     if (msg !== LOGIN_EXPIRED_MESSAGE) {
@@ -147,9 +153,11 @@ async function quietSync(): Promise<void> {
     const refreshed = await refreshSession(session)
     if (refreshed) {
       try {
-        await push(refreshed)
+        const uploaded = await push(refreshed)
         await clearSyncPaused()
-        await appendSyncLog('ok (after refresh)')
+        await appendSyncLog(
+          `ok (after refresh)${usageCreditLogNote(parseUsageCredit(uploaded))}`
+        )
         return
       } catch {
         // fall through to pause
@@ -250,7 +258,7 @@ async function tickSync(): Promise<void> {
     await saveScanState(state)
     await clearSyncPaused()
     await appendSyncLog(
-      `tick: +${formatTokens(Number(result.tokensDelta ?? 0))} tokens (${dates} date${dates === 1 ? '' : 's'})`
+      `tick: +${formatTokens(Number(result.tokensDelta ?? 0))} tokens (${dates} date${dates === 1 ? '' : 's'})${usageCreditLogNote(parseUsageCredit(result))}`
     )
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
@@ -276,7 +284,7 @@ async function tickSync(): Promise<void> {
           await saveScanState(state)
           await clearSyncPaused()
           await appendSyncLog(
-            `tick: +${formatTokens(Number(result.tokensDelta ?? 0))} tokens (${dates} dates, after refresh)`
+            `tick: +${formatTokens(Number(result.tokensDelta ?? 0))} tokens (${dates} dates, after refresh)${usageCreditLogNote(parseUsageCredit(result))}`
           )
           return
         } catch {
@@ -387,6 +395,15 @@ async function interactiveSync() {
   )
   if (Number(r.tokensDelta) > 0) {
     info(`  +${formatTokens(Number(r.tokensDelta))} since last sync`)
+  }
+
+  // Held/rejected reported growth (review, new-machine enrollment, account
+  // allowance, stale history). Silent when the receipt is absent (older
+  // backend) or everything reported was accepted.
+  if (result.usageCredit) {
+    for (const line of formatUsageCreditLines(result.usageCredit)) {
+      info(`  ${line}`)
+    }
   }
 
   if (result.promptStats) {

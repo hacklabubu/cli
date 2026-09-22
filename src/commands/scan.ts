@@ -28,7 +28,13 @@ import {
   renderShareCard,
   type ShareCardData,
 } from '../share.js'
-import { checkSession, ensureFreshSession, uploadTokenScan } from '../sync.js'
+import {
+  checkSession,
+  ensureFreshSession,
+  formatUsageCreditLines,
+  parseUsageCredit,
+  uploadTokenScan,
+} from '../sync.js'
 import { bold, dim, error, info } from '../ui.js'
 
 const MAX_MODELS = 8
@@ -145,6 +151,14 @@ export async function scan(args: string[] = []): Promise<void> {
 
   for (const line of formatScanReceipt(scanResult)) {
     console.log(line)
+  }
+  const usageCredit = parseUsageCredit(uploaded)
+  if (usageCredit) {
+    const creditLines = formatUsageCreditLines(usageCredit)
+    if (creditLines.length > 0) {
+      console.log('')
+      for (const line of creditLines) console.log(line)
+    }
   }
   console.log('')
 

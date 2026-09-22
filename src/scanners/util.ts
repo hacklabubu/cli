@@ -2,6 +2,8 @@ import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 
 // Shared scanner types + helpers. Every tool scanner returns the same
+// Local usage records are self-reported evidence: structural validation and
+// stable-id dedup prevent malformed/replayed records, not valid-looking forgeries.
 // ScanResult shape so the aggregator (scanAllTools) can merge them uniformly —
 // this is the single source of truth that replaces the old duplicated scanning
 // across claim.ts and sync.ts.
@@ -89,6 +91,28 @@ export type ScanResult = {
 
 export function emptyResult(tool: Tool): ScanResult {
   return { tool, daily: [], models: {} }
+}
+
+/** Token components are evidence only when represented as safe nonnegative integers. */
+export function safeTokenCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+
+/** Adds trusted token values without allowing a JavaScript integer overflow. */
+export function safeTokenSum(...values: unknown[]): number | null {
+  let total = 0
+  for (const value of values) {
+    if (!safeTokenCount(value) || value > Number.MAX_SAFE_INTEGER - total) {
+      return null
+    }
+    total += value
+  }
+  return total
+}
+
+/** Missing optional components mean zero; every explicit value must be exact. */
+export function optionalTokenComponent(value: unknown): number | null {
+  return value === undefined ? 0 : safeTokenCount(value) ? value : null
 }
 
 export type TokensMessages = { tokens: number; messages: number }
@@ -222,15 +246,25 @@ export class TokenCollector {
   constructor(private readonly tool: Tool) {}
 
   addDaily(date: string, model: string, tokens: number, messages = 1) {
+    if (!safeTokenCount(tokens) || !safeTokenCount(messages)) return false
     const key = `${date}|${model}`
     const existing = this.dailyByModel.get(key)
+    const nextDaily = safeTokenSum(existing?.tokens ?? 0, tokens)
+    const nextMessages = safeTokenSum(existing?.messages ?? 0, messages)
+    const nextModel = model
+      ? safeTokenSum(this.models.get(model) ?? 0, tokens)
+      : 0
+    if (nextDaily === null || nextMessages === null || nextModel === null) {
+      return false
+    }
     if (existing) {
-      existing.tokens += tokens
-      existing.messages += messages
+      existing.tokens = nextDaily
+      existing.messages = nextMessages
     } else {
       this.dailyByModel.set(key, { tokens, messages })
     }
-    if (model) this.models.set(model, (this.models.get(model) ?? 0) + tokens)
+    if (model) this.models.set(model, nextModel)
+    return true
   }
 
   result(extra?: Partial<ScanResult>): ScanResult {

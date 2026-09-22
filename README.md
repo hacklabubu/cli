@@ -81,6 +81,15 @@ machine's usage to your profile. Cursor users with no API key are offered one
 - `hacklab scan` — scan this machine, upload to your profile, share the card.
   Requires login. Summons the daemon afterwards (`--no-daemon` to skip).
 - `hacklab sync` — re-scan local AI usage and sync it to your profile.
+
+  What your machine reports is self-reported: the server keeps it, but only
+  usage that passes its review policy counts toward rank and belt. A new
+  machine, a large historical import, or growth past your account's reviewed
+  allowance is **held** until a hacklab admin reviews it — `sync`, `scan` and
+  `setup` print `reported` / `eligible` / `held` lines with the reason when
+  that happens, and the daemon log notes it. A hold is not an error and needs
+  nothing from you; your profile shows the same breakdown. Local logs are
+  never treated as proof of purchase.
 - `hacklab daemon` — summon the daemon: two OS-native background jobs (launchd on
   macOS, systemd user timers on Linux, Task Scheduler tasks on Windows) so your
   tokens, rank, and streak stay current without you running anything. A **tick

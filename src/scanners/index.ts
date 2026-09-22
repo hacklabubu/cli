@@ -12,8 +12,11 @@ import {
   type DailyToolEntry,
   emptyResult,
   findFiles,
+  optionalTokenComponent,
   type PromptActivity,
   type ScanResult,
+  safeTokenCount,
+  safeTokenSum,
   TokenCollector,
   toDateStr,
 } from './util.js'
@@ -67,6 +70,8 @@ export type UsageLine = {
   tokens: number
   model: string
   date: string | null
+  /** Stable provider event identity when the source exposes one. */
+  eventId?: string
 }
 
 export function parseClaudeCodeLine(line: string): UsageLine | null {
@@ -75,12 +80,14 @@ export function parseClaudeCodeLine(line: string): UsageLine | null {
     const parsed = JSON.parse(line)
     const usage = parsed.message?.usage ?? parsed.usage ?? null
     if (!usage) return null
-    const tokens =
-      (usage.input_tokens ?? 0) +
-      (usage.output_tokens ?? 0) +
-      (usage.cache_creation_input_tokens ?? 0) +
-      (usage.cache_read_input_tokens ?? 0)
-    if (tokens <= 0) return null
+    const components = [
+      optionalTokenComponent(usage.input_tokens),
+      optionalTokenComponent(usage.output_tokens),
+      optionalTokenComponent(usage.cache_creation_input_tokens),
+      optionalTokenComponent(usage.cache_read_input_tokens),
+    ]
+    const tokens = safeTokenSum(...components)
+    if (tokens === null || tokens <= 0) return null
 
     let date: string | null = null
     if (parsed.timestamp) {
@@ -91,7 +98,18 @@ export function parseClaudeCodeLine(line: string): UsageLine | null {
       )
       date = toDateStr(d)
     }
-    return { tokens, model: parsed.message?.model ?? '', date }
+    const messageId = parsed.message?.id
+    const eventId =
+      typeof messageId === 'string' && messageId.trim()
+        ? `claude:${messageId}`
+        : undefined
+    return {
+      tokens,
+      model:
+        typeof parsed.message?.model === 'string' ? parsed.message.model : '',
+      date,
+      eventId,
+    }
   } catch {
     // malformed line (or an unparseable timestamp) — skip it
     return null
@@ -105,7 +123,10 @@ export async function claudeCodeFiles(): Promise<string[]> {
 
 export async function scanClaudeCode(): Promise<ScanResult> {
   const collector = new TokenCollector('claude_code')
-
+  const events = new Map<
+    string,
+    { tokens: number; date: string; model: string }
+  >()
   for (const filePath of await claudeCodeFiles()) {
     try {
       const content = await readFile(filePath, 'utf8')
@@ -118,13 +139,25 @@ export async function scanClaudeCode(): Promise<ScanResult> {
           fallbackDate ??= toDateStr((await stat(filePath)).mtime)
           date = fallbackDate
         }
-        collector.addDaily(date, usage.model, usage.tokens, 1)
+        const previous = usage.eventId ? events.get(usage.eventId) : undefined
+        if (previous && usage.tokens <= previous.tokens) continue
+        const event = previous ?? { date, model: usage.model, tokens: 0 }
+        if (
+          collector.addDaily(
+            event.date,
+            event.model,
+            usage.tokens - event.tokens,
+            previous ? 0 : 1
+          ) &&
+          usage.eventId
+        ) {
+          events.set(usage.eventId, { ...event, tokens: usage.tokens })
+        }
       }
     } catch {
       // skip unreadable files
     }
   }
-
   return collector.result()
 }
 
@@ -161,43 +194,68 @@ export async function codexFiles(): Promise<string[]> {
 export function codexFileTotals(content: string): {
   maxTotal: number
   model: string
+  sessionId: string | null
 } {
   let maxTotal = 0
   let model = ''
+  let sessionId: string | null = null
   for (const line of content.split('\n')) {
     if (!line.trim()) continue
     try {
       const parsed = JSON.parse(line)
-      if (parsed.payload?.model) model = parsed.payload.model as string
+      // A forked/subagent rollout repeats its parent's session_meta after its
+      // own, so the first one is the file's identity.
+      if (
+        sessionId === null &&
+        parsed.type === 'session_meta' &&
+        typeof parsed.payload?.id === 'string' &&
+        parsed.payload.id.trim()
+      ) {
+        sessionId = parsed.payload.id
+      }
+      if (typeof parsed.payload?.model === 'string')
+        model = parsed.payload.model
       const usage = parsed.payload?.info?.total_token_usage
       if (usage) {
-        const t = (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0)
-        if (t > maxTotal) maxTotal = t
+        const total = safeTokenSum(
+          optionalTokenComponent(usage.input_tokens),
+          optionalTokenComponent(usage.output_tokens)
+        )
+        if (total !== null && total > maxTotal) maxTotal = total
       }
     } catch {
       // skip malformed lines
     }
   }
-  return { maxTotal, model }
+  return { maxTotal, model, sessionId }
 }
 
 export async function scanCodex(): Promise<ScanResult> {
   const collector = new TokenCollector('codex')
-
+  const sessions = new Map<
+    string,
+    { maxTotal: number; model: string; date: string }
+  >()
   for (const filePath of await codexFiles()) {
     try {
-      const { maxTotal, model } = codexFileTotals(
+      const { maxTotal, model, sessionId } = codexFileTotals(
         await readFile(filePath, 'utf8')
       )
       if (maxTotal <= 0) continue
       const date =
         codexDateForFile(filePath) ?? toDateStr((await stat(filePath)).mtime)
-      collector.addDaily(date, model, maxTotal, 1)
+      const key = sessionId ? `session:${sessionId}` : `file:${filePath}`
+      const existing = sessions.get(key)
+      if (!existing || maxTotal > existing.maxTotal) {
+        sessions.set(key, { maxTotal, model, date })
+      }
     } catch {
       // skip unreadable files
     }
   }
-
+  for (const session of sessions.values()) {
+    collector.addDaily(session.date, session.model, session.maxTotal, 1)
+  }
   return collector.result()
 }
 
@@ -230,19 +288,26 @@ export async function scanHermes(): Promise<ScanResult> {
         reasoning,
         msgCount,
       ] = row
-      const tokens =
-        num(inputTokens) +
-        num(outputTokens) +
-        num(cacheRead) +
-        num(cacheWrite) +
-        num(reasoning)
-      if (tokens <= 0) continue
-      const tsSec = num(startedAt)
-      if (!Number.isFinite(tsSec) || tsSec <= 0) continue
-      const d = new Date(Math.round(tsSec * 1000))
+      const tokens = safeTokenSum(
+        inputTokens,
+        outputTokens,
+        cacheRead,
+        cacheWrite,
+        reasoning
+      )
+      if (tokens === null || tokens <= 0) continue
+      // Hermes stores started_at as a fractional Python time.time() REAL.
+      if (
+        typeof startedAt !== 'number' ||
+        !Number.isFinite(startedAt) ||
+        startedAt <= 0
+      )
+        continue
+      const d = new Date(Math.round(startedAt * 1000))
+      if (!Number.isFinite(d.getTime())) continue
       const date = toDateStr(d)
       const m = str(model).trim()
-      const messages = num(msgCount) || 1
+      const messages = safeTokenCount(msgCount) && msgCount > 0 ? msgCount : 1
       collector.addDaily(date, m, tokens, messages)
     }
   } catch {
@@ -263,12 +328,31 @@ export function parseOpenclawLine(line: string): UsageLine | null {
       parsed.response?.usage ??
       null
     if (!usage || typeof usage !== 'object') return null
-    const tokens = (usage.total ??
-      (usage.input ?? usage.inputTokens ?? 0) +
-        (usage.output ?? usage.outputTokens ?? 0) +
-        (usage.cacheRead ?? usage.cacheReadTokens ?? 0) +
-        (usage.cacheWrite ?? usage.cacheWriteTokens ?? 0)) as number
-    if (!tokens || tokens <= 0) return null
+    const total = usage.total
+    const tokens =
+      total === undefined
+        ? safeTokenSum(
+            optionalTokenComponent(
+              usage.input === undefined ? usage.inputTokens : usage.input
+            ),
+            optionalTokenComponent(
+              usage.output === undefined ? usage.outputTokens : usage.output
+            ),
+            optionalTokenComponent(
+              usage.cacheRead === undefined
+                ? usage.cacheReadTokens
+                : usage.cacheRead
+            ),
+            optionalTokenComponent(
+              usage.cacheWrite === undefined
+                ? usage.cacheWriteTokens
+                : usage.cacheWrite
+            )
+          )
+        : safeTokenCount(total)
+          ? total
+          : null
+    if (tokens === null || tokens <= 0) return null
 
     let date: string | null = null
     const ts = parsed.timestamp ?? parsed.t ?? parsed.time ?? null
@@ -278,7 +362,12 @@ export function parseOpenclawLine(line: string): UsageLine | null {
       if (!Number.isNaN(d.getTime())) date = toDateStr(d)
     }
 
-    const model: string = parsed.model ?? parsed.response?.model ?? ''
+    const model =
+      typeof parsed.model === 'string'
+        ? parsed.model
+        : typeof parsed.response?.model === 'string'
+          ? parsed.response.model
+          : ''
     return { tokens, model, date }
   } catch {
     // skip malformed lines
@@ -353,11 +442,11 @@ export async function scanOpenCode(): Promise<ScanResult> {
     if (rows.length > 0) {
       for (const row of rows) {
         const [time, model, inp, out, cr, cw, reason] = row
-        const tokens = num(inp) + num(out) + num(cr) + num(cw) + num(reason)
-        if (tokens <= 0) continue
-        const tsMs = num(time)
-        if (!Number.isFinite(tsMs) || tsMs <= 0) continue
-        const d = new Date(tsMs)
+        const tokens = safeTokenSum(inp, out, cr, cw, reason)
+        if (tokens === null || tokens <= 0) continue
+        if (!safeTokenCount(time) || time <= 0) continue
+        const d = new Date(time)
+        if (!Number.isFinite(d.getTime())) continue
         const m = str(model).trim()
         collector.addDaily(toDateStr(d), m, tokens, 1)
       }
@@ -389,19 +478,20 @@ export async function scanOpenCode(): Promise<ScanResult> {
           if (parsed.role !== 'assistant') continue
           const t = parsed.tokens
           if (!t || typeof t !== 'object') continue
-          const tokens =
-            (t.input ?? 0) +
-            (t.output ?? 0) +
-            (t.cache?.read ?? 0) +
-            (t.cache?.write ?? 0) +
-            (t.reasoning ?? 0)
-          if (tokens <= 0) continue
-          const tsMs: number = parsed.time?.created ?? 0
+          const tokens = safeTokenSum(
+            optionalTokenComponent(t.input),
+            optionalTokenComponent(t.output),
+            optionalTokenComponent(t.cache?.read),
+            optionalTokenComponent(t.cache?.write),
+            optionalTokenComponent(t.reasoning)
+          )
+          if (tokens === null || tokens <= 0) continue
+          const tsMs = parsed.time?.created
           const date =
-            tsMs > 0
+            safeTokenCount(tsMs) && tsMs > 0
               ? toDateStr(new Date(tsMs))
               : toDateStr((await stat(filePath)).mtime)
-          const model = String(parsed.modelID ?? '')
+          const model = typeof parsed.modelID === 'string' ? parsed.modelID : ''
           collector.addDaily(date, model, tokens, 1)
         } catch {
           // skip malformed files
@@ -433,9 +523,11 @@ export function parseGrokLine(line: string): UsageLine | null {
     }
     if (parsed.msg !== 'shell.turn.inference_done') return null
     const ctx = parsed.ctx ?? {}
-    const tokens =
-      Number(ctx.prompt_tokens ?? 0) + Number(ctx.completion_tokens ?? 0)
-    if (!Number.isFinite(tokens) || tokens <= 0) return null
+    const tokens = safeTokenSum(
+      optionalTokenComponent(ctx.prompt_tokens),
+      optionalTokenComponent(ctx.completion_tokens)
+    )
+    if (tokens === null || tokens <= 0) return null
 
     let date: string | null = null
     if (parsed.ts) {
@@ -683,24 +775,24 @@ export async function scanCursorApi(): Promise<ScanResult> {
     for (const event of data.usageEvents ?? []) {
       if (!event.isTokenBasedCall) continue
       const tu =
-        (event.tokenUsage as Record<string, number> | undefined) ??
-        (event as unknown as Record<string, number>)
-      const tokens =
-        (tu.inputTokens ?? 0) +
-        (tu.outputTokens ?? 0) +
-        (tu.cacheWriteTokens ?? 0) +
-        (tu.cacheReadTokens ?? 0)
-      if (tokens > 0 && event.timestamp) {
-        const rawTs = event.timestamp as string | number
-        const tsMs =
-          typeof rawTs === 'string' && /^\d+$/.test(rawTs)
-            ? Number(rawTs)
-            : rawTs
-        const d = new Date(tsMs)
-        const model = (event.model as string | undefined) ?? ''
-        collector.addDaily(toDateStr(d), model, tokens, 1)
-        eventsProcessed++
-      }
+        (event.tokenUsage as Record<string, unknown> | undefined) ??
+        (event as Record<string, unknown>)
+      const tokens = safeTokenSum(
+        optionalTokenComponent(tu.inputTokens),
+        optionalTokenComponent(tu.outputTokens),
+        optionalTokenComponent(tu.cacheWriteTokens),
+        optionalTokenComponent(tu.cacheReadTokens)
+      )
+      if (tokens === null || tokens <= 0 || !event.timestamp) continue
+      const rawTs = event.timestamp
+      const tsMs =
+        typeof rawTs === 'string' && /^\d+$/.test(rawTs) ? Number(rawTs) : rawTs
+      if (!safeTokenCount(tsMs) || tsMs <= 0) continue
+      const d = new Date(tsMs)
+      if (!Number.isFinite(d.getTime())) continue
+      const model = typeof event.model === 'string' ? event.model : ''
+      collector.addDaily(toDateStr(d), model, tokens, 1)
+      eventsProcessed++
     }
 
     hasMore = data.pagination?.hasNextPage ?? false
@@ -817,20 +909,31 @@ export function mergeToolScans(results: ScanResult[]): AggregateScan {
 
   for (const r of results) {
     let toolSum = 0
+    const acceptedDaily: DailyToolEntry[] = []
     for (const d of r.daily) {
-      dailyTotals.push(d)
-      toolSum += d.tokens
+      if (!safeTokenCount(d.tokens)) continue
+      const nextToolSum = safeTokenSum(toolSum, d.tokens)
+      if (nextToolSum === null) continue
+      acceptedDaily.push(d)
+      toolSum = nextToolSum
     }
-    toolTotals[r.tool] = (toolTotals[r.tool] ?? 0) + toolSum
-    grandTotal += toolSum
+    const nextToolTotal = safeTokenSum(toolTotals[r.tool] ?? 0, toolSum)
+    const nextGrandTotal = safeTokenSum(grandTotal, toolSum)
+    if (nextToolTotal === null || nextGrandTotal === null) continue
+    dailyTotals.push(...acceptedDaily)
+    toolTotals[r.tool] = nextToolTotal
+    grandTotal = nextGrandTotal
     let byTool = modelsByTool[r.tool]
     if (!byTool) {
       byTool = {}
       modelsByTool[r.tool] = byTool
     }
     for (const [model, tokens] of Object.entries(r.models)) {
-      modelTotals[model] = (modelTotals[model] ?? 0) + tokens
-      byTool[model] = (byTool[model] ?? 0) + tokens
+      const nextModel = safeTokenSum(modelTotals[model] ?? 0, tokens)
+      const nextByTool = safeTokenSum(byTool[model] ?? 0, tokens)
+      if (nextModel === null || nextByTool === null) continue
+      modelTotals[model] = nextModel
+      byTool[model] = nextByTool
     }
   }
 

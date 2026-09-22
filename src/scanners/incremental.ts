@@ -34,6 +34,8 @@ import {
   parseGrokLine,
   parseOpenclawLine,
   type ScanResult,
+  safeTokenCount,
+  safeTokenSum,
   scanHermes,
   scanOpenCode,
   type TokensMessages,
@@ -81,27 +83,39 @@ import {
  * 5: prompt activity is partitioned by source, so rebuilding a Claude log or
  * rotating an IDE transcript cannot erase or double-count another harness.
  *
+ * 6: JSONL event identities and Codex session identities survive daemon
+ * restarts, preventing copied exports from being counted as new usage.
+ *
  * Token totals are unaffected: they travel as cumulative absolutes that the
  * server diffs against its own per-machine snapshot, and `state.uploaded` is
  * only the tick's "nothing moved" short-circuit — so a rebuild re-baselines
  * rather than double-counting.
  */
-export const SCAN_STATE_VERSION = 5
+export const SCAN_STATE_VERSION = 6
 
 /** How long a session is kept in the state after its last prompt. */
 export const PROMPT_SESSION_RETENTION_DAYS = 45
 /** How long a per-day prompt tally is kept. Matches the wire's date cap. */
 export const PROMPT_DAILY_RETENTION_DAYS = PROMPT_ACTIVITY_DATE_CAP
+/** How long a JSONL event identity is remembered after its usage date. */
+export const EVENT_ID_RETENTION_DAYS = 30
 
 /** Where a file's tail-follow stands: what we saw, and how far we read. */
 export type FileState = { size: number; mtimeMs: number; offset: number }
 
 /** Codex only: the running total a session file has reported so far. */
-export type CodexFileState = { maxTotal: number; model: string; date: string }
+export type CodexFileState = {
+  maxTotal: number
+  model: string
+  date: string
+  sessionId: string | null
+}
 
 export type HarnessState = {
   /** JSONL harnesses: per-file read cursor, keyed by absolute path. */
   files: Record<string, FileState>
+  /** Per-event cumulative maximum, preserving attribution across streamed updates. */
+  seenEventIds?: Record<string, { tokens: number; date: string; model: string }>
   /** Codex only: per-file running totals (see codexFileTotals). */
   codexTotals?: Record<string, CodexFileState>
   /** SQLite harnesses: fingerprints of the db and its -wal. */
@@ -255,6 +269,15 @@ export async function saveScanState(state: ScanState): Promise<void> {
   for (const source of Object.values(state.promptSources)) {
     prunePromptAggregate(source)
   }
+  // Event identities only need to outlive a copy of a recent transcript: an
+  // older resurrected date is held server-side as a historical import anyway.
+  const cutoff = dateDaysAgo(EVENT_ID_RETENTION_DAYS)
+  for (const h of Object.values(state.harnesses)) {
+    if (!h.seenEventIds) continue
+    for (const [id, event] of Object.entries(h.seenEventIds)) {
+      if (event.date < cutoff) delete h.seenEventIds[id]
+    }
+  }
   try {
     await mkdir(dirname(scanStatePath()), { recursive: true })
     await writeFile(scanStatePath(), `${JSON.stringify(state)}\n`, 'utf8')
@@ -262,8 +285,6 @@ export async function saveScanState(state: ScanState): Promise<void> {
     // a state we can't persist just means the next tick re-reads everything
   }
 }
-
-// ---- aggregate bookkeeping -------------------------------------------------
 
 function addDaily(
   h: HarnessState,
@@ -275,14 +296,20 @@ function addDaily(
 ) {
   const key = `${date}|${model}`
   const existing = h.daily[key]
+  const nextTokens = safeTokenSum(existing?.tokens ?? 0, tokens)
+  const nextMessages = safeTokenSum(existing?.messages ?? 0, messages)
+  const nextModel = model ? safeTokenSum(h.models[model] ?? 0, tokens) : 0
+  if (nextTokens === null || nextMessages === null || nextModel === null)
+    return false
   if (existing) {
-    existing.tokens += tokens
-    existing.messages += messages
+    existing.tokens = nextTokens
+    existing.messages = nextMessages
   } else {
     h.daily[key] = { tokens, messages }
   }
-  if (model) h.models[model] = (h.models[model] ?? 0) + tokens
+  if (model) h.models[model] = nextModel
   dirty.add(date)
+  return true
 }
 
 type Aggregates = {
@@ -450,6 +477,8 @@ export type JsonlSource = {
    * point a prompt-bearing harness at a tmp dir.
    */
   parsePrompt?: (line: string) => PromptLine | null
+  /** Whether `parse` ever yields `eventId`; skips a full re-read otherwise. */
+  stableEvents?: boolean
 }
 
 export type CodexSource = {
@@ -487,6 +516,7 @@ export function defaultSources(): TickSources {
         files: claudeCodeFiles,
         parse: parseClaudeCodeLine,
         parsePrompt: parsePromptLine,
+        stableEvents: true,
       },
       { tool: 'openclaw', files: openclawFiles, parse: parseOpenclawLine },
       { tool: 'grok', files: grokLogFiles, parse: parseGrokLine },
@@ -539,6 +569,7 @@ function tailInvalidated(h: HarnessState, files: FileScan[]): boolean {
 
 function resetHarness(h: HarnessState) {
   h.files = {}
+  h.seenEventIds = {}
   if (h.codexTotals) h.codexTotals = {}
   h.daily = {}
   h.models = {}
@@ -579,6 +610,7 @@ async function tickJsonl(
       file.size
     ).catch(() => ({ text: '', offset: from }))
     let fallbackDate: string | null = null
+    h.seenEventIds ??= {}
     for (const line of text.split('\n')) {
       const prompt = src.parsePrompt?.(line)
       if (prompt && prompts) {
@@ -592,7 +624,22 @@ async function tickJsonl(
         fallbackDate ??= toDateStr(file.mtime)
         date = fallbackDate
       }
-      addDaily(h, date, usage.model, usage.tokens, 1, target)
+      const previous = usage.eventId ? h.seenEventIds[usage.eventId] : undefined
+      if (previous && usage.tokens <= previous.tokens) continue
+      const event = previous ?? { date, model: usage.model, tokens: 0 }
+      if (
+        addDaily(
+          h,
+          event.date,
+          event.model,
+          usage.tokens - event.tokens,
+          previous ? 0 : 1,
+          target
+        ) &&
+        usage.eventId
+      ) {
+        h.seenEventIds[usage.eventId] = { ...event, tokens: usage.tokens }
+      }
     }
     h.files[file.path] = { size: file.size, mtimeMs: file.mtimeMs, offset }
     changed = true
@@ -637,10 +684,19 @@ async function tickCodex(
       from,
       file.size
     ).catch(() => ({ text: '', offset: from }))
-    const { maxTotal, model } = codexFileTotals(text)
+    const { maxTotal, model, sessionId } = codexFileTotals(text)
     const stored = h.codexTotals[file.path]
+    const identity = sessionId ?? stored?.sessionId ?? null
+    const matching = identity
+      ? Object.values(h.codexTotals).filter(
+          (total) => total.sessionId === identity
+        )
+      : []
     const date = stored?.date ?? src.dateFor(file.path) ?? toDateStr(file.mtime)
-    const storedMax = stored?.maxTotal ?? 0
+    const storedMax = Math.max(
+      stored?.maxTotal ?? 0,
+      ...matching.map((total) => total.maxTotal)
+    )
     const nextMax = Math.max(storedMax, maxTotal)
     // A session that switches model mid-file leaves the earlier tokens under the
     // old model — the full scan credits them all to the last model seen. The
@@ -658,7 +714,12 @@ async function tickCodex(
         target
       )
     }
-    h.codexTotals[file.path] = { maxTotal: nextMax, model: nextModel, date }
+    h.codexTotals[file.path] = {
+      maxTotal: nextMax,
+      model: nextModel,
+      date,
+      sessionId: identity,
+    }
     h.files[file.path] = { size: file.size, mtimeMs: file.mtimeMs, offset }
     changed = true
   }
@@ -807,7 +868,14 @@ export async function runTick(
   }
 
   if (cold) {
+    // A rebuild is a local re-baseline, not new usage: no token date is dirty
+    // and the cumulative totals count as already delivered, so the tick sends
+    // nothing until something genuinely appends. The daily full sync carries
+    // complete daily rows for any growth this skipped, which is the only shape
+    // the server accepts growth in.
     state.dirty = []
+    const { toolTotals, modelTotals } = cumulativeTotals(state)
+    state.uploaded = { toolTotals, modelTotals }
     state.prompts.dirtySessions = Object.keys(state.prompts.sessions)
     state.prompts.dirtyDates = Object.keys(state.prompts.daily).sort()
   } else {
@@ -827,10 +895,14 @@ export function cumulativeTotals(state: ScanState): {
   const modelTotals: Record<string, number> = {}
   for (const [tool, h] of Object.entries(state.harnesses)) {
     let sum = 0
-    for (const value of Object.values(h.daily)) sum += value.tokens
+    for (const value of Object.values(h.daily)) {
+      const next = safeTokenSum(sum, value.tokens)
+      if (next !== null) sum = next
+    }
     toolTotals[tool] = sum
     for (const [model, tokens] of Object.entries(h.models)) {
-      modelTotals[model] = (modelTotals[model] ?? 0) + tokens
+      const next = safeTokenSum(modelTotals[model] ?? 0, tokens)
+      if (next !== null) modelTotals[model] = next
     }
   }
   return { toolTotals, modelTotals }
@@ -914,7 +986,13 @@ export function tickPayload(
   for (const [tool, h] of Object.entries(state.harnesses)) {
     for (const [key, value] of Object.entries(h.daily)) {
       const [date = '', model = ''] = key.split('|')
-      if (!dirty.has(date) || value.tokens <= 0) continue
+      if (
+        !dirty.has(date) ||
+        !safeTokenCount(value.tokens) ||
+        !safeTokenCount(value.messages) ||
+        value.tokens <= 0
+      )
+        continue
       dailyTotals.push({
         date,
         tool,
@@ -934,11 +1012,16 @@ export function tickPayload(
     : undefined
 
   const { toolTotals, modelTotals } = cumulativeTotals(state)
+  let grandTotal = 0
+  for (const tokens of Object.values(toolTotals)) {
+    const next = safeTokenSum(grandTotal, tokens)
+    if (next !== null) grandTotal = next
+  }
   return {
     toolTotals,
     dailyTotals,
     modelTotals,
-    grandTotal: Object.values(toolTotals).reduce((a, b) => a + b, 0),
+    grandTotal,
     cursorStats: null,
     cursorScanStatus: { source: 'none' },
     ...(promptActivity ? { promptActivity } : {}),
@@ -1077,7 +1160,32 @@ export async function stageFullScan(
     }
 
     for (const src of sources.jsonl) {
-      await snapshotFileCursors(harness(state, src.tool), await src.files())
+      const h = harness(state, src.tool)
+      h.seenEventIds = {}
+      if (!src.stableEvents) {
+        await snapshotFileCursors(h, await src.files())
+        continue
+      }
+      const paths = await src.files()
+      await snapshotFileCursors(h, paths)
+      for (const path of paths) {
+        const content = await readFile(path, 'utf8').catch(() => '')
+        for (const line of content.split('\n')) {
+          const usage = src.parse(line)
+          if (!usage?.eventId) continue
+          const previous = h.seenEventIds[usage.eventId]
+          if (!previous || usage.tokens > previous.tokens) {
+            h.seenEventIds[usage.eventId] = {
+              tokens: usage.tokens,
+              date:
+                previous?.date ??
+                usage.date ??
+                toDateStr(new Date(h.files[path]!.mtimeMs)),
+              model: previous?.model ?? usage.model,
+            }
+          }
+        }
+      }
     }
 
     // Codex has to be re-read: its per-file running totals aren't recoverable
@@ -1091,11 +1199,12 @@ export async function stageFullScan(
       const cursor = codex.files[path]
       if (!cursor) continue
       const content = await readFile(path, 'utf8').catch(() => '')
-      const { maxTotal, model } = codexFileTotals(content)
+      const { maxTotal, model, sessionId } = codexFileTotals(content)
       if (maxTotal <= 0) continue
       codex.codexTotals[path] = {
         maxTotal,
         model,
+        sessionId,
         date:
           sources.codex.dateFor(path) ?? toDateStr(new Date(cursor.mtimeMs)),
       }
