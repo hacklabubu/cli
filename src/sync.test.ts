@@ -40,7 +40,7 @@ vi.mock('./prompt-stats.js', async (importOriginal) => {
 
 import { PROMPT_SCANNER_VERSION } from './prompt-stats.js'
 import { loadScanState } from './scanners/incremental.js'
-import { runSync } from './sync.js'
+import { parseUsageCredit, runSync } from './sync.js'
 
 const SESSION = {
   token: 't',
@@ -202,5 +202,59 @@ describe('runSync — prompt activity without a daemon', () => {
     expect(body.promptStats).toBeUndefined()
     // Opted out, so the transcripts are never even read.
     expect(m.scanPromptStats).not.toHaveBeenCalled()
+  })
+})
+
+describe('usage credit receipt', () => {
+  const HELD_RECEIPT = {
+    reportedTokens: 1_000,
+    eligibleTokens: 400,
+    heldTokens: 600,
+    rejectedTokens: 0,
+    policyConfigured: true,
+    pendingMachines: 1,
+    claimId: 'claim-1',
+    status: 'held' as const,
+    reasons: ['machine_pending_review'],
+  }
+
+  it('is null on a response with no usageCredit field (older backend)', () => {
+    expect(parseUsageCredit({ tokensTotal: 500 })).toBeNull()
+  })
+
+  it('does not interpret a malformed receipt as accepted credit', () => {
+    expect(
+      parseUsageCredit({
+        usageCredit: { ...HELD_RECEIPT, status: 'unknown' },
+      })
+    ).toBeNull()
+    expect(
+      parseUsageCredit({
+        usageCredit: { ...HELD_RECEIPT, eligibleTokens: -1 },
+      })
+    ).toBeNull()
+    expect(parseUsageCredit({ usageCredit: {} })).toBeNull()
+  })
+
+  it('runSync surfaces the receipt from the upload response, held claim included', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      json: async () => ({
+        level: 3,
+        title: 'hacker',
+        tokensTotal: 400,
+        usageCredit: HELD_RECEIPT,
+      }),
+    })
+
+    // A held claim is still a durable HTTP 200 — runSync must resolve, not
+    // throw, so a plausible hold is never surfaced as an upload failure.
+    const result = await runSync(SESSION, {
+      interactive: true,
+      promptSync: 'none',
+    })
+    expect(result.usageCredit).toEqual(HELD_RECEIPT)
   })
 })

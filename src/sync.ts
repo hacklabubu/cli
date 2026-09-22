@@ -6,7 +6,7 @@ import {
   promptStatsPayload,
   scanPromptStats,
 } from './prompt-stats.js'
-import { stageFullScan } from './scanners/incremental.js'
+import { SCAN_STATE_VERSION, stageFullScan } from './scanners/incremental.js'
 import {
   type AggregateScan,
   type CursorScanStatus,
@@ -23,7 +23,7 @@ import {
   type Session,
   saveSession,
 } from './session.js'
-import { dim } from './ui.js'
+import { bold, dim } from './ui.js'
 
 export type { CursorScanStatus, CursorStats, DailyToolEntry }
 // Token scanning lives in one place — the scanners/ module (used by both `scan`
@@ -50,6 +50,119 @@ export type SyncResult = {
   cursorScanStatus: CursorScanStatus
   /** What was uploaded under the consent tier, or null when opted out. */
   promptStats: PromptStats | null
+  /** The server's reported/eligible/held/rejected breakdown, or null on a
+   * backend that predates it. */
+  usageCredit: UsageCreditReceipt | null
+}
+
+/**
+ * The optional server-computed credit breakdown that rides on `/api/claim/sync`
+ * responses (`UsageCreditReceipt` in the shared contract). `reportedTokens` is
+ * the cumulative high-water mark the server has ever seen from this account;
+ * `eligibleTokens` is what actually counts toward rank/belt (same number as
+ * `tokensTotal` elsewhere on the response); `heldTokens`/`rejectedTokens` are
+ * reported growth the server did not credit. Absent on backends that predate
+ * this field — see `parseUsageCredit`.
+ */
+export type UsageCreditReceipt = {
+  reportedTokens: number
+  eligibleTokens: number
+  heldTokens: number
+  rejectedTokens: number
+  policyConfigured: boolean
+  pendingMachines: number
+  claimId: string | null
+  status: 'accepted' | 'held' | 'unchanged'
+  reasons: string[]
+}
+
+/**
+ * Pull the optional `usageCredit` receipt off a claim/sync response. Returns
+ * null when it's missing (an older backend, or a response shape that doesn't
+ * carry it) — callers must never invent held/eligible numbers from local
+ * totals in that case, only fall back to the pre-receipt behavior.
+ */
+export function parseUsageCredit(
+  result: Record<string, unknown>
+): UsageCreditReceipt | null {
+  const raw = result.usageCredit
+  if (!raw || typeof raw !== 'object') return null
+  const r = raw as Record<string, unknown>
+  if (
+    !['accepted', 'held', 'unchanged'].includes(String(r.status)) ||
+    typeof r.policyConfigured !== 'boolean' ||
+    (r.claimId !== null && typeof r.claimId !== 'string') ||
+    !Array.isArray(r.reasons) ||
+    !r.reasons.every((reason) => typeof reason === 'string') ||
+    ![
+      r.reportedTokens,
+      r.eligibleTokens,
+      r.heldTokens,
+      r.rejectedTokens,
+      r.pendingMachines,
+    ].every(
+      (value) =>
+        typeof value === 'number' && Number.isInteger(value) && value >= 0
+    )
+  ) {
+    return null
+  }
+  return r as UsageCreditReceipt
+}
+
+/** Server policy reasons describe holds, never provider verification. */
+function explainHoldReason(reason: string): string {
+  const labels: Record<string, string> = {
+    machine_pending_review: 'machine needs enrollment review',
+    machine_blocked: 'machine blocked by review',
+    policy_not_configured: 'account allowance needs review',
+    daily_allowance_exceeded: 'over your rolling account allowance',
+    historical_import: 'historical import needs review',
+    daily_totals_inconsistent:
+      'daily usage does not reconcile with reported growth',
+    model_totals_exceed_usage: 'model totals exceed reported usage',
+  }
+  return labels[reason] ?? reason.replace(/[_-]+/g, ' ')
+}
+
+/**
+ * Shared receipt for sync, scan and setup. Reported usage remains self-reported;
+ * only the server's eligible total counts toward rank.
+ */
+export function formatUsageCreditLines(receipt: UsageCreditReceipt): string[] {
+  const lines = [
+    `${dim('reported')}   ${bold(formatTokens(receipt.reportedTokens))} tokens`,
+    `${dim('eligible')}   ${bold(formatTokens(receipt.eligibleTokens))} tokens`,
+  ]
+  if (receipt.heldTokens > 0) {
+    const reasons =
+      receipt.reasons.length > 0
+        ? receipt.reasons.map(explainHoldReason).join(', ')
+        : 'review needed'
+    lines.push(
+      `${dim('held')}       ${bold(formatTokens(receipt.heldTokens))} tokens — ${dim(reasons)}`
+    )
+  }
+  if (receipt.rejectedTokens > 0) {
+    lines.push(
+      `${dim('rejected')}   ${bold(formatTokens(receipt.rejectedTokens))} tokens`
+    )
+  }
+  return lines
+}
+
+/**
+ * A one-line, uncoloured note for the plain-text sync log (`quietSync` /
+ * `tickSync`) — never claims credit was awarded for tokens the server held.
+ * Empty string when there's nothing held to mention.
+ */
+export function usageCreditLogNote(receipt: UsageCreditReceipt | null): string {
+  if (!receipt || receipt.heldTokens <= 0) return ''
+  const reasons =
+    receipt.reasons.length > 0
+      ? receipt.reasons.map(explainHoldReason).join(', ')
+      : 'review needed'
+  return ` (held ${formatTokens(receipt.heldTokens)} tokens: ${reasons})`
 }
 
 export const LOGIN_EXPIRED_MESSAGE = 'login expired. run hacklab login again'
@@ -235,6 +348,11 @@ export async function uploadTokenScan(
       dailyTotals: scan.dailyTotals,
       toolTotals: toolTotalsRecord(scan),
       modelTotals: scan.modelTotals,
+      // Which token-scanner epoch built the cumulative totals. Forward-only:
+      // when it moves (a scanner that started deduplicating reports less than
+      // its predecessor), the server re-bases this machine's reported baseline
+      // at zero credit instead of freezing it under the old high-water mark.
+      tokenScannerVersion: SCAN_STATE_VERSION,
       // Which definition of "a prompt" produced the two blocks below. The
       // server drops prompt data from anything under 2, so this field is what
       // keeps it flowing — sent on every sync, tick and full scan alike, so
@@ -373,6 +491,7 @@ export async function runSync(
     models,
     cursorScanStatus: scan.cursorScanStatus,
     promptStats,
+    usageCredit: parseUsageCredit(result),
   }
 }
 

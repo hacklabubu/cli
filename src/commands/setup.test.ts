@@ -453,6 +453,61 @@ describe('setup — happy path', () => {
     })
   })
 
+  it('surfaces held credit after upload without failing the flow', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      const u = String(url)
+      if (u.includes('/api/hackers/me')) return meResponder()
+      if (u.includes('/api/cli/agent-handoff')) return handoffResponder()
+      if (u.includes('/api/cli/device/start')) return jsonResponse(START)
+      if (u.includes('/api/cli/device/poll')) {
+        return jsonResponse({
+          status: 'approved',
+          token: 't',
+          email: 'ada@example.com',
+          login: 'ada',
+          usernameClaimed: false,
+        })
+      }
+      if (u.includes('/api/cli/claim')) return claimResponder()
+      if (u.includes('/api/rank/preview')) {
+        return jsonResponse({ rank: 7, ofTotal: 420 })
+      }
+      if (u.includes('/api/claim/sync')) {
+        return jsonResponse({
+          rankAfter: 7,
+          tokensTotal: 400,
+          level: 2,
+          usageCredit: {
+            reportedTokens: 1_000,
+            eligibleTokens: 400,
+            heldTokens: 600,
+            rejectedTokens: 0,
+            policyConfigured: true,
+            pendingMachines: 1,
+            claimId: 'claim-1',
+            status: 'held',
+            reasons: ['unknown_machine'],
+          },
+        })
+      }
+      return jsonResponse({})
+    })
+
+    await setup()
+
+    // Setup stamps completion on reported usage even when it's held — the
+    // account exists, the daemon still gets armed, and the flow still says
+    // "you're in" rather than treating the hold as an upload failure.
+    expect(m.logs.join('\n')).toContain("you're in — https://hacklab.so/ada")
+    expect(m.logs.join('\n')).toMatch(/machine/)
+    expect(m.installDailySync).toHaveBeenCalledOnce()
+    expect(m.captureEvent).toHaveBeenCalledWith(
+      'ada',
+      'cli_setup_completed',
+      expect.objectContaining({ tokens_total: 1_000 })
+    )
+  })
+
   it('installs the background sync silently and tags the source', async () => {
     await setup()
 

@@ -13,6 +13,11 @@ const m = vi.hoisted(() => ({
   loadSessionState: vi.fn(),
   refreshSession: vi.fn(),
   loadPromptSync: vi.fn(),
+  syncGithubRepos: vi.fn(),
+  collectToolScans: vi.fn(),
+  mergeToolScans: vi.fn(),
+  stageFullScan: vi.fn(),
+  stageCommit: vi.fn(),
 }))
 
 vi.mock('../sync.js', async (importOriginal) => {
@@ -22,6 +27,7 @@ vi.mock('../sync.js', async (importOriginal) => {
     uploadTokenScan: m.uploadTokenScan,
     refreshSession: m.refreshSession,
     ensureFreshSession: async (s: unknown) => s,
+    syncGithubRepos: m.syncGithubRepos,
   }
 })
 vi.mock('../session.js', async (importOriginal) => {
@@ -33,6 +39,17 @@ vi.mock('../session.js', async (importOriginal) => {
 vi.mock('../prompt-consent.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../prompt-consent.js')>()
   return { ...actual, loadPromptSync: m.loadPromptSync }
+})
+// `--quiet` calls collectToolScans/mergeToolScans directly (the tick's
+// runTick stub above doesn't cover it) — stubbed so the quiet-mode tests never
+// touch this machine's real AI tool transcripts.
+vi.mock('../scanners/index.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../scanners/index.js')>()
+  return {
+    ...actual,
+    collectToolScans: m.collectToolScans,
+    mergeToolScans: m.mergeToolScans,
+  }
 })
 // The state machine itself stays real — it reads and writes the tmp
 // scan-state.json — but the tick scans no logs, so what these tests exercise is
@@ -50,6 +67,10 @@ vi.mock('../scanners/incremental.js', async (importOriginal) => {
     ...actual,
     runTick: (prev: Parameters<typeof actual.runTick>[0]) =>
       actual.runTick(prev, noSources),
+    // `--quiet` calls this directly (the tick's `runTick` stub above only
+    // covers the tick path), and the real rebuild walks the actual harness
+    // dirs on this machine — stubbed so quiet-mode tests never touch them.
+    stageFullScan: m.stageFullScan,
   }
 })
 
@@ -113,6 +134,19 @@ beforeEach(async () => {
   m.loadSessionState.mockResolvedValue({ status: 'ok', session: SESSION })
   m.uploadTokenScan.mockResolvedValue({ tokensDelta: 500 })
   m.loadPromptSync.mockResolvedValue(null)
+  m.syncGithubRepos.mockResolvedValue(null)
+  m.collectToolScans.mockResolvedValue([])
+  m.mergeToolScans.mockReturnValue({
+    toolTotals: {},
+    dailyTotals: [],
+    modelTotals: {},
+    cursorStats: null,
+    cursorScanStatus: { source: 'none' },
+  })
+  m.stageFullScan.mockResolvedValue({
+    promptActivity: undefined,
+    commit: m.stageCommit,
+  })
 })
 
 afterEach(async () => {
@@ -235,6 +269,36 @@ describe('hacklab sync --tick', () => {
     expect((await loadScanState())?.dirty).toEqual([])
   })
 
+  it('logs a durable hold without treating it as a tick error', async () => {
+    // A held claim is still an HTTP 200 — the dirty dates clear, no pause
+    // marker, and the log line must not read as a failure or an award.
+    await saveScanState(dirtyState())
+    m.uploadTokenScan.mockResolvedValue({
+      tokensDelta: 0,
+      usageCredit: {
+        reportedTokens: 500,
+        eligibleTokens: 0,
+        heldTokens: 500,
+        rejectedTokens: 0,
+        policyConfigured: true,
+        pendingMachines: 1,
+        claimId: 'claim-1',
+        status: 'held',
+        reasons: ['unknown_machine'],
+      },
+    })
+
+    await sync(['--tick'])
+
+    expect((await loadScanState())?.dirty).toEqual([])
+    expect(await readSyncPaused()).toBeNull()
+    const lines = await logLines()
+    expect(lines.length).toBe(1)
+    expect(lines[0]).toContain('tick: +0 tokens')
+    expect(lines[0]).toContain('held 500 tokens')
+    expect(lines[0]).not.toContain('error')
+  })
+
   it('stays a no-op when only prompts moved and consent is missing', async () => {
     // The tick counts prompts whatever the tier; at `none` they stay on disk,
     // and a minute with nothing else to say still costs no request.
@@ -308,5 +372,44 @@ describe('hacklab sync --tick', () => {
     await sync(['--tick'])
 
     expect((await logLines()).length).toBe(1)
+  })
+})
+
+describe('hacklab sync --quiet', () => {
+  it('logs a durable hold without pausing or treating it as an error', async () => {
+    m.uploadTokenScan.mockResolvedValue({
+      tokensDelta: 0,
+      usageCredit: {
+        reportedTokens: 500,
+        eligibleTokens: 0,
+        heldTokens: 500,
+        rejectedTokens: 0,
+        policyConfigured: true,
+        pendingMachines: 1,
+        claimId: 'claim-1',
+        status: 'held',
+        reasons: ['account_allowance_exceeded'],
+      },
+    })
+
+    await sync(['--quiet'])
+
+    expect(await readSyncPaused()).toBeNull()
+    const lines = await logLines()
+    expect(lines.length).toBe(1)
+    expect(lines[0]).toContain('ok')
+    expect(lines[0]).toContain('held 500 tokens')
+    expect(lines[0]).toContain('account allowance')
+    expect(lines[0]).not.toContain('error')
+  })
+
+  it('stays plain "ok" when the receipt has nothing held', async () => {
+    m.uploadTokenScan.mockResolvedValue({ tokensDelta: 500 })
+
+    await sync(['--quiet'])
+
+    const lines = await logLines()
+    expect(lines.length).toBe(1)
+    expect(lines[0]).toMatch(/ ok$/)
   })
 })

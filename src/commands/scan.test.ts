@@ -34,20 +34,28 @@ vi.mock('../session.js', () => ({
   resolveAppUrl: (session?: { appUrl?: string }) =>
     session?.appUrl ?? 'https://hacklab.so',
 }))
-vi.mock('../sync.js', () => ({
-  checkSession: m.checkSession,
-  ensureFreshSession: m.ensureFreshSession,
-  uploadTokenScan: m.uploadTokenScan,
-}))
+vi.mock('../sync.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../sync.js')>()
+  return {
+    ...actual,
+    checkSession: m.checkSession,
+    ensureFreshSession: m.ensureFreshSession,
+    uploadTokenScan: m.uploadTokenScan,
+  }
+})
 vi.mock('../scanners/incremental.js', () => ({
   stageFullScan: m.stageFullScan,
 }))
-vi.mock('../scanners/index.js', () => ({
-  collectToolScans: m.collectToolScans,
-  mergeToolScans: m.mergeToolScans,
-  detectCursorUsage: m.detectCursorUsage,
-  rescanCursorWithApi: vi.fn(),
-}))
+vi.mock('../scanners/index.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../scanners/index.js')>()
+  return {
+    ...actual,
+    collectToolScans: m.collectToolScans,
+    mergeToolScans: m.mergeToolScans,
+    detectCursorUsage: m.detectCursorUsage,
+    rescanCursorWithApi: vi.fn(),
+  }
+})
 vi.mock('../config.js', () => ({
   resolveCursorAuth: m.resolveCursorAuth,
   loadConfig: vi.fn(async () => ({})),
@@ -259,6 +267,37 @@ describe('hacklab scan', () => {
       expect.objectContaining({ handle: 'mattbratos', rank: 7 }),
       '/tmp/hacklab-card.png'
     )
+  })
+
+  it('shows held credit and its reason without failing the scan', async () => {
+    m.uploadTokenScan.mockResolvedValue({
+      ...SERVER,
+      usageCredit: {
+        reportedTokens: 12_000_000,
+        eligibleTokens: 9_000_000,
+        heldTokens: 3_000_000,
+        rejectedTokens: 0,
+        policyConfigured: true,
+        pendingMachines: 1,
+        claimId: 'claim-1',
+        status: 'held',
+        reasons: ['unknown_machine'],
+      },
+    })
+
+    await scan()
+
+    // Still finishes the whole flow — a held claim is a durable success, not
+    // an upload failure — and the belt/rank the card shows still come from the
+    // server response (eligible), never re-derived from the held total.
+    expect(m.error).not.toHaveBeenCalled()
+    expect(m.renderShareCard).toHaveBeenCalledOnce()
+    expect(m.renderShareCard.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ level: 12, title: 'student', rank: 7 })
+    )
+    const printed = m.logs.join('\n')
+    expect(printed).toContain('3.0M')
+    expect(printed).toMatch(/machine/)
   })
 
   it('computes belt, streaks and rank locally when the server omits them', async () => {

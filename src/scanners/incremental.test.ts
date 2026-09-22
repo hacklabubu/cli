@@ -45,10 +45,14 @@ afterEach(async () => {
 const today = new Date().toISOString().slice(0, 10)
 
 /** A Claude Code usage line, timestamped now (so it lands in today's bucket). */
-function usageLine(tokens: number, model = 'opus'): string {
+function usageLine(tokens: number, model = 'opus', id?: string): string {
   return `${JSON.stringify({
     timestamp: new Date().toISOString(),
-    message: { model, usage: { input_tokens: tokens, output_tokens: 0 } },
+    message: {
+      ...(id ? { id } : {}),
+      model,
+      usage: { input_tokens: tokens, output_tokens: 0 },
+    },
   })}\n`
 }
 
@@ -156,6 +160,22 @@ describe('runTick — tailing JSONL logs', () => {
     expect(second.state.dirty).toEqual([today])
   })
 
+  it('persists stable event dedup across copied files and keeps distinct ids', async () => {
+    const first = join(dir, 'a.jsonl')
+    await writeFile(first, usageLine(100, 'opus', 'one'))
+    const initial = await runTick(null, sources())
+    await saveScanState(initial.state)
+
+    await writeFile(
+      join(dir, 'copy.jsonl'),
+      usageLine(100, 'opus', 'one') + usageLine(100, 'opus', 'two')
+    )
+    const resumed = await runTick(await loadScanState(), sources())
+
+    expect(tokensOf(resumed.state)).toBe(200)
+    expect(resumed.state.dirty).toEqual([today])
+  })
+
   it('re-reads the whole harness when a file shrinks', async () => {
     // We know what the files contributed in total but not which file
     // contributed what, so there's nothing to subtract — only a re-read.
@@ -256,6 +276,19 @@ describe('runTick — Codex running totals', () => {
 
     expect(tokensOf(second.state, 'codex')).toBe(500)
     expect(second.state.dirty).toEqual([])
+  })
+
+  it('does not count a copied stable Codex session a second time', async () => {
+    const session = (total: number) =>
+      `${JSON.stringify({ type: 'session_meta', payload: { id: 'shared' } })}\n` +
+      codexLine(total)
+    await writeFile(join(dir, 'first.jsonl'), session(300))
+    const first = await runTick(null, codexSources())
+
+    await writeFile(join(dir, 'copy.jsonl'), session(300))
+    const second = await runTick(first.state, codexSources())
+
+    expect(tokensOf(second.state, 'codex')).toBe(300)
   })
 })
 

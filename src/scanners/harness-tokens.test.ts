@@ -30,6 +30,12 @@ import {
   stageFullScan,
   tickPayload,
 } from './incremental.js'
+import {
+  mergeToolScans,
+  parseClaudeCodeLine,
+  scanClaudeCode,
+  scanCodex,
+} from './index.js'
 
 const firstAt = '2026-09-16T12:00:00.000Z'
 const secondAt = '2026-09-17T12:00:00.000Z'
@@ -165,6 +171,118 @@ describe('harness token accounting', () => {
         messages: 1,
       },
     ])
+  })
+
+  it('rejects malformed and overflowing token components, while distinct ids remain independent', async () => {
+    expect(
+      parseClaudeCodeLine(
+        line({
+          message: {
+            usage: { input_tokens: '100', output_tokens: 2 },
+          },
+        })
+      )
+    ).toBeNull()
+    expect(
+      parseClaudeCodeLine(
+        line({
+          message: {
+            usage: {
+              input_tokens: Number.MAX_SAFE_INTEGER,
+              output_tokens: 1,
+            },
+          },
+        })
+      )
+    ).toBeNull()
+    const valid = (id: string) =>
+      line({
+        timestamp: firstAt,
+        message: {
+          id,
+          model: 'opus',
+          usage: { input_tokens: 100, output_tokens: 20 },
+        },
+      })
+    await put(
+      join(home.dir, '.claude', 'projects', 'one', 'a.jsonl'),
+      valid('shared') + valid('separate')
+    )
+    await put(
+      join(home.dir, '.claude', 'projects', 'two', 'copy.jsonl'),
+      valid('shared')
+    )
+    expect((await scanClaudeCode()).models).toEqual({ opus: 240 })
+  })
+
+  it('dedupes copied Codex sessions by their stable session id', async () => {
+    const session = line({
+      type: 'session_meta',
+      payload: { id: 'codex-session' },
+    })
+    const usage = line({
+      payload: {
+        model: 'gpt-5',
+        info: { total_token_usage: { input_tokens: 400, output_tokens: 20 } },
+      },
+    })
+    await put(
+      join(home.dir, '.codex', 'sessions', '2026', '09', '16', 'one.jsonl'),
+      session + usage
+    )
+    await put(
+      join(home.dir, '.codex', 'sessions', '2026', '09', '17', 'copy.jsonl'),
+      session + usage
+    )
+    expect((await scanCodex()).models).toEqual({ 'gpt-5': 420 })
+  })
+
+  it('keeps a forked Codex rollout separate from the parent whose session_meta it repeats', async () => {
+    const meta = (id: string, extra: Record<string, unknown> = {}) =>
+      line({ type: 'session_meta', payload: { id, ...extra } })
+    const usage = (input: number) =>
+      line({
+        payload: {
+          model: 'gpt-5',
+          info: {
+            total_token_usage: { input_tokens: input, output_tokens: 0 },
+          },
+        },
+      })
+    await put(
+      join(home.dir, '.codex', 'sessions', '2026', '09', '16', 'parent.jsonl'),
+      meta('parent') + usage(1000)
+    )
+    // A subagent rollout writes its own session_meta, then a copy of the
+    // parent's — the file's identity is the first one.
+    await put(
+      join(home.dir, '.codex', 'sessions', '2026', '09', '16', 'child.jsonl'),
+      meta('child') + meta('parent', { forked_from_id: 'parent' }) + usage(50)
+    )
+    expect((await scanCodex()).models).toEqual({ 'gpt-5': 1050 })
+  })
+
+  it('rejects aggregate overflow without discarding earlier valid usage', () => {
+    const scan = mergeToolScans([
+      {
+        tool: 'claude_code',
+        daily: [{ date: '2026-09-16', tool: 'claude_code', tokens: 100 }],
+        models: {},
+      },
+      {
+        tool: 'codex',
+        daily: [
+          {
+            date: '2026-09-16',
+            tool: 'codex',
+            tokens: Number.MAX_SAFE_INTEGER,
+          },
+        ],
+        models: {},
+      },
+    ])
+    expect(scan.grandTotal).toBe(100)
+    expect(scan.toolTotals).toEqual({ claude_code: 100 })
   })
 
   it('reconciles shutdowns with file/DB traces, retaining BYOK models but not delegated harnesses', async () => {
